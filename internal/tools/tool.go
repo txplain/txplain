@@ -11,6 +11,14 @@ type Tool interface {
 	Run(ctx context.Context, input map[string]interface{}) (map[string]interface{}, error)
 }
 
+// BaggageProcessor processes and enriches the shared baggage object
+type BaggageProcessor interface {
+	Name() string
+	Description() string
+	Dependencies() []string // Names of tools this tool depends on
+	Process(ctx context.Context, baggage map[string]interface{}) error
+}
+
 // ContextProvider allows tools to provide additional context for LLM prompts
 type ContextProvider interface {
 	GetPromptContext(ctx context.Context, data map[string]interface{}) string

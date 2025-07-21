@@ -39,6 +39,51 @@ func (t *LogDecoder) Description() string {
 	return "Decodes blockchain transaction logs into structured events and token transfers"
 }
 
+// Dependencies returns the tools this processor depends on (none for log decoder)
+func (t *LogDecoder) Dependencies() []string {
+	return []string{} // Log decoder is typically run first
+}
+
+// Process processes logs and adds decoded events to baggage
+func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Extract raw log data from baggage
+	rawData, ok := baggage["raw_data"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("missing raw_data in baggage")
+	}
+
+	logsData, ok := rawData["logs"].([]interface{})
+	if !ok || logsData == nil {
+		// No logs, add empty events to baggage
+		baggage["events"] = []models.Event{}
+		return nil
+	}
+
+	networkID := int64(1) // Default to Ethereum
+	if nid, ok := rawData["network_id"].(float64); ok {
+		networkID = int64(nid)
+	}
+
+	// Set up RPC client and signature resolver if not already set
+	if t.rpcClient == nil {
+		var err error
+		t.rpcClient, err = rpc.NewClient(networkID)
+		if err != nil {
+			return fmt.Errorf("failed to create RPC client: %w", err)
+		}
+		t.signatureResolver = rpc.NewSignatureResolver(t.rpcClient, true)
+	}
+
+	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID)
+	if err != nil {
+		return fmt.Errorf("failed to decode logs: %w", err)
+	}
+
+	// Add decoded events to baggage
+	baggage["events"] = events
+	return nil
+}
+
 // Run executes the log decoding with enhanced RPC-based analysis
 func (t *LogDecoder) Run(ctx context.Context, input map[string]interface{}) (map[string]interface{}, error) {
 	// Extract log data from input

@@ -15,12 +15,13 @@ import (
 
 // TxplainAgent orchestrates the transaction explanation workflow
 type TxplainAgent struct {
-	llm         llms.Model
-	rpcClients  map[int64]*rpc.Client
-	traceDecoder *txtools.TraceDecoder
-	logDecoder   *txtools.LogDecoder
-	explainer    *txtools.TransactionExplainer
-	executor     *chains.SequentialChain
+	llm                llms.Model
+	rpcClients         map[int64]*rpc.Client
+	traceDecoder       *txtools.TraceDecoder
+	logDecoder         *txtools.LogDecoder
+	explainer          *txtools.TransactionExplainer
+	executor           *chains.SequentialChain
+	coinMarketCapAPIKey string
 }
 
 // NewTxplainAgent creates a new transaction explanation agent with RPC-enhanced capabilities
@@ -49,27 +50,22 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 	traceDecoder := txtools.NewTraceDecoder() // Will be enhanced per request
 	logDecoder := txtools.NewLogDecoder()     // Will be enhanced per request
 	
-	// Initialize context providers
-	var contextProviders []txtools.ContextProvider
-	if coinMarketCapAPIKey != "" {
-		priceLookup := txtools.NewERC20PriceLookup(coinMarketCapAPIKey)
-		contextProviders = append(contextProviders, priceLookup)
-	}
-	
-	explainer := txtools.NewTransactionExplainer(llm, contextProviders...)
+	// Initialize transaction explainer (now uses baggage pipeline)
+	explainer := txtools.NewTransactionExplainer(llm)
 
 	agent := &TxplainAgent{
-		llm:          llm,
-		rpcClients:   rpcClients,
-		traceDecoder: traceDecoder,
-		logDecoder:   logDecoder,
-		explainer:    explainer,
+		llm:                 llm,
+		rpcClients:          rpcClients,
+		traceDecoder:        traceDecoder,
+		logDecoder:          logDecoder,
+		explainer:           explainer,
+		coinMarketCapAPIKey: coinMarketCapAPIKey,
 	}
 
 	return agent, nil
 }
 
-// ExplainTransaction processes a transaction with enhanced RPC-based analysis
+// ExplainTransaction processes a transaction with enhanced baggage pipeline
 func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.TransactionRequest) (*models.ExplanationResult, error) {
 	// Validate input
 	if !models.IsValidNetwork(request.NetworkID) {
@@ -88,63 +84,69 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		return nil, fmt.Errorf("failed to fetch transaction data: %w", err)
 	}
 
-	// Step 2: Create RPC-enhanced trace decoder for this specific network
-	rpcTraceDecoder := txtools.NewTraceDecoderWithRPC(client)
-	
-	// Convert RawTransactionData to the format expected by tools
-	rawDataMap := map[string]interface{}{
-		"tx_hash":    rawData.TxHash,
-		"network_id": float64(rawData.NetworkID),
-		"trace":      rawData.Trace,
-		"logs":       rawData.Logs,
-		"receipt":    rawData.Receipt,
-		"block":      rawData.Block,
-	}
-	
-	traceInput := map[string]interface{}{
-		"raw_data": rawDataMap,
+	// Step 2: Initialize baggage with raw transaction data
+	baggage := map[string]interface{}{
+		"raw_data": map[string]interface{}{
+			"tx_hash":    rawData.TxHash,
+			"network_id": float64(rawData.NetworkID),
+			"trace":      rawData.Trace,
+			"logs":       rawData.Logs,
+			"receipt":    rawData.Receipt,
+			"block":      rawData.Block,
+		},
 	}
 
-	callsResult, err := rpcTraceDecoder.Run(ctx, traceInput)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode traces: %w", err)
+	// Step 3: Create and configure baggage pipeline
+	pipeline := txtools.NewBaggagePipeline()
+	var contextProviders []txtools.ContextProvider
+
+	// Add log decoder (processes events)
+	logDecoder := txtools.NewLogDecoderWithRPC(client)
+	if err := pipeline.AddProcessor(logDecoder); err != nil {
+		return nil, fmt.Errorf("failed to add log decoder: %w", err)
 	}
 
-	// Step 3: Create RPC-enhanced log decoder  
-	rpcLogDecoder := txtools.NewLogDecoderWithRPC(client)
-	logInput := map[string]interface{}{
-		"raw_data": rawDataMap,
+	// Add token metadata enricher
+	tokenMetadata := txtools.NewTokenMetadataEnricher()
+	tokenMetadata.SetRPCClient(client)
+	if err := pipeline.AddProcessor(tokenMetadata); err != nil {
+		return nil, fmt.Errorf("failed to add token metadata enricher: %w", err)
+	}
+	contextProviders = append(contextProviders, tokenMetadata)
+
+	// Add price lookup if API key is available
+	if a.coinMarketCapAPIKey != "" {
+		priceLookup := txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey)
+		if err := pipeline.AddProcessor(priceLookup); err != nil {
+			return nil, fmt.Errorf("failed to add price lookup: %w", err)
+		}
+		contextProviders = append(contextProviders, priceLookup)
 	}
 
-	eventsResult, err := rpcLogDecoder.Run(ctx, logInput)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode logs: %w", err)
+	// Add context providers to baggage for transaction explainer
+	baggage["context_providers"] = contextProviders
+
+	// Add transaction explainer (final step)
+	if err := pipeline.AddProcessor(a.explainer); err != nil {
+		return nil, fmt.Errorf("failed to add transaction explainer: %w", err)
 	}
 
-	// Step 4: Enhance explanation with contract metadata and RPC-derived insights
-	explainerInput := map[string]interface{}{
-		"calls":    callsResult["calls"],
-		"events":   eventsResult["events"],
-		"raw_data": rawDataMap,
-		"rpc_client": client, // Provide RPC access for additional insights
+	// Step 4: Execute the pipeline
+	if err := pipeline.Execute(ctx, baggage); err != nil {
+		return nil, fmt.Errorf("pipeline execution failed: %w", err)
 	}
 
-	explanationResult, err := a.explainer.Run(ctx, explainerInput)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate explanation: %w", err)
-	}
-
-	// Extract the explanation result
-	explanation, ok := explanationResult["explanation"].(*models.ExplanationResult)
+	// Step 5: Extract the explanation result
+	explanation, ok := baggage["explanation"].(*models.ExplanationResult)
 	if !ok {
 		return nil, fmt.Errorf("invalid explanation result format")
 	}
 
-	// Post-process with additional RPC insights
-	if err := a.enhanceExplanationWithRPC(ctx, client, explanation); err != nil {
-		// Log error but don't fail the whole process
-		fmt.Printf("Warning: failed to enhance explanation with RPC data: %v\n", err)
+	// Store baggage data in explanation metadata for debugging
+	if explanation.Metadata == nil {
+		explanation.Metadata = make(map[string]interface{})
 	}
+	explanation.Metadata["pipeline_baggage"] = baggage
 
 	return explanation, nil
 }

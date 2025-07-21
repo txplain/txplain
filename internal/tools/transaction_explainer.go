@@ -14,17 +14,59 @@ import (
 
 // TransactionExplainer generates human-readable explanations from decoded transaction data
 type TransactionExplainer struct {
-	llm             llms.Model
-	contextProviders []ContextProvider
+	llm llms.Model
 }
 
 // NewTransactionExplainer creates a new TransactionExplainer tool
-func NewTransactionExplainer(llm llms.Model, contextProviders ...ContextProvider) *TransactionExplainer {
+func NewTransactionExplainer(llm llms.Model) *TransactionExplainer {
 	return &TransactionExplainer{
-		llm:              llm,
-		contextProviders: contextProviders,
+		llm: llm,
 	}
 }
+
+// Dependencies returns the tools this processor depends on
+func (t *TransactionExplainer) Dependencies() []string {
+	return []string{"log_decoder", "token_metadata_enricher", "erc20_price_lookup"}
+}
+
+// Process generates explanation using all information from baggage
+func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Extract basic data from baggage
+	rawData, _ := baggage["raw_data"].(map[string]interface{})
+	events, _ := baggage["events"].([]models.Event)
+
+	// Build decoded data structure
+	decodedData := &models.DecodedData{
+		Events: events,
+		// Calls would come from trace decoder if implemented
+	}
+
+	// Extract transfers and add to baggage so ERC20PriceLookup can use them
+	transfers := t.extractTokenTransfers(events)
+	baggage["transfers"] = transfers
+
+	// Collect context from all context providers in the baggage
+	var additionalContext []string
+	if contextProviders, ok := baggage["context_providers"].([]ContextProvider); ok {
+		for _, provider := range contextProviders {
+			if context := provider.GetPromptContext(ctx, baggage); context != "" {
+				additionalContext = append(additionalContext, context)
+			}
+		}
+	}
+
+	// Generate explanation with context from other tools
+	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, additionalContext)
+	if err != nil {
+		return fmt.Errorf("failed to generate explanation: %w", err)
+	}
+
+	// Add explanation to baggage
+	baggage["explanation"] = explanation
+	return nil
+}
+
+
 
 // Name returns the tool name
 func (t *TransactionExplainer) Name() string {
@@ -48,7 +90,7 @@ func (t *TransactionExplainer) Run(ctx context.Context, input map[string]interfa
 	rawData, _ := input["raw_data"].(map[string]interface{})
 
 	// Generate explanation using LLM
-	explanation, err := t.generateExplanation(ctx, decodedData, rawData)
+	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, []string{})
 	if err != nil {
 		return nil, NewToolError("transaction_explainer", fmt.Sprintf("failed to generate explanation: %v", err), "LLM_ERROR")
 	}
@@ -141,22 +183,10 @@ func (t *TransactionExplainer) extractDecodedData(input map[string]interface{}) 
 	return data, nil
 }
 
-// generateExplanation uses the LLM to create a human-readable explanation
-func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedData *models.DecodedData, rawData map[string]interface{}) (*models.ExplanationResult, error) {
-	// Collect additional context from all context providers
-	var additionalContexts []string
-	for _, provider := range t.contextProviders {
-		contextData := map[string]interface{}{
-			"decoded_data": decodedData,
-			"raw_data":     rawData,
-		}
-		if context := provider.GetPromptContext(ctx, contextData); context != "" {
-			additionalContexts = append(additionalContexts, context)
-		}
-	}
-
+// generateExplanationWithContext uses the LLM to create a human-readable explanation with additional context
+func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Context, decodedData *models.DecodedData, rawData map[string]interface{}, additionalContext []string) (*models.ExplanationResult, error) {
 	// Build the prompt with additional context
-	prompt := t.buildExplanationPrompt(decodedData, rawData, additionalContexts)
+	prompt := t.buildExplanationPrompt(decodedData, rawData, additionalContext)
 
 	// Call LLM
 	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
@@ -324,13 +354,15 @@ Write a single, short sentence (under 30 words) describing the main action.
 
 IMPORTANT: 
 - Use the amounts from "Formatted Token Transfers" section (not raw hex values from events).
-- When mentioning ERC20 tokens, include their current USD price in parentheses if provided in Additional Context (e.g., "USDT ($1.00)").
-- Only include prices for tokens that are listed in the Additional Context section above.
+- When mentioning ERC20 tokens, prioritize using the calculated USD values for specific transfer amounts from Additional Context over base unit prices.
+- If specific transfer USD values are provided (e.g., "Transfer: 100.000000 USDC = $99.50 USD"), use those exact values in your response.
+- Only fall back to base unit prices (e.g., "$1.00 per token") if no specific transfer values are available.
+- Always use the total converted amount, not the base unit price.
 
 Examples:
-- "Transferred 100 USDC ($1.00) from Alice to Bob"
-- "Swapped 1 ETH for 2,500 USDT ($1.00) on Uniswap"  
-- "Approved Uniswap to spend unlimited DAI ($0.99)"
+- "Transferred $99.50 USD worth of USDC from Alice to Bob"
+- "Swapped 1 ETH for $2,485.75 USD worth of USDT on Uniswap"  
+- "Approved Uniswap to spend unlimited DAI ($0.99 per token)"
 - "Minted 5 NFTs from BoredApes collection"
 
 Be specific about amounts, tokens, and main action. No explanations or warnings.`
@@ -419,6 +451,8 @@ func (t *TransactionExplainer) extractTokenTransfers(events []models.Event) []mo
 					transfer.Type = "ERC721" // NFT transfer
 				}
 			}
+
+			// Token metadata will be added later from baggage in enhanceExplanationWithBaggage
 
 			transfers = append(transfers, transfer)
 		}

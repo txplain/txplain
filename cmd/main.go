@@ -34,6 +34,7 @@ func main() {
 		enableHTTP     = flag.Bool("http", true, "Enable HTTP API server")
 		enableMCP      = flag.Bool("mcp", true, "Enable MCP server")
 		showVersion    = flag.Bool("version", false, "Show version and exit")
+		verbose        = flag.Bool("v", false, "Verbose mode - show full prompt and context")
 		
 		// New flags for transaction processing
 		txHash    = flag.String("tx", "", "Transaction hash to explain")
@@ -51,7 +52,7 @@ func main() {
 	// Check if transaction hash is provided
 	if *txHash != "" {
 		// Transaction explanation mode
-		explainTransaction(*txHash, *networkID, *openaiKey, *coinMarketKey)
+		explainTransaction(*txHash, *networkID, *openaiKey, *coinMarketKey, *verbose)
 		return
 	}
 
@@ -60,7 +61,7 @@ func main() {
 }
 
 // explainTransaction processes a single transaction and prints the explanation
-func explainTransaction(txHash string, networkID int64, openaiKey string, coinMarketKey string) {
+func explainTransaction(txHash string, networkID int64, openaiKey string, coinMarketKey string, verbose bool) {
 	// Validate transaction hash format
 	if !strings.HasPrefix(txHash, "0x") || len(txHash) != 66 {
 		log.Fatal("Invalid transaction hash format. Expected format: 0x followed by 64 hex characters")
@@ -86,10 +87,14 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		cmcKey = os.Getenv("COINMARKETCAP_API_KEY")
 	}
 
-	fmt.Printf("🔍 Analyzing transaction: %s\n", txHash)
+	if verbose {
+		fmt.Printf("🔍 Analyzing transaction: %s\n", txHash)
+	}
 	network, _ := models.GetNetwork(networkID)
-	fmt.Printf("🌐 Network: %s (%d)\n", network.Name, networkID)
-	fmt.Printf("🔗 Explorer: %s/tx/%s\n\n", network.Explorer, txHash)
+	if verbose {
+		fmt.Printf("🌐 Network: %s (%d)\n", network.Name, networkID)
+		fmt.Printf("🔗 Explorer: %s/tx/%s\n\n", network.Explorer, txHash)
+	}
 
 	// Create the agent
 	txAgent, err := agent.NewTxplainAgent(apiKey, cmcKey)
@@ -107,7 +112,9 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	fmt.Println("⏳ Fetching transaction data from blockchain...")
+	if verbose {
+		fmt.Println("⏳ Fetching transaction data from blockchain...")
+	}
 	
 	// Process the transaction
 	result, err := txAgent.ExplainTransaction(ctx, request)
@@ -115,43 +122,79 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		log.Fatalf("Failed to explain transaction: %v", err)
 	}
 
-	// Print the explanation
-	printTransactionExplanation(result)
-}
-
-// printTransactionExplanation formats and prints the transaction explanation
-func printTransactionExplanation(result *models.ExplanationResult) {
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("📊 TRANSACTION EXPLANATION")
-	fmt.Println(strings.Repeat("=", 80))
-
-	// Basic transaction info
-	fmt.Printf("📝 Transaction Hash: %s\n", result.TxHash)
-	fmt.Printf("🏷️  Status: %s\n", strings.ToUpper(result.Status))
-	fmt.Printf("⛽ Gas Used: %s\n", formatNumber(result.GasUsed))
-	if result.BlockNumber > 0 {
-		fmt.Printf("📦 Block: %s\n", formatNumber(result.BlockNumber))
-	}
-	fmt.Println()
-
-	// AI Summary - This is the main focus
-	if result.Summary != "" {
-		fmt.Println("🧠 AI EXPLANATION")
-		fmt.Println(strings.Repeat("-", 50))
-		fmt.Println(result.Summary)
-		fmt.Println()
-	}
-
-	// Explorer link for more details if needed
-	if len(result.Links) > 0 {
-		if txLink, exists := result.Links["transaction"]; exists {
-			fmt.Printf("🔗 View on Explorer: %s\n", txLink)
-			fmt.Println()
+	// Print debug information if verbose
+	if verbose {
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("🔧 DEBUG INFORMATION")
+		fmt.Println(strings.Repeat("=", 80))
+		
+		// Show baggage contents (metadata)
+		if result.Metadata != nil {
+			if baggage, ok := result.Metadata["pipeline_baggage"].(map[string]interface{}); ok {
+				fmt.Println("📦 Pipeline Baggage Contents:")
+				for key, value := range baggage {
+					if key == "context_providers" {
+						if providers, ok := value.([]interface{}); ok {
+							fmt.Printf("- %s: %d context providers\n", key, len(providers))
+						}
+					} else if key == "explanation" {
+						fmt.Printf("- %s: [explanation result]\n", key)
+					} else {
+						fmt.Printf("- %s: %T\n", key, value)
+					}
+				}
+				fmt.Println()
+			}
 		}
 	}
 
-	fmt.Println(strings.Repeat("=", 80))
-	fmt.Println("✅ Analysis complete!")
+	// Print the explanation
+	printTransactionExplanation(result, verbose)
+}
+
+// printTransactionExplanation formats and prints the transaction explanation
+func printTransactionExplanation(result *models.ExplanationResult, verbose bool) {
+	if verbose {
+		// Verbose output with full details
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("📊 TRANSACTION EXPLANATION")
+		fmt.Println(strings.Repeat("=", 80))
+
+		// Basic transaction info
+		fmt.Printf("📝 Transaction Hash: %s\n", result.TxHash)
+		fmt.Printf("🏷️  Status: %s\n", strings.ToUpper(result.Status))
+		fmt.Printf("⛽ Gas Used: %s\n", formatNumber(result.GasUsed))
+		if result.BlockNumber > 0 {
+			fmt.Printf("📦 Block: %s\n", formatNumber(result.BlockNumber))
+		}
+		fmt.Println()
+
+		// AI Summary
+		if result.Summary != "" {
+			fmt.Println("🧠 AI EXPLANATION")
+			fmt.Println(strings.Repeat("-", 50))
+			fmt.Println(result.Summary)
+			fmt.Println()
+		}
+
+		// Explorer link
+		if len(result.Links) > 0 {
+			if txLink, exists := result.Links["transaction"]; exists {
+				fmt.Printf("🔗 View on Explorer: %s\n", txLink)
+				fmt.Println()
+			}
+		}
+
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println("✅ Analysis complete!")
+	} else {
+		// Simple output - just the AI summary
+		if result.Summary != "" {
+			fmt.Println(result.Summary)
+		} else {
+			fmt.Println("Transaction processed but no explanation generated.")
+		}
+	}
 }
 
 // formatNumber formats large numbers with commas

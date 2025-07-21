@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/txplain/txplain/internal/models"
 )
 
 // ERC20PriceLookup fetches token prices from CoinMarketCap API
@@ -35,6 +35,9 @@ type TokenPrice struct {
 	Volume24h         float64                `json:"volume_24h"`
 	LastUpdated       time.Time              `json:"last_updated"`
 	Quote             map[string]interface{} `json:"quote,omitempty"`
+	// New fields for transfer calculations
+	TransferAmounts   map[string]float64     `json:"transfer_amounts,omitempty"`   // transfer_id -> amount in tokens
+	TransferValues    map[string]float64     `json:"transfer_values,omitempty"`    // transfer_id -> USD value
 }
 
 // CoinMarketCapMapResponse represents the response from /v1/cryptocurrency/map
@@ -114,6 +117,144 @@ func (t *ERC20PriceLookup) Name() string {
 // Description returns the tool description
 func (t *ERC20PriceLookup) Description() string {
 	return "Looks up ERC20 token prices using CoinMarketCap API. Supports lookup by symbol, name, or contract address."
+}
+
+// Dependencies returns the tools this processor depends on
+func (t *ERC20PriceLookup) Dependencies() []string {
+	return []string{"token_metadata_enricher"} // Needs token metadata for optimal lookups
+}
+
+// Process adds token price information to baggage
+func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.apiKey == "" {
+		return nil // No API key, skip price lookup
+	}
+
+	// Get token metadata from baggage
+	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
+	if !ok || len(tokenMetadata) == 0 {
+		return nil // No token metadata, nothing to price
+	}
+
+	// Look up prices for each token
+	tokenPrices := make(map[string]*TokenPrice)
+	for address, metadata := range tokenMetadata {
+		if metadata.Type == "ERC20" {
+			priceInput := map[string]interface{}{
+				"contract_address": address,
+			}
+			if metadata.Symbol != "" {
+				priceInput["symbol"] = metadata.Symbol
+			}
+
+			result, err := t.Run(ctx, priceInput)
+			if err == nil {
+				if tokenData, ok := result["token"].(*TokenPrice); ok {
+					tokenData.Contract = address // Ensure contract address is set
+					tokenPrices[address] = tokenData
+				}
+			}
+		}
+	}
+
+	// Calculate USD values for transfers if available
+	t.calculateTransferValues(baggage, tokenPrices, tokenMetadata)
+
+	// Add token prices to baggage
+	baggage["token_prices"] = tokenPrices
+	return nil
+}
+
+// calculateTransferValues calculates USD values for ERC20 transfers
+func (t *ERC20PriceLookup) calculateTransferValues(baggage map[string]interface{}, tokenPrices map[string]*TokenPrice, tokenMetadata map[string]*TokenMetadata) {
+	// Get transfers from baggage
+	transfers, ok := baggage["transfers"]
+	if !ok {
+		return
+	}
+
+	for address, price := range tokenPrices {
+		metadata := tokenMetadata[address]
+		if metadata == nil {
+			continue
+		}
+
+		price.TransferAmounts = make(map[string]float64)
+		price.TransferValues = make(map[string]float64)
+
+		// Handle transfers as TokenTransfer slice or interface slice
+		var tokenTransfers []interface{}
+		switch v := transfers.(type) {
+		case []interface{}:
+			tokenTransfers = v
+		default:
+			continue
+		}
+
+		// Find transfers for this token
+		for i, transferData := range tokenTransfers {
+			var transfer map[string]interface{}
+			
+			// Convert to map for easier access
+			switch v := transferData.(type) {
+			case map[string]interface{}:
+				transfer = v
+			default:
+				// Try to convert struct to map using JSON marshaling/unmarshaling
+				if data, err := json.Marshal(transferData); err == nil {
+					var mapped map[string]interface{}
+					if err := json.Unmarshal(data, &mapped); err == nil {
+						transfer = mapped
+					}
+				}
+				if transfer == nil {
+					continue
+				}
+			}
+			
+			// Check if this transfer is for our token
+			tokenContract, _ := transfer["contract"].(string)
+			if strings.EqualFold(tokenContract, address) {
+				transferID := fmt.Sprintf("transfer_%d", i)
+				
+				// Get transfer amount
+				amountStr, ok := transfer["amount"].(string)
+				if !ok || amountStr == "" {
+					continue
+				}
+
+				// Convert amount to actual token units
+				tokenAmount := t.convertAmountToTokens(amountStr, metadata.Decimals)
+				if tokenAmount > 0 {
+					usdValue := tokenAmount * price.Price
+					price.TransferAmounts[transferID] = tokenAmount
+					price.TransferValues[transferID] = usdValue
+				}
+			}
+		}
+	}
+}
+
+// convertAmountToTokens converts a raw amount (usually in wei-like units) to token units
+func (t *ERC20PriceLookup) convertAmountToTokens(amountStr string, decimals int) float64 {
+	// Handle hex strings
+	if strings.HasPrefix(amountStr, "0x") {
+		// Convert hex to decimal
+		amountBig := new(big.Int)
+		amountBig.SetString(amountStr[2:], 16)
+		amountStr = amountBig.String()
+	}
+
+	// Parse the amount
+	amountBig := new(big.Int)
+	amountBig, ok := amountBig.SetString(amountStr, 10)
+	if !ok {
+		return 0
+	}
+
+	// Convert to float and adjust for decimals
+	amountFloat, _ := new(big.Float).SetInt(amountBig).Float64()
+	return amountFloat / math.Pow10(decimals)
 }
 
 // Run executes the price lookup
@@ -377,49 +518,41 @@ func (t *ERC20PriceLookup) getTokenPrice(ctx context.Context, tokenID int, conve
 }
 
 // GetPromptContext provides price context for token transfers to include in LLM prompts
-func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, data map[string]interface{}) string {
-	// Extract decoded data from the input
-	decodedDataInterface, ok := data["decoded_data"]
-	if !ok {
+func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+	// Get token metadata and prices from baggage
+	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
+	tokenPrices, hasPrices := baggage["token_prices"].(map[string]*TokenPrice)
+	
+	if !hasMetadata || !hasPrices || len(tokenPrices) == 0 {
 		return ""
 	}
 	
-	decodedData, ok := decodedDataInterface.(*models.DecodedData)
-	if !ok {
-		return ""
-	}
-	
-	// Extract ERC20 transfers from events
-	contractsToLookup := make(map[string]string) // contract -> symbol
-	for _, event := range decodedData.Events {
-		if event.Name == "Transfer" && event.Contract != "" {
-			// This is likely an ERC20 transfer
-			contractsToLookup[event.Contract] = "" // We'll get symbol from API
-		}
-	}
-	
-	if len(contractsToLookup) == 0 {
-		return ""
-	}
-	
-	// Look up prices and build context string
+	// Build context string with both base prices and transfer values
 	var contextParts []string
-	for contract := range contractsToLookup {
-		priceInput := map[string]interface{}{
-			"contract_address": contract,
-		}
-		
-		result, err := t.Run(ctx, priceInput)
-		if err == nil {
-			if tokenData, ok := result["token"].(*TokenPrice); ok {
-				// Format price string
-				priceStr := fmt.Sprintf("$%.2f", tokenData.Price)
-				if tokenData.Price < 0.01 {
-					priceStr = fmt.Sprintf("$%.6f", tokenData.Price)
-				}
-				
-				contextParts = append(contextParts, fmt.Sprintf("- %s (%s): %s USD", tokenData.Name, tokenData.Symbol, priceStr))
+	for address, price := range tokenPrices {
+		if metadata, exists := tokenMetadata[address]; exists {
+			// Format base price
+			priceStr := fmt.Sprintf("$%.2f", price.Price)
+			if price.Price < 0.01 {
+				priceStr = fmt.Sprintf("$%.6f", price.Price)
 			}
+			
+			basePriceInfo := fmt.Sprintf("- %s (%s): %s USD per token", metadata.Name, metadata.Symbol, priceStr)
+			
+			// Add transfer values if available
+			if len(price.TransferValues) > 0 {
+				var transferInfo []string
+				for transferID, usdValue := range price.TransferValues {
+					tokenAmount := price.TransferAmounts[transferID]
+					transferInfo = append(transferInfo, fmt.Sprintf("  • Transfer: %.6f %s = $%.2f USD", 
+						tokenAmount, metadata.Symbol, usdValue))
+				}
+				if len(transferInfo) > 0 {
+					basePriceInfo += "\n" + strings.Join(transferInfo, "\n")
+				}
+			}
+			
+			contextParts = append(contextParts, basePriceInfo)
 		}
 	}
 	
