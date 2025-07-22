@@ -158,21 +158,20 @@ func (t *TokenTransferExtractor) filterRelevantTransfers(transfers []models.Toke
 		contractTransfers[transfer.Contract] = append(contractTransfers[transfer.Contract], transfer)
 	}
 	
-	// Filter out WETH intermediate transfers in multi-hop swaps
-	wethContracts := map[string]bool{
-		"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": true, // WETH mainnet
-		"0x7ceb23fd6f88b04f24e48eee3d3b0a56b0a8f2a3": true, // WETH goerli
-	}
+	// Generic intermediate token filtering based on transfer patterns
+	// Works for any network without hardcoding specific addresses
 	
 	for contract, contractTransferList := range contractTransfers {
-		isWETH := wethContracts[strings.ToLower(contract)]
+		// Generic pattern detection: identify intermediate tokens by transfer patterns
+		// instead of hardcoding specific addresses
+		isLikelyIntermediate := t.isLikelyIntermediateToken(contract, contractTransferList, contractTransfers)
 		
-		if isWETH && len(contractTransferList) >= 2 {
-			// For WETH, only include if it's the final destination token
-			// Check if there are non-WETH transfers to other addresses
-			hasNonWETHTransfers := false
+		if isLikelyIntermediate && len(contractTransferList) >= 2 {
+			// For likely intermediate tokens, only include if it's the final destination
+			// Check if there are other token transfers (indicating this might be intermediate)
+			hasOtherTokenTransfers := false
 			for otherContract := range contractTransfers {
-				if !wethContracts[strings.ToLower(otherContract)] && len(contractTransfers[otherContract]) > 0 {
+				if otherContract != contract && len(contractTransfers[otherContract]) > 0 {
 					hasNonWETHTransfers = true
 					break
 				}
