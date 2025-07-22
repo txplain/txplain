@@ -28,6 +28,10 @@ func main() {
 		log.Printf("No .env file found or error loading it: %v", err)
 	}
 
+	// Initialize networks from environment variables
+	models.InitializeNetworks()
+	log.Printf("Loaded %d network configurations", models.GetNetworkCount())
+
 	// Command line flags
 	var (
 		httpAddr      = flag.String("http-addr", ":8080", "HTTP server address")
