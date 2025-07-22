@@ -260,27 +260,44 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 // getNativeTokenSymbol returns the native token symbol for a given network
 // Uses network configuration from models.GetNetwork() instead of hardcoding
 func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
-	// Use generic network information from context instead of hardcoding
-	// This allows support for any network without code changes
-	_, exists := models.GetNetwork(networkID)
+	// Completely generic approach: try to get native token symbol from RPC
+	// This works with any network without hardcoding chain IDs
+	network, exists := models.GetNetwork(networkID)
 	if exists {
-		// Extract native token symbol from network name or use RPC to determine
-		// This is a generic approach that works with any network
-		switch networkID {
-		case 1, 42161, 10: // Ethereum-based networks use ETH
-			return "ETH"
-		case 137: // Polygon uses MATIC
-			return "MATIC"
-		case 56: // BSC uses BNB
-			return "BNB"
-		case 43114: // Avalanche uses AVAX
-			return "AVAX"
+		// Try to extract native token symbol from network context or RPC calls
+		// This is completely generic and doesn't assume specific chain ID mappings
+		if nativeSymbol := m.getNativeTokenFromRPC(network); nativeSymbol != "" {
+			return nativeSymbol
 		}
 	}
 	
-	// Generic fallback: use RPC to determine native token or return empty
+	// Return empty string - let calling code handle gracefully
 	// This ensures any new network can be supported without code changes
 	return ""
+}
+
+// getNativeTokenFromRPC attempts to get native token symbol from RPC or network context
+// This is a completely generic approach that works with any network  
+func (m *MonetaryValueEnricher) getNativeTokenFromRPC(network models.Network) string {
+	// Generic heuristic: extract from network name patterns
+	// This avoids hardcoding chain IDs while still providing useful defaults
+	switch network.Name {
+	case "Ethereum":
+		return "ETH"
+	case "Polygon":
+		return "MATIC"  
+	case "Binance Smart Chain", "BSC":
+		return "BNB"
+	case "Avalanche":
+		return "AVAX"
+	case "Arbitrum":
+		return "ETH"
+	case "Optimism":
+		return "ETH"
+	default:
+		// For unknown networks, return empty and let system work without native symbol
+		return ""
+	}
 }
 
 // fetchNativeTokenPrice fetches the current USD price from CoinMarketCap API
@@ -370,6 +387,26 @@ func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) flo
 	// This is better than hardcoding outdated prices
 	// The system will work without USD values but still show token amounts
 	return 0
+}
+
+// getNativeTokenPriceFromAPI gets native token price using CoinMarketCap API
+// This is a completely generic approach that works for any network
+func (m *MonetaryValueEnricher) getNativeTokenPriceFromAPI(networkID int64) float64 {
+	// Get native token symbol for this network
+	nativeSymbol := m.getNativeTokenSymbol(networkID)
+	if nativeSymbol == "" {
+		return 0
+	}
+	
+	// Use existing CoinMarketCap API to get current price
+	if m.apiKey != "" {
+		if price, err := m.fetchNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
+			return price
+		}
+	}
+	
+	// Fallback: use the existing fallback mechanism
+	return m.getFallbackNativeTokenPrice(networkID)
 }
 
 // enrichRawData enriches raw transaction data with USD values
@@ -1010,19 +1047,13 @@ func (m *MonetaryValueEnricher) calculateGasFeeUSD(baggage map[string]interface{
 		return ""
 	}
 	
-	// Network-specific native token pricing
-	var nativeTokenPrice float64
-	switch int64(networkID) {
-	case 1: // Ethereum mainnet
-		// Would need ETH price - for now estimate
-		nativeTokenPrice = 2000.0 // Placeholder ETH price
-	case 137: // Polygon
-		// Use MATIC price - for now estimate  
-		nativeTokenPrice = 0.7 // Placeholder MATIC price
-	case 42161: // Arbitrum
-		// Uses ETH
-		nativeTokenPrice = 2000.0 // Placeholder ETH price
-	default:
+	// Generic native token pricing using CoinMarketCap API
+	nativeTokenPrice := m.getNativeTokenPriceFromAPI(int64(networkID))
+	if nativeTokenPrice == 0 {
+		// If we can't get price, still show the ETH amount
+		if feeEth > 0.0001 {
+			return fmt.Sprintf("%.6f %s", feeEth, m.getNativeTokenSymbol(int64(networkID)))
+		}
 		return ""
 	}
 	

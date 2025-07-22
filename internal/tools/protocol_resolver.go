@@ -274,9 +274,9 @@ func (p *ProtocolResolver) buildTransactionContext(baggage map[string]interface{
 		}
 	}
 
-	// Add token metadata context
+	// Add token metadata context - CRITICAL for distinguishing tokens from protocols
 	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok {
-		contextParts = append(contextParts, "\nTOKEN METADATA:")
+		contextParts = append(contextParts, "\nTOKEN METADATA (these are TOKEN CONTRACTS, not protocol contracts):")
 		for addr, metadata := range tokenMetadata {
 			metaInfo := fmt.Sprintf("%s: %s (%s)", addr, metadata.Name, metadata.Symbol)
 			if metadata.Type != "" {
@@ -286,12 +286,46 @@ func (p *ProtocolResolver) buildTransactionContext(baggage map[string]interface{
 		}
 	}
 
-	// Add events context
+	// Add events context with special handling for Approval events
 	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
 		contextParts = append(contextParts, "\nEVENTS:")
 		for _, event := range events {
 			eventInfo := fmt.Sprintf("%s on %s", event.Name, event.Contract)
+			
+			// Extract spender from Approval events as potential protocol contracts
+			if event.Name == "Approval" && event.Parameters != nil {
+				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
+					eventInfo += fmt.Sprintf(" (spender: %s - potential protocol contract)", spender)
+				}
+			}
+			
 			contextParts = append(contextParts, fmt.Sprintf("- %s", eventInfo))
+		}
+	}
+
+	// Extract spender addresses as potential protocol contracts
+	var spenderAddresses []string
+	if events, ok := baggage["events"].([]models.Event); ok {
+		for _, event := range events {
+			if event.Name == "Approval" && event.Parameters != nil {
+				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
+					// Clean up the spender address (remove padding)
+					cleanSpender := strings.TrimPrefix(spender, "0x000000000000000000000000")
+					if cleanSpender != spender && len(cleanSpender) == 40 {
+						cleanSpender = "0x" + cleanSpender
+					} else {
+						cleanSpender = spender
+					}
+					spenderAddresses = append(spenderAddresses, cleanSpender)
+				}
+			}
+		}
+	}
+	
+	if len(spenderAddresses) > 0 {
+		contextParts = append(contextParts, "\nAPPROVAL SPENDERS (potential protocol contracts):")
+		for _, spender := range spenderAddresses {
+			contextParts = append(contextParts, fmt.Sprintf("- %s", spender))
 		}
 	}
 
@@ -370,21 +404,33 @@ func (p *ProtocolResolver) buildProtocolAnalysisPrompt(contextData string) strin
 TRANSACTION CONTEXT:
 %s
 
-Your task is to probabilistically identify protocols based on the transaction patterns, contract addresses, token transfers, and events. Use the curated knowledge above as reference but also apply your knowledge of other protocols.
+CRITICAL DISTINCTION - TOKEN CONTRACTS vs PROTOCOL CONTRACTS:
+- TOKEN METADATA section shows which addresses are ERC20/ERC721/ERC1155 token contracts
+- If an address appears in TOKEN METADATA, it is a TOKEN CONTRACT, NOT a protocol contract
+- Protocol contracts are routers, pools, aggregators, and other infrastructure contracts
+- NEVER identify a token contract as a protocol contract
+- Approval events happen ON token contracts but are FOR protocol contracts (the spender)
 
 IDENTIFICATION PATTERNS:
-- Contract addresses (direct matches or similar patterns)
-- Token symbols and names (protocol-specific tokens)
-- Event signatures (Transfer, Swap, Mint, Burn patterns)
-- Transfer patterns (multi-hop swaps, liquidity provision)
-- Token combinations (DAI+MKR suggests MakerDAO, cTokens suggest Compound)
+- Contract addresses should match KNOWN protocol contracts, not token contracts
+- Look for TRANSACTION TO field for the actual protocol contract being called
+- Look for spender addresses in Approval events as potential protocol contracts
+- Token symbols and names help identify the ecosystem but not the protocol contracts
+- Event signatures (Swap, Deposit, Withdraw on protocol contracts vs Transfer, Approval on tokens)
+- Transfer patterns (multi-hop swaps, liquidity provision routing)
 
 ANALYSIS CRITERIA:
-- Direct contract matches = HIGH confidence (0.9-1.0)
-- Strong pattern matches = MEDIUM-HIGH confidence (0.7-0.9)
-- Probable patterns = MEDIUM confidence (0.5-0.7)
-- Weak indicators = LOW confidence (0.3-0.5)
-- Speculation only = VERY LOW confidence (0.0-0.3)
+- Direct contract matches to KNOWN protocol addresses = HIGH confidence (0.9-1.0)
+- Strong patterns with verified protocol contracts = MEDIUM-HIGH confidence (0.7-0.9)
+- Likely protocol usage but unclear which contract = MEDIUM confidence (0.5-0.7)
+- Weak indicators or token-only evidence = LOW confidence (0.3-0.5)
+- Pure speculation = VERY LOW confidence (0.0-0.3)
+
+CONSERVATIVE APPROACH:
+- It's better to NOT identify a protocol than to incorrectly identify one
+- Don't guess protocol contracts from token approvals alone
+- Require actual evidence of specific protocol contract addresses
+- If you only see token contracts, state that tokens are involved but don't claim specific protocols
 
 OUTPUT FORMAT:
 Respond with a JSON array of protocol identifications. Each should include:
@@ -399,34 +445,55 @@ Respond with a JSON array of protocol identifications. Each should include:
   "category": "DeFi|NFT|Gaming|Infrastructure"
 }
 
-EXAMPLES:
+EXAMPLES OF CORRECT ANALYSIS:
+
+Good Example 1 - Clear Protocol Contract:
 [
   {
     "name": "Uniswap",
     "type": "DEX",
     "version": "v2",
-    "confidence": 0.95,
-    "evidence": ["Direct contract match 0x7a250d56...", "Swap event pattern", "WETH/ERC20 pair"],
+    "confidence": 0.9,
+    "evidence": ["Transaction directly calls 0x7a250d5630b4cf539739df2c5dacb4c659f2488d which is the known Uniswap V2 Router", "Swap events on router contract"],
     "contracts": ["0x7a250d5630b4cf539739df2c5dacb4c659f2488d"],
     "website": "https://uniswap.org",
-    "category": "DeFi"
-  },
-  {
-    "name": "1inch",
-    "type": "Aggregator",
-    "version": "v6",
-    "confidence": 0.87,
-    "evidence": ["1inch v6 aggregator contract", "Multi-hop swap pattern", "Gas optimization"],
-    "contracts": ["0x111111125421ca6dc452d289314280a0f8842a65"],
-    "website": "https://1inch.io",
     "category": "DeFi"
   }
 ]
 
-Analyze the transaction context and return only protocols you can identify with reasonable confidence (> 0.3). Be conservative - it's better to miss a protocol than to incorrectly identify one.`, knowledgeContext.String(), contextData)
+Good Example 2 - Conservative Token Approval:
+[
+  {
+    "name": "Unknown DEX/Protocol",
+    "type": "DEX",
+    "version": "",
+    "confidence": 0.4,
+    "evidence": ["Token approval suggests upcoming DeFi interaction", "No specific protocol contract identified"],
+    "contracts": [],
+    "website": "",
+    "category": "DeFi"
+  }
+]
+
+Bad Example - DON'T DO THIS:
+[
+  {
+    "name": "Uniswap",
+    "type": "DEX", 
+    "confidence": 0.9,
+    "evidence": ["Contract 0x6982...1933 is identified as Uniswap"],  // ❌ WRONG if this is actually a token contract
+    "contracts": ["0x6982...1933"]  // ❌ WRONG to list token contracts as protocol contracts
+  }
+]
+
+Analyze the transaction context and return only protocols you can identify with reasonable confidence (> 0.3). Be extremely conservative about contract identification - distinguish tokens from protocols clearly.
+
+PRIORITY: If TOKEN METADATA shows an address is a token contract, DO NOT identify it as a protocol contract under any circumstances.`,
+		knowledgeContext.String(),
+		contextData)
 
 	return prompt
-	}
+}
 
 // parseProtocolResponse parses the AI response into protocol structures
 func (p *ProtocolResolver) parseProtocolResponse(response string) ([]ProbabilisticProtocol, error) {

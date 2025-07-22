@@ -85,18 +85,49 @@ func (t *TraceDecoder) decodeTrace(ctx context.Context, trace map[string]interfa
 	var calls []models.Call
 
 	// Handle different trace formats based on network
-	switch networkID {
-	case 1, 137: // Ethereum and Polygon use debug_traceTransaction with callTracer
-		if err := t.decodeCallTracerResult(ctx, trace, &calls, 0); err != nil {
-			return nil, err
-		}
-	case 42161: // Arbitrum uses arbtrace_transaction
-		if err := t.decodeArbitrumTrace(ctx, trace, &calls); err != nil {
-			return nil, err
-		}
+	// Generic approach: detect trace format based on structure, not chain ID
+	// This works with any network without hardcoding specific chain IDs
+	if err := t.decodeTraceByStructure(ctx, trace, &calls); err != nil {
+		return nil, fmt.Errorf("failed to decode trace for network %d: %w", networkID, err)
 	}
 
 	return calls, nil
+}
+
+// decodeTraceByStructure automatically detects and decodes trace format based on structure
+// This generic approach works with any network without hardcoding chain IDs
+func (t *TraceDecoder) decodeTraceByStructure(ctx context.Context, trace map[string]interface{}, calls *[]models.Call) error {
+	// Try to detect format based on trace structure
+	if _, hasType := trace["type"]; hasType {
+		// This looks like a callTracer format (has "type" field)
+		return t.decodeCallTracerResult(ctx, trace, calls, 0)
+	} else if _, hasAction := trace["action"]; hasAction {
+		// This looks like an Arbitrum trace format (has "action" field)
+		return t.decodeArbitrumTrace(ctx, trace, calls)
+	} else if traceArray, isArray := trace["result"].([]interface{}); isArray {
+		// Handle array-based trace formats
+		for _, item := range traceArray {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				if err := t.decodeTraceByStructure(ctx, itemMap, calls); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	
+	// Fallback: try callTracer format first, then Arbitrum format
+	err1 := t.decodeCallTracerResult(ctx, trace, calls, 0)
+	if err1 == nil {
+		return nil
+	}
+	
+	err2 := t.decodeArbitrumTrace(ctx, trace, calls)
+	if err2 == nil {
+		return nil
+	}
+	
+	return fmt.Errorf("unknown trace format (callTracer error: %v, arbitrum error: %v)", err1, err2)
 }
 
 // decodeCallTracerResult decodes call tracer format with RPC enhancements

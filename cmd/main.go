@@ -18,7 +18,6 @@ import (
 	"github.com/txplain/txplain/internal/mcp"
 	"github.com/txplain/txplain/internal/models"
 	"github.com/txplain/txplain/internal/rpc"
-	"github.com/txplain/txplain/internal/tools"
 )
 
 func main() {
@@ -404,15 +403,26 @@ func debugTokenContract(contractAddress string, networkID int64) {
 		return
 	}
 
-	// Create token metadata enricher
-	enricher := tools.NewTokenMetadataEnricher()
-	enricher.SetRPCClient(client)
-
-	// Debug the specific contract
-	result := enricher.DebugTokenContract(ctx, contractAddress)
+	// Get contract info directly via RPC
+	contractInfo, err := client.GetContractInfo(ctx, contractAddress)
+	if err != nil {
+		fmt.Printf("ERROR: Failed to get contract info: %v\n", err)
+		return
+	}
 
 	// Print results
 	fmt.Printf("=== RESULTS ===\n")
-	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Printf("%s\n", resultJSON)
+	fmt.Printf("Address: %s\n", contractInfo.Address)
+	fmt.Printf("Type: %s\n", contractInfo.Type)
+	fmt.Printf("Name: %s\n", contractInfo.Name)
+	fmt.Printf("Symbol: %s\n", contractInfo.Symbol)
+	fmt.Printf("Decimals: %d\n", contractInfo.Decimals)
+	fmt.Printf("Total Supply: %s\n", contractInfo.TotalSupply)
+	
+	if len(contractInfo.Metadata) > 0 {
+		fmt.Printf("Metadata:\n")
+		for key, value := range contractInfo.Metadata {
+			fmt.Printf("  %s: %v\n", key, value)
+		}
+	}
 }
