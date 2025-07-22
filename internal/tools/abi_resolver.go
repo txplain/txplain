@@ -83,7 +83,7 @@ func NewABIResolver() *ABIResolver {
 
 	return &ABIResolver{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second, // Increased for slow Etherscan responses
 		},
 		apiKey: apiKey,
 	}

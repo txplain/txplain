@@ -29,7 +29,7 @@ func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string) *Monet
 	return &MonetaryValueEnricher{
 		llm:        llm,
 		apiKey:     coinMarketCapAPIKey,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second}, // Increased for price lookups
 	}
 }
 

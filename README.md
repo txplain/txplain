@@ -131,6 +131,16 @@ OPENAI_API_KEY=your_openai_api_key_here
 ETHERSCAN_API_KEY=your_etherscan_api_key_here
 ```
 
+## GUI Server
+
+1. Run the code with -http flag:
+
+    ```sh
+    go run ./cmd/main.go -http
+    ```
+
+2. Visit `http://localhost:8080/`
+
 ## Examples
 
 ### Example 1: Token Approval Transaction

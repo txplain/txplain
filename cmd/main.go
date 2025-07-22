@@ -38,7 +38,7 @@ func main() {
 		openaiKey     = flag.String("openai-key", "", "OpenAI API key (can also be set via OPENAI_API_KEY env var)")
 		coinMarketKey = flag.String("cmc-key", "", "CoinMarketCap API key (can also be set via COINMARKETCAP_API_KEY env var)")
 		enableHTTP    = flag.Bool("http", true, "Enable HTTP API server")
-		enableMCP     = flag.Bool("mcp", true, "Enable MCP server")
+		enableMCP     = flag.Bool("mcp", false, "Enable MCP server")
 		showVersion   = flag.Bool("version", false, "Show version and exit")
 		verbose       = flag.Bool("v", false, "Verbose mode - show prompts sent to LLM. Set DEBUG=true env var to also show baggage debug info")
 		debugToken    = flag.String("debug-token", "", "Debug specific token contract (address)")
@@ -300,28 +300,27 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 		cmcKey = os.Getenv("COINMARKETCAP_API_KEY")
 	}
 
-	// Set up graceful shutdown
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Channel to listen for interrupt signal
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Variables to hold server instances
+	var httpServer *api.Server
+	var mcpServer *mcp.Server
 
 	// Start servers
 	errChan := make(chan error, 2)
 
 	// Start HTTP API server if enabled
 	if enableHTTP {
-		go func() {
-			log.Printf("Starting HTTP API server on %s", httpAddr)
-			server, err := api.NewServer(httpAddr, apiKey, cmcKey)
-			if err != nil {
-				errChan <- fmt.Errorf("failed to create HTTP server: %w", err)
-				return
-			}
+		server, err := api.NewServer(httpAddr, apiKey, cmcKey)
+		if err != nil {
+			log.Fatalf("Failed to create HTTP server: %v", err)
+		}
+		httpServer = server
 
-			// Start the server
+		go func() {
+			log.Printf("Starting Txplain API server on %s", httpAddr)
 			if err := server.Start(); err != nil {
 				errChan <- fmt.Errorf("HTTP server error: %w", err)
 			}
@@ -330,15 +329,14 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 
 	// Start MCP server if enabled
 	if enableMCP {
-		go func() {
-			log.Printf("Starting MCP server on %s", mcpAddr)
-			server, err := mcp.NewServer(mcpAddr, apiKey, cmcKey)
-			if err != nil {
-				errChan <- fmt.Errorf("failed to create MCP server: %w", err)
-				return
-			}
+		server, err := mcp.NewServer(mcpAddr, apiKey, cmcKey)
+		if err != nil {
+			log.Fatalf("Failed to create MCP server: %v", err)
+		}
+		mcpServer = server
 
-			// Start the server
+		go func() {
+			log.Printf("Starting Txplain MCP server on %s", mcpAddr)
 			if err := server.Start(); err != nil {
 				errChan <- fmt.Errorf("MCP server error: %w", err)
 			}
@@ -364,25 +362,30 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 	select {
 	case sig := <-signalChan:
 		log.Printf("Received signal: %v", sig)
-		cancel()
 	case err := <-errChan:
 		log.Printf("Server error: %v", err)
-		cancel()
 	}
 
 	// Graceful shutdown
 	log.Println("Shutting down servers...")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
-	// Note: In a full implementation, we'd properly shut down both servers here
-	// For now, we just wait a moment for graceful shutdown
-	select {
-	case <-shutdownCtx.Done():
-		log.Println("Shutdown timeout exceeded")
-	case <-time.After(2 * time.Second):
-		log.Println("Shutdown completed")
+	// Shutdown HTTP server
+	if httpServer != nil {
+		if err := httpServer.Stop(shutdownCtx); err != nil {
+			log.Printf("Error shutting down HTTP server: %v", err)
+		}
 	}
+
+	// Shutdown MCP server
+	if mcpServer != nil {
+		if err := mcpServer.Stop(shutdownCtx); err != nil {
+			log.Printf("Error shutting down MCP server: %v", err)
+		}
+	}
+
+	log.Println("Shutdown completed")
 }
 
 // debugTokenContract debugs a specific token contract

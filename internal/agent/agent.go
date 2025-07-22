@@ -191,11 +191,22 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		return nil, fmt.Errorf("invalid explanation result format")
 	}
 
-	// Store baggage data in explanation metadata for debugging
+	// Store cleaned baggage data in explanation metadata for debugging (exclude circular references)
 	if explanation.Metadata == nil {
 		explanation.Metadata = make(map[string]interface{})
 	}
-	explanation.Metadata["pipeline_baggage"] = baggage
+	
+	// Create a clean copy of baggage without circular references
+	cleanBaggage := make(map[string]interface{})
+	for key, value := range baggage {
+		// Skip fields that might contain circular references
+		if key == "explanation" || key == "context_providers" {
+			cleanBaggage[key] = fmt.Sprintf("<%s - excluded to prevent circular reference>", key)
+		} else {
+			cleanBaggage[key] = value
+		}
+	}
+	explanation.Metadata["pipeline_baggage"] = cleanBaggage
 
 	return explanation, nil
 }

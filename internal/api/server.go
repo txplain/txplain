@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -46,6 +46,7 @@ func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string) 
 func (s *Server) setupRoutes() {
 	// Add CORS middleware
 	s.router.Use(s.corsMiddleware)
+	s.router.Use(s.recoveryMiddleware) // Add recovery middleware to catch panics
 	s.router.Use(s.loggingMiddleware)
 
 	// Health check endpoint
@@ -62,6 +63,17 @@ func (s *Server) setupRoutes() {
 
 	// Transaction details (without explanation)
 	v1.HandleFunc("/transaction/{network}/{hash}", s.handleGetTransactionDetails).Methods("GET")
+
+	// Serve static assets (CSS, JS, etc.) - must come before SPA handler
+	s.router.PathPrefix("/assets/").Handler(http.StripPrefix("/assets/", http.FileServer(http.Dir("./web/dist/assets/"))))
+	
+	// Serve vite.svg and other root-level static files
+	s.router.HandleFunc("/vite.svg", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./web/dist/vite.svg")
+	})
+	
+	// Serve index.html for SPA routing (must be last to catch all remaining routes)
+	s.router.PathPrefix("/").HandlerFunc(s.handleSPA).Methods("GET")
 }
 
 // handleHealth returns the health status of the service
@@ -99,20 +111,49 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	// Process the transaction
+	log.Printf("Starting transaction analysis for %s on network %d", request.TxHash, request.NetworkID)
 	explanation, err := s.agent.ExplainTransaction(ctx, &request)
 	if err != nil {
-		s.writeErrorResponse(w, http.StatusInternalServerError, "Failed to explain transaction", err)
+		log.Printf("ExplainTransaction failed: %v", err)
+		// Check for specific error types to provide better error messages
+		if ctx.Err() == context.DeadlineExceeded {
+			s.writeErrorResponse(w, http.StatusRequestTimeout, "Transaction analysis timed out after 120 seconds", err)
+		} else if ctx.Err() == context.Canceled {
+			s.writeErrorResponse(w, http.StatusRequestTimeout, "Request was canceled", err)
+		} else if strings.Contains(err.Error(), "context canceled") {
+			s.writeErrorResponse(w, http.StatusRequestTimeout, "Request timed out during processing", err)
+		} else {
+			s.writeErrorResponse(w, http.StatusInternalServerError, "Failed to explain transaction", err)
+		}
 		return
 	}
+
+	log.Printf("ExplainTransaction succeeded, explanation summary length: %d chars", len(explanation.Summary))
+	log.Printf("Explanation has %d transfers, %d effects", len(explanation.Transfers), len(explanation.Effects))
 
 	// Return the explanation
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(explanation)
+	
+	// Create a debug version without metadata to avoid potential circular references
+	debugExplanation := *explanation
+	debugExplanation.Metadata = nil
+	
+	log.Printf("About to encode JSON response...")
+	
+	// Ensure we handle JSON encoding errors
+	if encodeErr := json.NewEncoder(w).Encode(explanation); encodeErr != nil {
+		log.Printf("FAILED to encode explanation response as JSON: %v", encodeErr)
+		log.Printf("Explanation object: %+v", debugExplanation)
+		// At this point we've already sent 200 status, so we can't change it
+		// but we can log the error for debugging
+	} else {
+		log.Printf("Successfully encoded and sent JSON response")
+	}
 }
 
 // handleGetNetworks returns the list of supported networks
@@ -167,6 +208,21 @@ func (s *Server) handleGetTransactionDetails(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(response)
 }
 
+// handleSPA serves the React SPA for non-API routes
+func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
+	// Skip API routes and static assets
+	if strings.HasPrefix(r.URL.Path, "/api/") || 
+	   strings.HasPrefix(r.URL.Path, "/health") ||
+	   strings.HasPrefix(r.URL.Path, "/assets/") ||
+	   r.URL.Path == "/vite.svg" {
+		http.NotFound(w, r)
+		return
+	}
+	
+	// Serve index.html for SPA routing
+	http.ServeFile(w, r, "./web/dist/index.html")
+}
+
 // writeErrorResponse writes an error response in a consistent format
 func (s *Server) writeErrorResponse(w http.ResponseWriter, statusCode int, message string, err error) {
 	response := map[string]interface{}{
@@ -175,16 +231,40 @@ func (s *Server) writeErrorResponse(w http.ResponseWriter, statusCode int, messa
 	}
 
 	if err != nil {
-		// Only include detailed error in development
-		if os.Getenv("ENV") == "development" {
-			response["details"] = err.Error()
-		}
+		response["details"] = err.Error()
 		log.Printf("API Error: %s - %v", message, err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
+	
+	// Ensure we always write a response, even if JSON encoding fails
+	if encodeErr := json.NewEncoder(w).Encode(response); encodeErr != nil {
+		log.Printf("Failed to encode error response as JSON: %v", encodeErr)
+		// Can't call WriteHeader again, just write fallback JSON
+		w.Write([]byte(`{"error":"Internal server error - failed to encode response"}`))
+	}
+}
+
+// recoveryMiddleware catches panics and returns proper JSON error responses
+func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Printf("PANIC in %s %s: %v", r.Method, r.URL.Path, err)
+				
+				// Only write response if headers haven't been sent yet
+				if w.Header().Get("Content-Type") == "" {
+					s.writeErrorResponse(w, http.StatusInternalServerError, "Internal server error", fmt.Errorf("panic: %v", err))
+				} else {
+					// Headers already sent, just log the error
+					log.Printf("Cannot send error response, headers already sent")
+				}
+			}
+		}()
+		
+		next.ServeHTTP(w, r)
+	})
 }
 
 // corsMiddleware adds CORS headers
@@ -244,7 +324,7 @@ func (s *Server) Start() error {
 
 		// Security settings
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second, // Long timeout for AI processing
+		WriteTimeout: 120 * time.Second, // Long timeout for AI processing
 		IdleTimeout:  60 * time.Second,
 	}
 
