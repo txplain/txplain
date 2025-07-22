@@ -78,15 +78,17 @@ type Event struct {
 
 // TokenTransfer represents a token transfer (ERC20/ERC721/ERC1155)
 type TokenTransfer struct {
-	Type        string `json:"type"`         // ERC20, ERC721, ERC1155, ETH
-	Contract    string `json:"contract"`     // Empty for ETH
-	From        string `json:"from"`
-	To          string `json:"to"`
-	Amount      string `json:"amount"`       // For ERC20 and ETH
-	TokenID     string `json:"token_id"`     // For ERC721/ERC1155
-	Symbol      string `json:"symbol,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Decimals    int    `json:"decimals,omitempty"`
+	Type            string `json:"type"`                        // ERC20, ERC721, ERC1155, ETH
+	Contract        string `json:"contract"`                    // Empty for ETH
+	From            string `json:"from"`
+	To              string `json:"to"`
+	Amount          string `json:"amount"`                      // For ERC20 and ETH (raw hex amount)
+	TokenID         string `json:"token_id"`                    // For ERC721/ERC1155
+	Symbol          string `json:"symbol,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Decimals        int    `json:"decimals,omitempty"`
+	FormattedAmount string `json:"formatted_amount,omitempty"`  // Human-readable amount (e.g. "43.94")
+	AmountUSD       string `json:"amount_usd,omitempty"`        // USD value (e.g. "1.45")
 }
 
 // WalletEffect represents the effect on a specific wallet

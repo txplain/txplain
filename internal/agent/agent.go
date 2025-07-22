@@ -106,6 +106,13 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		return nil, fmt.Errorf("failed to add log decoder: %w", err)
 	}
 
+	// Add token transfer extractor (extracts transfers from events)
+	transferExtractor := txtools.NewTokenTransferExtractor()
+	if err := pipeline.AddProcessor(transferExtractor); err != nil {
+		return nil, fmt.Errorf("failed to add token transfer extractor: %w", err)
+	}
+	contextProviders = append(contextProviders, transferExtractor)
+
 	// Add token metadata enricher
 	tokenMetadata := txtools.NewTokenMetadataEnricher()
 	tokenMetadata.SetRPCClient(client)
@@ -121,6 +128,13 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 			return nil, fmt.Errorf("failed to add price lookup: %w", err)
 		}
 		contextProviders = append(contextProviders, priceLookup)
+
+		// Add monetary value enricher (runs after price lookup)
+		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm)
+		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
+			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)
+		}
+		contextProviders = append(contextProviders, monetaryEnricher)
 	}
 
 	// Add context providers to baggage for transaction explainer

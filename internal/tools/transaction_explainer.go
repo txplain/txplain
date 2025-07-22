@@ -24,26 +24,21 @@ func NewTransactionExplainer(llm llms.Model) *TransactionExplainer {
 	}
 }
 
-// Dependencies returns the tools this processor depends on
+// Dependencies returns the tools this processor depends on  
 func (t *TransactionExplainer) Dependencies() []string {
-	return []string{"log_decoder", "token_metadata_enricher", "erc20_price_lookup"}
+	return []string{"log_decoder", "token_transfer_extractor", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher"}
 }
 
 // Process generates explanation using all information from baggage
 func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]interface{}) error {
-	// Extract basic data from baggage
-	rawData, _ := baggage["raw_data"].(map[string]interface{})
-	events, _ := baggage["events"].([]models.Event)
-
-	// Build decoded data structure
-	decodedData := &models.DecodedData{
-		Events: events,
-		// Calls would come from trace decoder if implemented
+	// Add decoded data and raw data to baggage for generateExplanationWithBaggage
+	if events, ok := baggage["events"].([]models.Event); ok {
+		decodedData := &models.DecodedData{
+			Events: events,
+			// Calls would come from trace decoder if implemented
+		}
+		baggage["decoded_data"] = decodedData
 	}
-
-	// Extract transfers and add to baggage so ERC20PriceLookup can use them
-	transfers := t.extractTokenTransfers(events)
-	baggage["transfers"] = transfers
 
 	// Collect context from all context providers in the baggage
 	var additionalContext []string
@@ -56,7 +51,7 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 	}
 
 	// Generate explanation with context from other tools
-	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, additionalContext)
+	explanation, err := t.generateExplanationWithBaggage(ctx, baggage, additionalContext)
 	if err != nil {
 		return fmt.Errorf("failed to generate explanation: %w", err)
 	}
@@ -183,6 +178,35 @@ func (t *TransactionExplainer) extractDecodedData(input map[string]interface{}) 
 	return data, nil
 }
 
+// generateExplanationWithBaggage uses the LLM to create a human-readable explanation with additional context from baggage
+func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Context, baggage map[string]interface{}, additionalContext []string) (*models.ExplanationResult, error) {
+	// Build the prompt with additional context from baggage
+	prompt := t.buildExplanationPromptFromBaggage(baggage, additionalContext)
+
+	// Call LLM
+	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart(prompt),
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("LLM call failed: %w", err)
+	}
+
+	// Parse the LLM response and build the explanation result
+	responseText := ""
+	if response != nil && len(response.Choices) > 0 {
+		responseText = response.Choices[0].Content
+	}
+
+	explanation := t.parseExplanationResponseFromBaggage(responseText, baggage)
+
+	return explanation, nil
+}
+
 // generateExplanationWithContext uses the LLM to create a human-readable explanation with additional context
 func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Context, decodedData *models.DecodedData, rawData map[string]interface{}, additionalContext []string) (*models.ExplanationResult, error) {
 	// Build the prompt with additional context
@@ -213,6 +237,20 @@ func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Contex
 }
 
 
+
+// buildExplanationPromptFromBaggage creates the prompt for the LLM using data from baggage
+func (t *TransactionExplainer) buildExplanationPromptFromBaggage(baggage map[string]interface{}, additionalContexts []string) string {
+	// Get decoded data and raw data from baggage
+	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
+	rawData, _ := baggage["raw_data"].(map[string]interface{})
+	
+	// If no decoded data, create empty structure
+	if decodedData == nil {
+		decodedData = &models.DecodedData{}
+	}
+	
+	return t.buildExplanationPrompt(decodedData, rawData, additionalContexts)
+}
 
 // buildExplanationPrompt creates the prompt for the LLM
 func (t *TransactionExplainer) buildExplanationPrompt(decodedData *models.DecodedData, rawData map[string]interface{}, additionalContexts []string) string {
@@ -277,50 +315,7 @@ Event #%d:
 		}
 	}
 
-	// Add formatted token transfers if available
-	transfers := t.extractTokenTransfers(decodedData.Events)
-	if len(transfers) > 0 {
-		prompt += `
-
-### Formatted Token Transfers:`
-		for i, transfer := range transfers {
-			prompt += fmt.Sprintf(`
-
-Transfer #%d:
-- Type: %s
-- Contract: %s`, i+1, transfer.Type, transfer.Contract)
-			
-			if transfer.Name != "" && transfer.Symbol != "" {
-				prompt += fmt.Sprintf(`
-- Token: %s (%s)`, transfer.Name, transfer.Symbol)
-			} else if transfer.Symbol != "" {
-				prompt += fmt.Sprintf(`
-- Symbol: %s`, transfer.Symbol)
-			}
-			
-
-			
-			prompt += fmt.Sprintf(`
-- From: %s
-- To: %s`, transfer.From, transfer.To)
-			
-			if transfer.Amount != "" {
-				// Format the amount for display
-				if transfer.Decimals > 0 {
-					prompt += fmt.Sprintf(`
-- Amount: %s (formatted from raw hex)`, t.formatAmount(transfer.Amount, transfer.Decimals))
-				} else {
-					prompt += fmt.Sprintf(`
-- Amount: %s`, transfer.Amount)
-				}
-			}
-			
-			if transfer.TokenID != "" {
-				prompt += fmt.Sprintf(`
-- Token ID: %s`, transfer.TokenID)
-			}
-		}
-	}
+	// Token transfers will be included via Additional Context from TokenTransferExtractor
 
 	// Add raw transaction context if available
 	if rawData != nil {
@@ -353,16 +348,16 @@ Transfer #%d:
 Write a single, short sentence (under 30 words) describing the main action. 
 
 IMPORTANT: 
-- Use the amounts from "Formatted Token Transfers" section (not raw hex values from events).
-- When mentioning ERC20 tokens, prioritize using the calculated USD values for specific transfer amounts from Additional Context over base unit prices.
-- If specific transfer USD values are provided (e.g., "Transfer: 100.000000 USDC = $99.50 USD"), use those exact values in your response.
-- Only fall back to base unit prices (e.g., "$1.00 per token") if no specific transfer values are available.
+- Use enriched monetary values from "Enriched Token Transfers" section when available (FormattedAmount and USD Value fields).
+- Prefer specific USD values from the enriched data over raw hex values or basic token prices.
+- If enriched transfers show "Amount: 43.94 ATH" and "USD Value: $1.45", use those exact values.
+- Only fall back to raw data or basic prices if enriched values are not available.
 - Always use the total converted amount, not the base unit price.
 
 Examples:
-- "Transferred $99.50 USD worth of USDC from Alice to Bob"
-- "Swapped 1 ETH for $2,485.75 USD worth of USDT on Uniswap"  
-- "Approved Uniswap to spend unlimited DAI ($0.99 per token)"
+- "Transferred 43.94 ATH ($1.45 USD) from one wallet to another"
+- "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap"  
+- "Approved Uniswap to spend unlimited DAI"
 - "Minted 5 NFTs from BoredApes collection"
 
 Be specific about amounts, tokens, and main action. No explanations or warnings.`
@@ -409,8 +404,9 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 		}
 	}
 
-	// Extract token transfers from events
-	result.Transfers = t.extractTokenTransfers(decodedData.Events)
+	// Token transfers should be provided via the Process method/baggage
+	// For Run method, leave empty for now
+	result.Transfers = []models.TokenTransfer{}
 
 	// Generate wallet effects from transfers
 	result.Effects = t.generateWalletEffects(result.Transfers)
@@ -424,41 +420,69 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 	return result
 }
 
-// extractTokenTransfers extracts token transfers from events
-func (t *TransactionExplainer) extractTokenTransfers(events []models.Event) []models.TokenTransfer {
-	var transfers []models.TokenTransfer
+// parseExplanationResponseFromBaggage parses the LLM response using data from baggage
+func (t *TransactionExplainer) parseExplanationResponseFromBaggage(response string, baggage map[string]interface{}) *models.ExplanationResult {
+	// Get data from baggage
+	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
+	rawData, _ := baggage["raw_data"].(map[string]interface{})
+	
+	// If no decoded data, create empty structure
+	if decodedData == nil {
+		decodedData = &models.DecodedData{}
+	}
+	
+	result := &models.ExplanationResult{
+		Summary:   response, // For now, use the full response as summary
+		Effects:   []models.WalletEffect{},
+		Transfers: []models.TokenTransfer{},
+		Links:     make(map[string]string),
+		Tags:      []string{},
+		Metadata:  make(map[string]interface{}),
+		Timestamp: time.Now(),
+	}
 
-	for _, event := range events {
-		if event.Name == "Transfer" {
-			transfer := models.TokenTransfer{
-				Contract: event.Contract,
+	// Extract basic transaction info from raw data if available
+	if rawData != nil {
+		if networkID, ok := rawData["network_id"].(float64); ok {
+			result.NetworkID = int64(networkID)
+		}
+		if txHash, ok := rawData["tx_hash"].(string); ok {
+			result.TxHash = txHash
+		}
+
+		// Extract transaction details from receipt
+		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			if gasUsed, ok := receipt["gasUsed"].(string); ok {
+				if gas, err := strconv.ParseUint(gasUsed[2:], 16, 64); err == nil {
+					result.GasUsed = gas
+				}
 			}
-
-			// Extract from, to, and amount/tokenId from parameters
-			if params := event.Parameters; params != nil {
-				if from, ok := params["from"].(string); ok {
-					transfer.From = from
-				}
-				if to, ok := params["to"].(string); ok {
-					transfer.To = to
-				}
-				if value, ok := params["value"].(string); ok {
-					transfer.Amount = value
-					transfer.Type = "ERC20" // Assume ERC20 for now
-				}
-				if tokenId, ok := params["tokenId"].(string); ok {
-					transfer.TokenID = tokenId
-					transfer.Type = "ERC721" // NFT transfer
+			if status, ok := receipt["status"].(string); ok {
+				result.Status = t.formatStatus(status)
+			}
+			if blockNumber, ok := receipt["blockNumber"].(string); ok {
+				if bn, err := strconv.ParseUint(blockNumber[2:], 16, 64); err == nil {
+					result.BlockNumber = bn
 				}
 			}
-
-			// Token metadata will be added later from baggage in enhanceExplanationWithBaggage
-
-			transfers = append(transfers, transfer)
 		}
 	}
 
-	return transfers
+	// Get transfers from baggage (populated by TokenTransferExtractor)
+	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok {
+		result.Transfers = transfers
+	}
+
+	// Generate wallet effects from transfers
+	result.Effects = t.generateWalletEffects(result.Transfers)
+
+	// Generate tags based on transaction content
+	result.Tags = t.generateTags(decodedData)
+
+	// Generate links to explorers
+	result.Links = t.generateLinks(result.TxHash, result.NetworkID, decodedData)
+
+	return result
 }
 
 // generateWalletEffects creates wallet effects from transfers

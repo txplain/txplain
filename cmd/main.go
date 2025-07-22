@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -132,16 +133,28 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		if result.Metadata != nil {
 			if baggage, ok := result.Metadata["pipeline_baggage"].(map[string]interface{}); ok {
 				fmt.Println("📦 Pipeline Baggage Contents:")
+				
+				// Create a safe copy of baggage to avoid circular references
+				safeBaggage := make(map[string]interface{})
 				for key, value := range baggage {
-					if key == "context_providers" {
-						if providers, ok := value.([]interface{}); ok {
-							fmt.Printf("- %s: %d context providers\n", key, len(providers))
-						}
-					} else if key == "explanation" {
-						fmt.Printf("- %s: [explanation result]\n", key)
+					// Skip the "explanation" field as it contains circular references
+					if key == "explanation" {
+						safeBaggage[key] = "[ExplanationResult - excluded to prevent circular reference]"
 					} else {
-						fmt.Printf("- %s: %T\n", key, value)
+						safeBaggage[key] = value
 					}
+				}
+				
+				baggageJSON, err := json.MarshalIndent(safeBaggage, "", "  ")
+				if err != nil {
+					fmt.Printf("Error marshaling baggage to JSON: %v\n", err)
+					// Fallback to basic key listing
+					fmt.Println("Available keys:")
+					for key := range baggage {
+						fmt.Printf("- %s\n", key)
+					}
+				} else {
+					fmt.Println(string(baggageJSON))
 				}
 				fmt.Println()
 			}
