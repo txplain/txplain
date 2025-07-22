@@ -354,30 +354,22 @@ func (m *MonetaryValueEnricher) fetchNativeTokenPrice(ctx context.Context, symbo
 	return quoteData.Price, nil
 }
 
-// getFallbackNativeTokenPrice returns approximate prices as fallback
+// getFallbackNativeTokenPrice returns generic fallback price
+// Uses RPC-first approach, then API fallbacks, no hardcoded prices
 func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) float64 {
-	switch networkID {
-	case 1: // Ethereum
-		return 2500.0 // ETH price
-	case 137: // Polygon
-		return 0.85 // MATIC price (much lower than ETH)
-	case 42161: // Arbitrum
-		return 2500.0 // Uses ETH
-	case 10: // Optimism
-		return 2500.0 // Uses ETH
-	case 56: // BSC
-		return 300.0 // BNB price
-	case 43114: // Avalanche
-		return 25.0 // AVAX price
-	case 250: // Fantom
-		return 0.25 // FTM price
-	case 1285: // Moonriver
-		return 15.0 // MOVR price
-	case 25: // Cronos
-		return 0.08 // CRO price
-	default:
-		return 2500.0 // Default to ETH price
+	// Generic approach: try to fetch current price via API for any network
+	nativeSymbol := m.getNativeTokenSymbol(networkID)
+	if nativeSymbol != "" && m.apiKey != "" {
+		// Try to fetch actual current price from API
+		if price, err := m.fetchNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
+			return price
+		}
 	}
+	
+	// Ultimate fallback: return 0 to indicate price unavailable
+	// This is better than hardcoding outdated prices
+	// The system will work without USD values but still show token amounts
+	return 0
 }
 
 // enrichRawData enriches raw transaction data with USD values
@@ -453,16 +445,9 @@ func (m *MonetaryValueEnricher) createFallbackMetadata(contractAddress, amount, 
 	decimals := 18 // Default to 18 for most ERC20 tokens
 	name := symbol // Use symbol as name if available
 	
-	// Only use symbol-based inference for well-known, stable tokens to avoid hardcoding
-	if symbol != "" {
-		switch strings.ToUpper(symbol) {
-		case "USDT", "USDC": // Stablecoins commonly use 6 decimals
-			decimals = 6
-		case "WBTC": // Wrapped Bitcoin uses 8 decimals like Bitcoin
-			decimals = 8
-		}
-		// For all other tokens including newer/unknown ones, use amount pattern analysis
-	}
+	// Use generic approach: rely on RPC data and amount pattern analysis
+	// instead of hardcoding assumptions about specific token symbols
+	// This approach works for any token without symbol-based assumptions
 	
 	// Try to infer decimals from amount patterns if we have transaction data
 	if amount != "" && strings.HasPrefix(amount, "0x") {

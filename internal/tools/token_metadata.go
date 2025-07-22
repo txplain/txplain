@@ -242,15 +242,8 @@ func (t *TokenMetadataEnricher) extractMetadataFromEvents(baggage map[string]int
 
 // inferDecimals tries to infer token decimals from hex and decimal values
 func (t *TokenMetadataEnricher) inferDecimals(valueHex string, valueDecimal uint64, symbol string) int {
-	// For known tokens, use standard decimals - keep minimal for common cases
-	switch strings.ToUpper(symbol) {
-	case "USDT", "USDC":
-		return 6
-	case "WETH", "ETH", "DAI":
-		return 18
-	case "WBTC":
-		return 8
-	}
+	// Generic approach: use RPC data and pattern analysis instead of hardcoding
+	// This works for any token without assumptions about specific symbols
 
 	// Try to infer from the hex value
 	if strings.HasPrefix(valueHex, "0x") {
