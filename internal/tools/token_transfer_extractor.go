@@ -3,9 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"math"
-	"math/big"
-	"strings"
 
 	"github.com/txplain/txplain/internal/models"
 )
@@ -116,44 +113,3 @@ func (t *TokenTransferExtractor) GetPromptContext(ctx context.Context, baggage m
 	
 	return context
 }
-
-// formatAmount formats a raw amount using decimals (simplified version)
-func formatAmount(amount string, decimals int) string {
-	if amount == "" {
-		return "0"
-	}
-	
-	// Handle hex strings
-	if strings.HasPrefix(amount, "0x") {
-		// Convert hex to decimal
-		amountBig := new(big.Int)
-		amountBig.SetString(amount[2:], 16)
-		amount = amountBig.String()
-	}
-
-	// Parse the amount
-	amountBig := new(big.Int)
-	amountBig, ok := amountBig.SetString(amount, 10)
-	if !ok {
-		return "0"
-	}
-
-	// Convert to float and adjust for decimals
-	if decimals > 0 {
-		// Convert to big.Float for proper decimal division
-		amountFloat := new(big.Float).SetInt(amountBig)
-		divisor := new(big.Float).SetFloat64(math.Pow10(decimals))
-		result := new(big.Float).Quo(amountFloat, divisor)
-		
-		// Format with reasonable precision
-		formatted := result.Text('f', 6) // 6 decimal places
-		// Remove trailing zeros
-		formatted = strings.TrimRight(formatted, "0")
-		formatted = strings.TrimRight(formatted, ".")
-		
-		return formatted
-	} else {
-		// No decimals, just show the integer value
-		return amountBig.String()
-	}
-} 

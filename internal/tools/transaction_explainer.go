@@ -26,7 +26,7 @@ func NewTransactionExplainer(llm llms.Model) *TransactionExplainer {
 
 // Dependencies returns the tools this processor depends on  
 func (t *TransactionExplainer) Dependencies() []string {
-	return []string{"log_decoder", "token_transfer_extractor", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher"}
+	return []string{"log_decoder", "token_transfer_extractor", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver"}
 }
 
 // Process generates explanation using all information from baggage
@@ -353,12 +353,15 @@ IMPORTANT:
 - If enriched transfers show "Amount: 43.94 ATH" and "USD Value: $1.45", use those exact values.
 - Only fall back to raw data or basic prices if enriched values are not available.
 - Always use the total converted amount, not the base unit price.
+- Use the address formatting provided in the "Address Formatting Guide" section.
+- Follow the address usage instructions from the ENS Names section.
 
 Examples:
 - "Transferred 43.94 ATH ($1.45 USD) from one wallet to another"
 - "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap"  
 - "Approved Uniswap to spend unlimited DAI"
 - "Minted 5 NFTs from BoredApes collection"
+- "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth)"
 
 Be specific about amounts, tokens, and main action. No explanations or warnings.`
 

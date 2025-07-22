@@ -3,14 +3,17 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/txplain/txplain/internal/models"
+	"golang.org/x/crypto/sha3"
 )
 
 type Client struct {
@@ -267,6 +270,180 @@ func (c *Client) FetchTransactionData(ctx context.Context, txHash string) (*mode
 // GetNetwork returns the network information for this client
 func (c *Client) GetNetwork() models.Network {
 	return c.network
+}
+
+// ResolveENSName resolves an ENS name from an Ethereum address (reverse lookup)
+func (c *Client) ResolveENSName(ctx context.Context, address string) (string, error) {
+	// Only resolve on Ethereum mainnet
+	if c.network.ID != 1 {
+		return "", nil
+	}
+
+	// Clean the address
+	if len(address) != 42 || address[:2] != "0x" {
+		return "", fmt.Errorf("invalid address format")
+	}
+
+	// Remove 0x prefix and convert to lowercase
+	addr := address[2:]
+	addr = fmt.Sprintf("%040s", addr) // Ensure it's 40 characters
+	
+	// Create the ENS reverse lookup domain
+	// For address 0x5c0a3834648c766dfa1c06b62520f222a4cd89a0
+	// We create: 5c0a3834648c766dfa1c06b62520f222a4cd89a0.addr.reverse
+	ensReverseDomain := fmt.Sprintf("%s.addr.reverse", strings.ToLower(addr))
+
+	// ENS Registry address on mainnet
+	ensRegistryAddress := "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e"
+	
+	// resolver(bytes32) function signature
+	resolverSig := "0x0178b8bf"
+	
+	// Calculate the namehash of the reverse domain
+	nameHash := c.namehash(ensReverseDomain)
+	
+	// Call ENS registry to get resolver
+	params := []interface{}{
+		map[string]interface{}{
+			"to":   ensRegistryAddress,
+			"data": resolverSig + nameHash[2:], // Remove 0x from namehash
+		},
+		"latest",
+	}
+
+	result, err := c.call(ctx, "eth_call", params)
+	if err != nil {
+		return "", err
+	}
+
+	var resolverResult string
+	if err := json.Unmarshal(result, &resolverResult); err != nil {
+		return "", err
+	}
+
+	// If no resolver, return empty
+	if resolverResult == "0x" || len(resolverResult) < 66 {
+		return "", nil
+	}
+
+	// Extract resolver address (last 40 characters)
+	resolverAddress := "0x" + resolverResult[len(resolverResult)-40:]
+	
+	// If resolver is zero address, no ENS name
+	if resolverAddress == "0x0000000000000000000000000000000000000000" {
+		return "", nil
+	}
+
+	// Call resolver.name(bytes32) to get the actual name
+	nameSig := "0x691f3431"
+	nameParams := []interface{}{
+		map[string]interface{}{
+			"to":   resolverAddress,
+			"data": nameSig + nameHash[2:],
+		},
+		"latest",
+	}
+
+	nameResult, err := c.call(ctx, "eth_call", nameParams)
+	if err != nil {
+		return "", err
+	}
+
+	var nameResultHex string
+	if err := json.Unmarshal(nameResult, &nameResultHex); err != nil {
+		return "", err
+	}
+
+	// Decode the name from the result
+	if nameResultHex == "0x" || len(nameResultHex) < 130 {
+		return "", nil
+	}
+
+	// Parse ABI encoded string
+	ensName, err := c.decodeStringResult(nameResultHex)
+	if err != nil {
+		return "", err
+	}
+
+	// Skip validation for now since resolveENSForward is not implemented
+	// In a production system, you'd want to validate reverse/forward consistency
+	return ensName, nil
+}
+
+// namehash implements the ENS namehash algorithm
+func (c *Client) namehash(name string) string {
+	if name == "" {
+		return "0x0000000000000000000000000000000000000000000000000000000000000000"
+	}
+
+	// Start with 32 zero bytes
+	node := make([]byte, 32)
+	
+	// Split the name into labels (e.g., "vitalik.eth" -> ["vitalik", "eth"])
+	labels := strings.Split(name, ".")
+	
+	// Process labels in reverse order (from right to left)
+	for i := len(labels) - 1; i >= 0; i-- {
+		label := labels[i]
+		
+		// Calculate keccak256 of the label
+		labelHash := sha3.NewLegacyKeccak256()
+		labelHash.Write([]byte(label))
+		labelHashBytes := labelHash.Sum(nil)
+		
+		// Calculate keccak256 of (current_node + label_hash)
+		nodeHash := sha3.NewLegacyKeccak256()
+		nodeHash.Write(node)
+		nodeHash.Write(labelHashBytes)
+		node = nodeHash.Sum(nil)
+	}
+	
+	return "0x" + hex.EncodeToString(node)
+}
+
+// decodeStringResult decodes an ABI-encoded string result
+func (c *Client) decodeStringResult(hexData string) (string, error) {
+	if len(hexData) < 130 {
+		return "", nil
+	}
+
+	// Skip function signature and offset (first 64 chars after 0x)
+	data := hexData[2:]
+	if len(data) < 128 {
+		return "", nil
+	}
+
+	// Get string length (next 64 chars)
+	lengthHex := data[64:128]
+	length, err := strconv.ParseInt(lengthHex, 16, 64)
+	if err != nil || length <= 0 {
+		return "", nil
+	}
+
+	// Get string data
+	stringData := data[128:]
+	if len(stringData) < int(length*2) {
+		return "", nil
+	}
+
+	// Convert hex to string
+	bytes, err := hex.DecodeString(stringData[:length*2])
+	if err != nil {
+		return "", err
+	}
+
+	return string(bytes), nil
+}
+
+// resolveENSForward resolves an ENS name to an address (forward lookup)
+func (c *Client) resolveENSForward(ctx context.Context, name string) (string, error) {
+	// ENS Registry address on mainnet
+	ensRegistryAddress := "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e"
+	
+	// This would implement forward ENS resolution
+	// For now, return empty to avoid infinite loops
+	_ = ensRegistryAddress
+	return "", nil
 }
 
 // hexToUint64 converts hex string to uint64

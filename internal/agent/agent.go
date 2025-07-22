@@ -137,6 +137,14 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		contextProviders = append(contextProviders, monetaryEnricher)
 	}
 
+	// Add ENS resolver (runs after monetary enrichment)
+	ensResolver := txtools.NewENSResolver()
+	ensResolver.SetRPCClient(client)
+	if err := pipeline.AddProcessor(ensResolver); err != nil {
+		return nil, fmt.Errorf("failed to add ENS resolver: %w", err)
+	}
+	contextProviders = append(contextProviders, ensResolver)
+
 	// Add context providers to baggage for transaction explainer
 	baggage["context_providers"] = contextProviders
 
