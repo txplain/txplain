@@ -777,21 +777,21 @@ Respond with a JSON object mapping addresses to their roles:
   "0xdef0...1234": "Fee Recipient"
 }
 
-EXAMPLES:
-Uniswap Swap:
+EXAMPLE FORMAT (use context-based analysis, never hardcode addresses):
+DEX Transaction:
 {
-  "0x39e5c2e44c045e5ba25b55b2d6b3d7234399f09c5": "Trader",
-  "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
-  "0xdac17f958d2ee523a2206206994597c13d831ec7": "Token Contract (USDT)",
-  "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "Token Contract (UNI)"
+  "[user_address_from_transaction]": "[role_based_on_transfer_patterns]",
+  "[router_address_from_calls]": "[protocol_name_from_context] Router",
+  "[token_contract_from_transfers]": "Token Contract ([token_symbol_from_context])",
+  "[another_token_contract]": "Token Contract ([another_symbol_from_context])"
 }
 
-1inch Aggregator:
+Aggregator Transaction:
 {
-  "0x1234567890abcdef1234567890abcdef12345678": "Trader", 
-  "0x1111111254eeb25477b68fb85ed929f73a960582": "1inch Aggregator",
-  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "Token Contract (WETH)",
-  "0x0705ce0c0b1b0e5c9b5a9c3b2f5e4a0e9c7b6f3d": "Fee Recipient"
+  "[user_address_from_transaction]": "[role_based_on_transfer_patterns]", 
+  "[aggregator_address_from_calls]": "[aggregator_name_from_protocol_context]",
+  "[token_address_from_transfers]": "Token Contract ([symbol_from_token_metadata])",
+  "[fee_recipient_from_transfers]": "Fee Recipient"
 }
 
 Analyze the transaction context and identify the most meaningful roles for up to 8-10 key addresses:

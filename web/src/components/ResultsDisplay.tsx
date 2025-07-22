@@ -104,31 +104,39 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
           <div className="space-y-3">
             {result.transfers
               .filter(transfer => {
-                // Filter out transfers with no meaningful data
+                // Always keep transfers with valid from/to addresses
                 if (!transfer.from || !transfer.to || transfer.from === '...' || transfer.to === '...') {
                   return false
                 }
                 
-                // Filter out zero amounts (but keep NFTs)
+                // Keep NFTs (ERC721/ERC1155) regardless of amount
+                if (transfer.type === 'ERC721' || transfer.type === 'ERC1155' || transfer.token_id) {
+                  return true
+                }
+                
+                // For ERC20 tokens, check if we have meaningful amount data
                 if (transfer.type === 'ERC20') {
-                  // If we have a formatted amount, check if it's zero
-                  if (transfer.formatted_amount && transfer.formatted_amount !== '0') {
-                    return true // Valid formatted amount
+                  // Keep if we have a valid formatted amount
+                  if (transfer.formatted_amount && transfer.formatted_amount !== '0' && transfer.formatted_amount !== '') {
+                    return true
                   }
                   
-                  // If no formatted amount, try to parse the raw amount
-                  if (transfer.amount) {
+                  // Keep if we have a valid raw amount
+                  if (transfer.amount && transfer.amount !== '0x' && transfer.amount !== '0x0' && transfer.amount !== '') {
                     const rawAmount = formatAmount(transfer.amount, transfer.symbol)
-                    if (rawAmount && rawAmount !== '0') {
-                      return true // Valid raw amount
+                    if (rawAmount && rawAmount !== '0' && rawAmount !== '') {
+                      return true
                     }
                   }
                   
-                  // Filter out if both formatted and raw amounts are zero/empty
-                  return false
+                  // Keep if we have symbol/name (might be approval or other operation)
+                  if (transfer.symbol || transfer.name) {
+                    return true
+                  }
                 }
                 
-                return true // Keep NFTs and other types
+                // Keep by default (better to show too much than too little)
+                return true
               })
               .map((transfer, index) => (
               <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -150,12 +158,30 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-medium text-gray-900">
-                    {transfer.formatted_amount ? 
-                      `${transfer.formatted_amount} ${transfer.symbol || ''}` : 
-                      formatAmount(transfer.amount, transfer.symbol)
-                    }
+                    {(() => {
+                      // Prioritize formatted_amount from backend processing
+                      if (transfer.formatted_amount && transfer.formatted_amount !== '0') {
+                        return `${transfer.formatted_amount} ${transfer.symbol || ''}`;
+                      }
+                      
+                      // Fallback to manual formatting of raw amount
+                      if (transfer.amount && transfer.amount !== '0x' && transfer.amount !== '0x0') {
+                        const formatted = formatAmount(transfer.amount, transfer.symbol);
+                        if (formatted && formatted !== '0') {
+                          return formatted;
+                        }
+                      }
+                      
+                      // Show token ID for NFTs
+                      if (transfer.token_id) {
+                        return `Token ID: ${transfer.token_id}`;
+                      }
+                      
+                      // Last resort fallback
+                      return `${transfer.symbol || 'Unknown'}`;
+                    })()}
                   </div>
-                  {transfer.amount_usd && (
+                  {transfer.amount_usd && transfer.amount_usd !== '0' && (
                     <div className="text-xs text-gray-500">${transfer.amount_usd}</div>
                   )}
                 </div>
@@ -163,15 +189,32 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
             ))}
           </div>
           {result.transfers.filter(transfer => {
+            // Use same filtering logic as above for consistency
             if (!transfer.from || !transfer.to || transfer.from === '...' || transfer.to === '...') {
               return false
             }
-            if (transfer.type === 'ERC20' && (!transfer.formatted_amount || transfer.formatted_amount === '0')) {
-              const rawAmount = formatAmount(transfer.amount, transfer.symbol)
-              if (!rawAmount || rawAmount === '0') {
-                return false
+            
+            if (transfer.type === 'ERC721' || transfer.type === 'ERC1155' || transfer.token_id) {
+              return true
+            }
+            
+            if (transfer.type === 'ERC20') {
+              if (transfer.formatted_amount && transfer.formatted_amount !== '0' && transfer.formatted_amount !== '') {
+                return true
+              }
+              
+              if (transfer.amount && transfer.amount !== '0x' && transfer.amount !== '0x0' && transfer.amount !== '') {
+                const rawAmount = formatAmount(transfer.amount, transfer.symbol)
+                if (rawAmount && rawAmount !== '0' && rawAmount !== '') {
+                  return true
+                }
+              }
+              
+              if (transfer.symbol || transfer.name) {
+                return true
               }
             }
+            
             return true
           }).length === 0 && (
             <div className="text-center text-gray-500 py-4">

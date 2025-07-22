@@ -1,6 +1,8 @@
-# Txplain
+# txplain
 
-**Txplain** is an AI-powered blockchain transaction explanation service that transforms complex blockchain transaction data into human-readable summaries. Built with a **RPC-first architecture**, it uses direct blockchain calls and contract introspection to provide accurate and comprehensive transaction analysis.
+An open-source AI-powered blockchain transaction explanation service that transforms complex blockchain transaction data into human-readable summaries. Built with a **RPC-first architecture**, it uses direct blockchain calls and contract introspection to provide accurate and comprehensive transaction analysis.
+
+![Screenshot](./web/public/screenshot.png)
 
 ## High-Level Architecture
 

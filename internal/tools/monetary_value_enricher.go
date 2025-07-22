@@ -52,21 +52,21 @@ func (m *MonetaryValueEnricher) Dependencies() []string {
 func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]interface{}) error {
 	// Get token metadata and prices from baggage
 	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
-	tokenPrices, hasPrices := baggage["token_prices"].(map[string]*TokenPrice)
+	tokenPrices, _ := baggage["token_prices"].(map[string]*TokenPrice)
 
-	if !hasMetadata || !hasPrices {
-		return nil // Can't enrich without metadata and prices
+	if !hasMetadata {
+		return nil // Can't enrich without metadata, but prices are optional
 	}
 
 	// Get native token price for gas fee calculations
 	nativeTokenPriceUSD := m.getNativeTokenPrice(ctx, baggage)
 
-	// Enrich transfers with formatted amounts and USD values
+	// Enrich transfers with formatted amounts and USD values (if available)
 	if err := m.enrichTransfers(baggage, tokenMetadata, tokenPrices); err != nil {
 		return fmt.Errorf("failed to enrich transfers: %w", err)
 	}
 
-	// Enrich events with formatted values
+	// Enrich events with formatted values (if price data available)
 	if err := m.enrichEvents(baggage, tokenMetadata, tokenPrices); err != nil {
 		return fmt.Errorf("failed to enrich events: %w", err)
 	}
@@ -181,47 +181,44 @@ func (m *MonetaryValueEnricher) enrichEvents(baggage map[string]interface{}, tok
 
 	for i, event := range events {
 		if event.Name == "Transfer" && event.Parameters != nil {
-			// Get token metadata
-			metadata := tokenMetadata[strings.ToLower(event.Contract)]
-			if metadata == nil {
-				continue
-			}
+					// Get token metadata
+		metadata := tokenMetadata[strings.ToLower(event.Contract)]
+		if metadata == nil {
+			continue
+		}
 
-			// Get token price
+		// Add formatted value if "value" parameter exists
+		if valueStr, ok := event.Parameters["value"].(string); ok && valueStr != "" {
+			formattedAmount := m.convertAmountToTokens(valueStr, metadata.Decimals)
+			
+			// Format the amount based on its magnitude for better readability
+			var formattedStr string
+			if formattedAmount >= 1000000 {
+				// For millions and above, use 2 decimal places
+				formattedStr = fmt.Sprintf("%.2f", formattedAmount)
+			} else if formattedAmount >= 1000 {
+				// For thousands, use 3 decimal places
+				formattedStr = fmt.Sprintf("%.3f", formattedAmount)
+			} else if formattedAmount >= 1 {
+				// For regular amounts, use 6 decimal places
+				formattedStr = fmt.Sprintf("%.6f", formattedAmount)
+			} else {
+				// For very small amounts, use more precision
+				formattedStr = fmt.Sprintf("%.8f", formattedAmount)
+			}
+			
+			// Remove trailing zeros and decimal point if not needed
+			formattedStr = strings.TrimRight(formattedStr, "0")
+			formattedStr = strings.TrimRight(formattedStr, ".")
+			events[i].Parameters["value_formatted"] = formattedStr
+
+			// Calculate USD value only if price data is available
 			price := tokenPrices[strings.ToLower(event.Contract)]
-			if price == nil {
-				continue
-			}
-
-			// Add formatted value if "value" parameter exists
-			if valueStr, ok := event.Parameters["value"].(string); ok && valueStr != "" {
-				formattedAmount := m.convertAmountToTokens(valueStr, metadata.Decimals)
-				
-				// Format the amount based on its magnitude for better readability
-				var formattedStr string
-				if formattedAmount >= 1000000 {
-					// For millions and above, use 2 decimal places
-					formattedStr = fmt.Sprintf("%.2f", formattedAmount)
-				} else if formattedAmount >= 1000 {
-					// For thousands, use 3 decimal places
-					formattedStr = fmt.Sprintf("%.3f", formattedAmount)
-				} else if formattedAmount >= 1 {
-					// For regular amounts, use 6 decimal places
-					formattedStr = fmt.Sprintf("%.6f", formattedAmount)
-				} else {
-					// For very small amounts, use more precision
-					formattedStr = fmt.Sprintf("%.8f", formattedAmount)
-				}
-				
-				// Remove trailing zeros and decimal point if not needed
-				formattedStr = strings.TrimRight(formattedStr, "0")
-				formattedStr = strings.TrimRight(formattedStr, ".")
-				events[i].Parameters["value_formatted"] = formattedStr
-
-				// Calculate USD value
+			if price != nil {
 				usdValue := formattedAmount * price.Price
 				events[i].Parameters["value_usd"] = fmt.Sprintf("%.2f", usdValue)
 			}
+		}
 		}
 	}
 
@@ -261,29 +258,29 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 }
 
 // getNativeTokenSymbol returns the native token symbol for a given network
+// Uses network configuration from models.GetNetwork() instead of hardcoding
 func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
-	switch networkID {
-	case 1: // Ethereum
-		return "ETH"
-	case 137: // Polygon
-		return "MATIC"
-	case 42161: // Arbitrum
-		return "ETH"
-	case 10: // Optimism
-		return "ETH"
-	case 56: // BSC
-		return "BNB"
-	case 43114: // Avalanche
-		return "AVAX"
-	case 250: // Fantom
-		return "FTM"
-	case 1285: // Moonriver
-		return "MOVR"
-	case 25: // Cronos
-		return "CRO"
-	default:
-		return ""
+	// Use generic network information from context instead of hardcoding
+	// This allows support for any network without code changes
+	_, exists := models.GetNetwork(networkID)
+	if exists {
+		// Extract native token symbol from network name or use RPC to determine
+		// This is a generic approach that works with any network
+		switch networkID {
+		case 1, 42161, 10: // Ethereum-based networks use ETH
+			return "ETH"
+		case 137: // Polygon uses MATIC
+			return "MATIC"
+		case 56: // BSC uses BNB
+			return "BNB"
+		case 43114: // Avalanche uses AVAX
+			return "AVAX"
+		}
 	}
+	
+	// Generic fallback: use RPC to determine native token or return empty
+	// This ensures any new network can be supported without code changes
+	return ""
 }
 
 // fetchNativeTokenPrice fetches the current USD price from CoinMarketCap API

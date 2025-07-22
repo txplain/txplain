@@ -96,7 +96,7 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 		fmt.Printf("Context: %s\n", contextData)
 		fmt.Println("=== END CONTEXT ===")
 		fmt.Println()
-	}
+}
 
 	// Use AI to identify protocols
 	protocols, err := p.identifyProtocolsWithAI(ctx, contextData)
@@ -113,8 +113,8 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 	for _, protocol := range protocols {
 		if protocol.Confidence >= p.confidenceThreshold {
 			highConfidenceProtocols = append(highConfidenceProtocols, protocol)
-		}
-	}
+					}
+				}
 
 	if p.verbose {
 		fmt.Printf("Protocol Resolver: Found %d protocols above %.1f%% confidence\n", 
@@ -169,7 +169,7 @@ func (p *ProtocolResolver) loadProtocolKnowledge() error {
 	if len(records) == 0 {
 		return fmt.Errorf("empty CSV file")
 	}
-	
+
 	// Parse CSV (expecting header row)
 	header := records[0]
 	nameIndex := findColumnIndex(header, "name")
@@ -205,11 +205,11 @@ func (p *ProtocolResolver) loadProtocolKnowledge() error {
 			p.protocolKnowledge = append(p.protocolKnowledge, knowledge)
 		}
 	}
-	
+
 	if p.verbose {
 		fmt.Printf("Loaded %d protocols from CSV for RAG context\n", len(p.protocolKnowledge))
 	}
-	
+
 	return nil
 }
 
@@ -239,7 +239,7 @@ func (p *ProtocolResolver) inferProtocolType(name, description string) string {
 	}
 	if strings.Contains(nameDesc, "yield") || strings.Contains(nameDesc, "farm") {
 		return "Yield"
-	}
+		}
 	if strings.Contains(nameDesc, "oracle") || strings.Contains(nameDesc, "price") {
 		return "Oracle"
 	}
@@ -347,7 +347,7 @@ func (p *ProtocolResolver) identifyProtocolsWithAI(ctx context.Context, contextD
 	protocols, err := p.parseProtocolResponse(responseText)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse protocol response: %w", err)
-	}
+		}
 
 	return protocols, nil
 }
@@ -426,7 +426,7 @@ EXAMPLES:
 Analyze the transaction context and return only protocols you can identify with reasonable confidence (> 0.3). Be conservative - it's better to miss a protocol than to incorrectly identify one.`, knowledgeContext.String(), contextData)
 
 	return prompt
-}
+	}
 
 // parseProtocolResponse parses the AI response into protocol structures
 func (p *ProtocolResolver) parseProtocolResponse(response string) ([]ProbabilisticProtocol, error) {
@@ -473,7 +473,7 @@ func (p *ProtocolResolver) parseProtocolResponse(response string) ([]Probabilist
 		
 		validProtocols = append(validProtocols, protocol)
 	}
-	
+
 	return validProtocols, nil
 }
 
