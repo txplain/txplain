@@ -186,6 +186,14 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, protocolResolver)
 
+	// Add tag resolver (probabilistic tag detection with RAG)
+	tagResolver := txtools.NewTagResolver(a.llm)
+	tagResolver.SetConfidenceThreshold(0.6) // 60% minimum confidence
+	if err := pipeline.AddProcessor(tagResolver); err != nil {
+		return nil, fmt.Errorf("failed to add tag resolver: %w", err)
+	}
+	contextProviders = append(contextProviders, tagResolver)
+
 	// Add context providers to baggage for transaction explainer
 	baggage["context_providers"] = contextProviders
 
@@ -206,6 +214,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	annotationGenerator.AddContextProvider(tokenMetadata)
 	annotationGenerator.AddContextProvider(iconResolver)
 	annotationGenerator.AddContextProvider(protocolResolver)
+	annotationGenerator.AddContextProvider(tagResolver)
 	if priceLookup != nil {
 		annotationGenerator.AddContextProvider(priceLookup)
 	}

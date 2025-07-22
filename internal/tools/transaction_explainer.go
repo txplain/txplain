@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -92,7 +93,7 @@ func (t *TransactionExplainer) Run(ctx context.Context, input map[string]interfa
 	rawData, _ := input["raw_data"].(map[string]interface{})
 
 	// Generate explanation using LLM
-	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, []string{})
+	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, []string{}, make(map[string]interface{}))
 	if err != nil {
 		return nil, NewToolError("transaction_explainer", fmt.Sprintf("failed to generate explanation: %v", err), "LLM_ERROR")
 	}
@@ -197,7 +198,7 @@ func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Contex
 	}
 
 	// Generate explanation using the main method
-	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, additionalContext)
+	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, additionalContext, baggage)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +223,7 @@ func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Contex
 }
 
 // generateExplanationWithContext uses the LLM to create a human-readable explanation with additional context
-func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Context, decodedData *models.DecodedData, rawData map[string]interface{}, additionalContext []string) (*models.ExplanationResult, error) {
+func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Context, decodedData *models.DecodedData, rawData map[string]interface{}, additionalContext []string, baggage map[string]interface{}) (*models.ExplanationResult, error) {
 	// Build the prompt with additional context
 	prompt := t.buildExplanationPrompt(decodedData, rawData, additionalContext)
 
@@ -259,7 +260,7 @@ func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Contex
 		fmt.Println()
 	}
 
-	explanation := t.parseExplanationResponse(responseText, decodedData, rawData)
+	explanation := t.parseExplanationResponse(ctx, responseText, decodedData, rawData, baggage)
 
 	return explanation, nil
 }
@@ -493,7 +494,7 @@ Be specific about amounts, tokens, protocols, and main action. No explanations o
 }
 
 // parseExplanationResponse parses the LLM response and creates the result structure
-func (t *TransactionExplainer) parseExplanationResponse(response string, decodedData *models.DecodedData, rawData map[string]interface{}) *models.ExplanationResult {
+func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, response string, decodedData *models.DecodedData, rawData map[string]interface{}, baggage map[string]interface{}) *models.ExplanationResult {
 	result := &models.ExplanationResult{
 		Summary:   response, // For now, use the full response as summary
 		Transfers: []models.TokenTransfer{},
@@ -528,8 +529,7 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 				}
 			}
 
-			// Calculate and format transaction fee
-			result.TxFee = t.calculateTransactionFee(receipt, result.NetworkID)
+			// Gas fee information is provided by MonetaryValueEnricher in context - no duplication needed
 		}
 	}
 
@@ -537,16 +537,18 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 	// For Run method, leave empty for now
 	result.Transfers = []models.TokenTransfer{}
 
-	// Generate tags based on transaction content
-	result.Tags = t.generateTags(decodedData)
+	// Get tags from tag resolver (probabilistic approach)
+	if tags, ok := baggage["tags"].([]string); ok {
+		result.Tags = tags
+	} else {
+		result.Tags = []string{} // Empty if tag resolver didn't run
+	}
 
-	// Generate links to explorers
-	result.Links = t.generateLinks(result.TxHash, result.NetworkID, decodedData)
+	// Generate AI-enhanced links with meaningful labels
+	result.Links = t.generateIntelligentLinks(ctx, result.TxHash, result.NetworkID, baggage)
 
 	return result
 }
-
-
 
 // generateTags creates tags based on transaction content
 func (t *TransactionExplainer) generateTags(decodedData *models.DecodedData) []string {
@@ -595,29 +597,256 @@ func (t *TransactionExplainer) generateTags(decodedData *models.DecodedData) []s
 	return uniqueTags
 }
 
-// generateLinks creates explorer links
-func (t *TransactionExplainer) generateLinks(txHash string, networkID int64, decodedData *models.DecodedData) map[string]string {
+// generateIntelligentLinks creates explorer links with AI-inferred meaningful labels
+func (t *TransactionExplainer) generateIntelligentLinks(ctx context.Context, txHash string, networkID int64, baggage map[string]interface{}) map[string]string {
 	links := make(map[string]string)
 
-	if txHash != "" && networkID > 0 {
-		if network, exists := models.GetNetwork(networkID); exists {
-			links["transaction"] = fmt.Sprintf("%s/tx/%s", network.Explorer, txHash)
+	if txHash == "" || networkID <= 0 {
+		return links
+	}
 
-			// Add contract links
-			contracts := make(map[string]bool)
-			for _, call := range decodedData.Calls {
-				if call.Contract != "" {
-					contracts[call.Contract] = true
-				}
-			}
-			for _, event := range decodedData.Events {
-				if event.Contract != "" {
-					contracts[event.Contract] = true
-				}
-			}
+	network, exists := models.GetNetwork(networkID)
+	if !exists {
+		return links
+	}
 
-			for contract := range contracts {
-				links[contract] = fmt.Sprintf("%s/address/%s", network.Explorer, contract)
+	// Always add the main transaction link
+	links["Main Transaction"] = fmt.Sprintf("%s/tx/%s", network.Explorer, txHash)
+
+	// Get all relevant addresses and contracts from the transaction context
+	addressRoles, err := t.inferAddressRoles(ctx, baggage, networkID)
+	if err != nil {
+		// Fallback to simple contract links if AI inference fails
+		return t.generateFallbackLinks(txHash, networkID, baggage)
+	}
+
+	// Create links with meaningful role-based labels
+	for address, role := range addressRoles {
+		if address != "" && role != "" {
+			links[role] = fmt.Sprintf("%s/address/%s", network.Explorer, address)
+		}
+	}
+
+	return links
+}
+
+// inferAddressRoles uses AI to infer meaningful roles for addresses and contracts
+func (t *TransactionExplainer) inferAddressRoles(ctx context.Context, baggage map[string]interface{}, networkID int64) (map[string]string, error) {
+	// Build context for AI analysis
+	prompt := t.buildAddressRolePrompt(baggage, networkID)
+
+	if t.verbose {
+		fmt.Println("=== ADDRESS ROLE INFERENCE: PROMPT ===")
+		fmt.Println(prompt)
+		fmt.Println("=== END PROMPT ===")
+		fmt.Println()
+	}
+
+	// Call LLM
+	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart(prompt),
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("LLM call failed: %w", err)
+	}
+
+	responseText := ""
+	if response != nil && len(response.Choices) > 0 {
+		responseText = response.Choices[0].Content
+	}
+
+	if t.verbose {
+		fmt.Println("=== ADDRESS ROLE INFERENCE: LLM RESPONSE ===")
+		fmt.Println(responseText)
+		fmt.Println("=== END RESPONSE ===")
+		fmt.Println()
+	}
+
+	// Parse the response
+	return t.parseAddressRoleResponse(responseText)
+}
+
+// buildAddressRolePrompt creates the prompt for AI address role inference
+func (t *TransactionExplainer) buildAddressRolePrompt(baggage map[string]interface{}, networkID int64) string {
+	prompt := `You are a blockchain transaction analyst. Analyze this transaction and identify the role of each address/contract involved. Provide meaningful labels that help users understand what each address represents in the context of this specific transaction.
+
+TRANSACTION CONTEXT:`
+
+	// Add protocol context
+	if protocols, ok := baggage["protocols"].([]ProbabilisticProtocol); ok && len(protocols) > 0 {
+		prompt += "\n\nDETECTED PROTOCOLS:"
+		for _, protocol := range protocols {
+			prompt += fmt.Sprintf("\n- %s (%s %s)", protocol.Name, protocol.Type, protocol.Version)
+		}
+	}
+
+	// Add transfers context
+	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok && len(transfers) > 0 {
+		prompt += "\n\nTOKEN TRANSFERS:"
+		for i, transfer := range transfers {
+			prompt += fmt.Sprintf("\n- Transfer #%d: %s → %s", i+1, transfer.From, transfer.To)
+			if transfer.Symbol != "" && transfer.FormattedAmount != "" {
+				prompt += fmt.Sprintf(" (%s %s)", transfer.FormattedAmount, transfer.Symbol)
+			}
+			prompt += fmt.Sprintf(" [Contract: %s]", transfer.Contract)
+		}
+	}
+
+	// Add contract addresses context
+	if contractAddresses, ok := baggage["contract_addresses"].([]string); ok && len(contractAddresses) > 0 {
+		prompt += "\n\nCONTRACT ADDRESSES:"
+		for _, addr := range contractAddresses {
+			prompt += fmt.Sprintf("\n- %s", addr)
+		}
+	}
+
+	// Add events context
+	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
+		prompt += "\n\nKEY EVENTS:"
+		for _, event := range events {
+			prompt += fmt.Sprintf("\n- %s event on %s", event.Name, event.Contract)
+		}
+	}
+
+	// Add raw transaction context
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			if from, ok := receipt["from"].(string); ok {
+				prompt += fmt.Sprintf("\n\nTRANSACTION FROM: %s", from)
+			}
+			if to, ok := receipt["to"].(string); ok {
+				prompt += fmt.Sprintf("\nTRANSACTION TO: %s", to)
+			}
+		}
+	}
+
+	// Add network context
+	if network, exists := models.GetNetwork(networkID); exists {
+		prompt += fmt.Sprintf("\n\nNETWORK: %s", network.Name)
+	}
+
+	prompt += `
+
+ROLE IDENTIFICATION GUIDELINES:
+Based on the transaction context, identify the most appropriate role for each address:
+
+USER ROLES:
+- "Borrower" - address that borrows/receives funds in lending
+- "Lender" - address that provides/supplies funds in lending  
+- "Trader" - address performing swaps/exchanges
+- "Liquidity Provider" - address adding/removing liquidity
+- "NFT Buyer" - address purchasing NFTs
+- "NFT Seller" - address selling NFTs
+- "Token Sender" - address sending tokens (simple transfer)
+- "Token Receiver" - address receiving tokens (simple transfer)
+
+PROTOCOL ROLES:
+- "Swap Router" - DEX router handling swaps (Uniswap Router, 1inch Aggregator, etc.)
+- "Lending Pool" - lending protocol pool (Aave Pool, Compound cToken, etc.)
+- "Liquidity Pool" - AMM liquidity pool contract
+- "NFT Marketplace" - NFT trading contract (OpenSea, LooksRare, etc.)
+- "Token Contract" - ERC20/ERC721/ERC1155 token contracts
+- "Bridge Contract" - cross-chain bridge
+- "Aggregator" - DEX aggregator (1inch, Paraswap, etc.)
+
+SPECIALIZED ROLES:
+- "Fee Recipient" - address receiving transaction/protocol fees
+- "Treasury" - protocol treasury or vault
+- "Multisig" - multi-signature wallet
+- "Factory" - contract factory for creating pools/pairs
+- "Oracle" - price oracle contract
+
+PRIORITIZATION:
+1. Focus on the PRIMARY transaction purpose (swap, lend, NFT purchase, etc.)
+2. Identify the MAIN USER (the address initiating the transaction)
+3. Identify PROTOCOL CONTRACTS (routers, pools, marketplaces)
+4. Include FEE RECIPIENTS if significant fees are involved
+5. Limit to 8-10 most relevant addresses to avoid clutter
+
+OUTPUT FORMAT:
+Respond with a JSON object mapping addresses to their roles:
+{
+  "0x1234...5678": "Trader",
+  "0xabcd...ef01": "Swap Router", 
+  "0x9876...4321": "Token Contract (USDT)",
+  "0xdef0...1234": "Fee Recipient"
+}
+
+EXAMPLES:
+Uniswap Swap:
+{
+  "0x39e5c2e44c045e5ba25b55b2d6b3d7234399f09c5": "Trader",
+  "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": "Token Contract (USDT)",
+  "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "Token Contract (UNI)"
+}
+
+1inch Aggregator:
+{
+  "0x1234567890abcdef1234567890abcdef12345678": "Trader", 
+  "0x1111111254eeb25477b68fb85ed929f73a960582": "1inch Aggregator",
+  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "Token Contract (WETH)",
+  "0x0705ce0c0b1b0e5c9b5a9c3b2f5e4a0e9c7b6f3d": "Fee Recipient"
+}
+
+Analyze the transaction context and identify the most meaningful roles for up to 8-10 key addresses:
+`
+
+	return prompt
+}
+
+// parseAddressRoleResponse parses the LLM response into address-role mappings
+func (t *TransactionExplainer) parseAddressRoleResponse(response string) (map[string]string, error) {
+	response = strings.TrimSpace(response)
+
+	// Look for JSON object
+	jsonStart := strings.Index(response, "{")
+	jsonEnd := strings.LastIndex(response, "}")
+
+	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
+		return nil, fmt.Errorf("no valid JSON object found in response")
+	}
+
+	jsonStr := response[jsonStart : jsonEnd+1]
+
+	// Parse JSON
+	var addressRoles map[string]string
+	if err := json.Unmarshal([]byte(jsonStr), &addressRoles); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	// Clean up and validate
+	cleaned := make(map[string]string)
+	for address, role := range addressRoles {
+		address = strings.TrimSpace(address)
+		role = strings.TrimSpace(role)
+		if address != "" && role != "" {
+			cleaned[address] = role
+		}
+	}
+
+	return cleaned, nil
+}
+
+// generateFallbackLinks creates basic contract links when AI inference fails
+func (t *TransactionExplainer) generateFallbackLinks(txHash string, networkID int64, baggage map[string]interface{}) map[string]string {
+	links := make(map[string]string)
+
+	if network, exists := models.GetNetwork(networkID); exists {
+		links["Main Transaction"] = fmt.Sprintf("%s/tx/%s", network.Explorer, txHash)
+
+		// Add basic contract links
+		if contractAddresses, ok := baggage["contract_addresses"].([]string); ok {
+			for i, address := range contractAddresses {
+				if i < 5 { // Limit to avoid too many links
+					label := fmt.Sprintf("Contract %d", i+1)
+					links[label] = fmt.Sprintf("%s/address/%s", network.Explorer, address)
+				}
 			}
 		}
 	}
@@ -697,83 +926,6 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 
 	// Fallback: return as-is
 	return amount
-}
-
-// calculateTransactionFee calculates and formats the transaction fee from receipt data
-func (t *TransactionExplainer) calculateTransactionFee(receipt map[string]interface{}, networkID int64) string {
-	// Check if enriched fee data is already available
-	if gasFeeUSD, ok := receipt["gas_fee_usd"].(string); ok {
-		if gasFeeNative, ok := receipt["gas_fee_native"].(string); ok {
-			// Use enriched data if available
-			return fmt.Sprintf("$%s (%s ETH)", gasFeeUSD, gasFeeNative)
-		}
-	}
-
-	// Calculate fee from raw data if enriched data not available
-	gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
-	if !hasGasUsed {
-		return ""
-	}
-
-	gasUsed, err := strconv.ParseUint(gasUsedHex[2:], 16, 64)
-	if err != nil {
-		return ""
-	}
-
-	// Try to get effective gas price, fallback to gas price
-	var gasPrice uint64
-	if effectiveGasPriceHex, ok := receipt["effectiveGasPrice"].(string); ok {
-		if price, err := strconv.ParseUint(effectiveGasPriceHex[2:], 16, 64); err == nil {
-			gasPrice = price
-		}
-	} else if gasPriceHex, ok := receipt["gasPrice"].(string); ok {
-		if price, err := strconv.ParseUint(gasPriceHex[2:], 16, 64); err == nil {
-			gasPrice = price
-		}
-	}
-
-	if gasPrice == 0 {
-		return ""
-	}
-
-	// Calculate fee in wei and convert to ETH
-	feeWei := gasUsed * gasPrice
-	feeETH := float64(feeWei) / 1e18
-
-	// Get approximate USD value based on network
-	nativeTokenPriceUSD := t.getNativeTokenPrice(networkID)
-	feeUSD := feeETH * nativeTokenPriceUSD
-
-	// Format as "wei (USD)"
-	if feeUSD >= 0.01 {
-		return fmt.Sprintf("$%.2f (%.6f ETH)", feeUSD, feeETH)
-	} else if feeUSD >= 0.001 {
-		return fmt.Sprintf("$%.3f (%.6f ETH)", feeUSD, feeETH)
-	} else {
-		return fmt.Sprintf("$%.4f (%.6f ETH)", feeUSD, feeETH)
-	}
-}
-
-// getNativeTokenPrice returns approximate native token price for USD conversion
-func (t *TransactionExplainer) getNativeTokenPrice(networkID int64) float64 {
-	switch networkID {
-	case 1: // Ethereum
-		return 2500.0 // ETH price estimate
-	case 137: // Polygon
-		return 0.85 // MATIC price estimate
-	case 42161: // Arbitrum
-		return 2500.0 // Uses ETH
-	case 10: // Optimism
-		return 2500.0 // Uses ETH
-	case 56: // BSC
-		return 300.0 // BNB price estimate
-	case 43114: // Avalanche
-		return 25.0 // AVAX price estimate
-	case 250: // Fantom
-		return 0.25 // FTM price estimate
-	default:
-		return 2500.0 // Default to ETH price
-	}
 }
 
 // GetPromptContext provides comprehensive context for the LLM prompt
