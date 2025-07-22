@@ -149,6 +149,13 @@ Approved Uniswap v2 Router to spend unlimited PEPE tokens from 0x3286...399f (ou
 Swapped 100 USDT ($100) for 57,071 GrowAI tokens via 1inch v6 aggregator with $1.02 gas fee.
 ```
 
+### Example 3: Repaying Debt
+
+```
+➜  txplain git:(main) ✗ go run ./cmd/main.go -tx 0x715344c0f9a035577e221db859394cb301f577540475d2d3b1709deec605925d -network 1
+Repaid 25 USDC debt and withdrew collateral on Curve for 0xea7b...1889 for 25 USDC + $0.55 gas.
+```
+
 ### Additional Usage
 
 ```bash

@@ -336,11 +336,20 @@ func (t *TokenMetadataEnricher) fetchTokenMetadata(ctx context.Context, address 
 		return nil, fmt.Errorf("GetContractInfo failed: %w", err)
 	}
 
+	// Default decimals to 18 if RPC returns 0 (common issue)
+	decimals := contractInfo.Decimals
+	if decimals == 0 {
+		// Only use 18 as default for ERC20 tokens, keep 0 for NFTs
+		if contractInfo.Type == "ERC20" || contractInfo.Type == "Unknown" || contractInfo.Type == "" {
+			decimals = 18
+		}
+	}
+
 	metadata := &TokenMetadata{
 		Address:  address,
 		Name:     contractInfo.Name,
 		Symbol:   contractInfo.Symbol,
-		Decimals: contractInfo.Decimals,
+		Decimals: decimals,
 		Type:     contractInfo.Type,
 	}
 	
@@ -360,14 +369,18 @@ func (t *TokenMetadataEnricher) improveMetadataWithInference(baggage map[string]
 			for _, event := range eventsList {
 				if strings.EqualFold(event.Contract, address) && event.Name == "Transfer" {
 					if event.Parameters != nil {
-						// Only infer decimals if we don't already have them from RPC
-						if metadata.Decimals <= 0 {
+						// Only infer decimals if we have no decimals or have 0 decimals, but don't override 18 unless we're confident
+						if metadata.Decimals == 0 {
 							// Try to infer decimals from value patterns
 							if valueHex, ok := event.Parameters["value"].(string); ok {
 								if valueDecimal, ok := event.Parameters["value_decimal"].(uint64); ok {
 									inferredDecimals := t.inferDecimals(valueHex, valueDecimal, metadata.Symbol)
 									if inferredDecimals >= 0 && inferredDecimals <= 30 {
-										metadata.Decimals = inferredDecimals
+										// Only accept inference if it's a common decimal count or if we had 0
+										commonDecimals := map[int]bool{0: true, 6: true, 8: true, 9: true, 12: true, 18: true}
+										if commonDecimals[inferredDecimals] {
+											metadata.Decimals = inferredDecimals
+										}
 									}
 								}
 							}

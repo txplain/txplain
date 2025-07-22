@@ -400,16 +400,18 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 	eventSig := topics[0]
 	eventName := ""
 	signature := ""
+	var abiMethod *ABIMethod
 
-	// First, try to resolve using ABI resolver data if available
+	// First, try to resolve using ABI resolver data if available - THIS IS THE ROBUST PART
 	if baggage != nil {
 		if resolvedContracts, ok := baggage["resolved_contracts"].(map[string]*ContractInfo); ok {
 			if contractInfo, exists := resolvedContracts[strings.ToLower(contractAddress)]; exists && contractInfo.IsVerified {
 				// Look for matching event in parsed ABI
-				for _, method := range contractInfo.ParsedABI {
+				for i, method := range contractInfo.ParsedABI {
 					if method.Type == "event" && method.Hash == eventSig {
 						eventName = method.Name
 						signature = method.Signature
+						abiMethod = &contractInfo.ParsedABI[i]
 						break
 					}
 				}
@@ -446,20 +448,22 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 		}
 	}
 
-	// Parse parameters based on signature
-	switch eventName {
-	case "Transfer":
-		t.parseTransferEvent(topics, data, parameters)
-	case "Approval":
-		t.parseApprovalEvent(topics, data, parameters)
-	case "Swap":
-		t.parseSwapEvent(topics, data, parameters)
-	default:
-		// Store raw data for unknown events
-		parameters["raw_data"] = data
-		for i, topic := range topics {
-			parameters[fmt.Sprintf("topic_%d", i)] = topic
+	// ROBUST ABI-BASED PARSING - This is the key enhancement
+	if abiMethod != nil {
+		// Use ABI-based parsing for maximum accuracy
+		abiParams, err := t.parseEventWithABI(topics, data, abiMethod)
+		if err == nil {
+			// Merge ABI-parsed parameters with existing ones
+			for key, value := range abiParams {
+				parameters[key] = value
+			}
+		} else {
+			// If ABI parsing fails, fall back to signature-based parsing
+			t.parseEventBySignature(eventName, topics, data, parameters)
 		}
+	} else {
+		// Use signature-based parsing as fallback
+		t.parseEventBySignature(eventName, topics, data, parameters)
 	}
 
 	return eventName, parameters, nil
@@ -506,5 +510,229 @@ func (t *LogDecoder) parseSwapEvent(topics []string, data string, parameters map
 	}
 	if len(topics) >= 3 {
 		parameters["to"] = topics[2]
+	}
+}
+
+// parseTransferSingleEvent parses ERC-1155 TransferSingle events
+func (t *LogDecoder) parseTransferSingleEvent(topics []string, data string, parameters map[string]interface{}) {
+	// ERC-1155 TransferSingle: TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)
+	// topics[0] = event signature hash
+	// topics[1] = operator (indexed)
+	// topics[2] = from (indexed) 
+	// topics[3] = to (indexed)
+	// data contains id and value (non-indexed parameters)
+	
+	if len(topics) >= 4 {
+		parameters["operator"] = topics[1]
+		parameters["from"] = topics[2]
+		parameters["to"] = topics[3]
+		
+		// Parse data to extract id and value
+		if data != "" && data != "0x" && len(data) >= 130 { // 0x + 128 hex chars (64 bytes)
+			// First 32 bytes (64 hex chars) = id
+			parameters["id"] = "0x" + data[2:66]
+			// Second 32 bytes (64 hex chars) = value  
+			parameters["value"] = "0x" + data[66:130]
+		}
+	}
+}
+
+// parseTransferBatchEvent parses ERC-1155 TransferBatch events
+func (t *LogDecoder) parseTransferBatchEvent(topics []string, data string, parameters map[string]interface{}) {
+	// ERC-1155 TransferBatch: TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)
+	// topics[0] = event signature hash
+	// topics[1] = operator (indexed)
+	// topics[2] = from (indexed)
+	// topics[3] = to (indexed)  
+	// data contains ids and values arrays (non-indexed parameters)
+	
+	if len(topics) >= 4 {
+		parameters["operator"] = topics[1]
+		parameters["from"] = topics[2]
+		parameters["to"] = topics[3]
+		
+		// For batch transfers, store raw data since array parsing is complex
+		// The NFT decoder will handle the detailed parsing
+		parameters["raw_data"] = data
+		parameters["batch_transfer"] = true
+	}
+}
+
+// parseEventWithABI parses event parameters using ABI specification for maximum accuracy
+func (t *LogDecoder) parseEventWithABI(topics []string, data string, abiMethod *ABIMethod) (map[string]interface{}, error) {
+	parameters := make(map[string]interface{})
+	
+	if len(topics) == 0 || abiMethod == nil {
+		return parameters, fmt.Errorf("no topics or ABI method")
+	}
+
+	// topics[0] is the event signature hash
+	// topics[1...] are indexed parameters
+	// data contains non-indexed parameters
+	
+	topicIndex := 1 // Start from topics[1] (skip event signature)
+	dataOffset := 0 // Offset into the data hex string (after 0x)
+	
+	// Clean and prepare data for parsing
+	cleanData := strings.TrimPrefix(data, "0x")
+	
+	for _, input := range abiMethod.Inputs {
+		if input.Indexed {
+			// Parse indexed parameter from topics
+			if topicIndex < len(topics) {
+				value, err := t.parseABIParameter(input, topics[topicIndex], true)
+				if err == nil {
+					parameters[input.Name] = value
+				} else {
+					// Store raw topic if parsing fails
+					parameters[input.Name] = topics[topicIndex]
+				}
+				topicIndex++
+			}
+		} else {
+			// Parse non-indexed parameter from data
+			value, bytesConsumed, err := t.parseABIParameterFromData(input, cleanData, dataOffset)
+			if err == nil {
+				parameters[input.Name] = value
+				dataOffset += bytesConsumed
+			} else {
+				// If we can't parse further, store remaining data
+				if dataOffset*2 < len(cleanData) {
+					parameters[input.Name] = "0x" + cleanData[dataOffset*2:]
+				}
+				break
+			}
+		}
+	}
+	
+	return parameters, nil
+}
+
+// parseABIParameter parses a single ABI parameter (for indexed parameters in topics)
+func (t *LogDecoder) parseABIParameter(input ABIInput, value string, isIndexed bool) (interface{}, error) {
+	// Handle different parameter types
+	switch {
+	case input.Type == "address":
+		return t.cleanAddress(value), nil
+	case strings.HasPrefix(input.Type, "uint"):
+		return t.parseUintParameter(value, input.Type)
+	case strings.HasPrefix(input.Type, "int"):
+		return t.parseIntParameter(value, input.Type)
+	case input.Type == "bool":
+		return t.parseBoolParameter(value)
+	case strings.HasPrefix(input.Type, "bytes"):
+		if isIndexed && (input.Type == "bytes" || strings.HasSuffix(input.Type, "[]")) {
+			// For indexed dynamic types, we get the hash
+			return value, nil
+		}
+		return value, nil
+	case input.Type == "string":
+		if isIndexed {
+			// For indexed strings, we get the hash
+			return value, nil
+		}
+		return t.parseStringParameter(value)
+	default:
+		// For unknown types, return as-is
+		return value, nil
+	}
+}
+
+// parseABIParameterFromData parses a parameter from the data field (non-indexed)
+func (t *LogDecoder) parseABIParameterFromData(input ABIInput, data string, offset int) (interface{}, int, error) {
+	// Each parameter takes 32 bytes (64 hex chars) in the data field
+	if offset*2+64 > len(data) {
+		return nil, 0, fmt.Errorf("insufficient data")
+	}
+	
+	paramData := data[offset*2 : offset*2+64]
+	value, err := t.parseABIParameter(input, "0x"+paramData, false)
+	return value, 32, err // Always consume 32 bytes
+}
+
+// parseUintParameter parses uint parameters
+func (t *LogDecoder) parseUintParameter(value string, paramType string) (interface{}, error) {
+	// Extract bit size (uint256 -> 256)
+	if len(value) >= 2 && strings.HasPrefix(value, "0x") {
+		// Try to parse as uint64 first for small numbers
+		if parsed, err := strconv.ParseUint(value[2:], 16, 64); err == nil {
+			return parsed, nil
+		}
+		// For larger numbers, return hex string
+		return value, nil
+	}
+	return value, fmt.Errorf("invalid uint format")
+}
+
+// parseIntParameter parses int parameters  
+func (t *LogDecoder) parseIntParameter(value string, paramType string) (interface{}, error) {
+	if len(value) >= 2 && strings.HasPrefix(value, "0x") {
+		// Try to parse as int64 first for small numbers
+		if parsed, err := strconv.ParseInt(value[2:], 16, 64); err == nil {
+			return parsed, nil
+		}
+		// For larger numbers, return hex string
+		return value, nil
+	}
+	return value, fmt.Errorf("invalid int format")
+}
+
+// parseBoolParameter parses bool parameters
+func (t *LogDecoder) parseBoolParameter(value string) (interface{}, error) {
+	if value == "0x0000000000000000000000000000000000000000000000000000000000000000" {
+		return false, nil
+	} else if value == "0x0000000000000000000000000000000000000000000000000000000000000001" {
+		return true, nil
+	}
+	// For other values, check if it's non-zero
+	if strings.HasPrefix(value, "0x") {
+		parsed, err := strconv.ParseUint(value[2:], 16, 64)
+		return parsed != 0, err
+	}
+	return value, fmt.Errorf("invalid bool format")
+}
+
+// parseStringParameter parses string parameters (from data field)
+func (t *LogDecoder) parseStringParameter(value string) (interface{}, error) {
+	// String parsing from data is complex, return hex for now
+	return value, nil
+}
+
+// cleanAddress removes padding from address values
+func (t *LogDecoder) cleanAddress(address string) string {
+	if address == "" {
+		return ""
+	}
+	
+	// If it's a padded address (64 chars after 0x), extract the last 40 chars
+	if strings.HasPrefix(address, "0x") && len(address) == 66 {
+		return "0x" + address[26:] // Take last 40 characters
+	}
+	
+	return address
+}
+
+// parseEventBySignature handles event parsing by signature/name (fallback method)
+func (t *LogDecoder) parseEventBySignature(eventName string, topics []string, data string, parameters map[string]interface{}) {
+	// Parse parameters based on signature
+	switch eventName {
+	case "Transfer":
+		t.parseTransferEvent(topics, data, parameters)
+	case "TransferSingle":
+		// ERC-1155 single transfer event
+		t.parseTransferSingleEvent(topics, data, parameters)
+	case "TransferBatch":
+		// ERC-1155 batch transfer event  
+		t.parseTransferBatchEvent(topics, data, parameters)
+	case "Approval":
+		t.parseApprovalEvent(topics, data, parameters)
+	case "Swap":
+		t.parseSwapEvent(topics, data, parameters)
+	default:
+		// Store raw data for unknown events
+		parameters["raw_data"] = data
+		for i, topic := range topics {
+			parameters[fmt.Sprintf("topic_%d", i)] = topic
+		}
 	}
 }

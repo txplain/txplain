@@ -30,7 +30,6 @@ func main() {
 
 	// Initialize networks from environment variables
 	models.InitializeNetworks()
-	log.Printf("Loaded %d network configurations", models.GetNetworkCount())
 
 	// Command line flags
 	var (
@@ -41,7 +40,7 @@ func main() {
 		enableHTTP    = flag.Bool("http", true, "Enable HTTP API server")
 		enableMCP     = flag.Bool("mcp", true, "Enable MCP server")
 		showVersion   = flag.Bool("version", false, "Show version and exit")
-		verbose       = flag.Bool("v", false, "Verbose mode - show full prompt and context")
+		verbose       = flag.Bool("v", false, "Verbose mode - show prompts sent to LLM. Set DEBUG=true env var to also show baggage debug info")
 		debugToken    = flag.String("debug-token", "", "Debug specific token contract (address)")
 		txHash        = flag.String("tx", "", "Transaction hash to explain")
 		networkID     = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
@@ -114,6 +113,11 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
 
+	// Enable verbose mode if requested
+	if verbose {
+		txAgent.SetVerbose(true)
+	}
+
 	// Create transaction request
 	request := &models.TransactionRequest{
 		TxHash:    txHash,
@@ -135,7 +139,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 	}
 
 	// Print debug information if verbose
-	if verbose {
+	if os.Getenv("DEBUG") == "true" {
 		fmt.Println("\n" + strings.Repeat("=", 80))
 		fmt.Println("🔧 DEBUG INFORMATION")
 		fmt.Println(strings.Repeat("=", 80))

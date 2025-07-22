@@ -65,6 +65,11 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 	return agent, nil
 }
 
+// SetVerbose enables or disables verbose logging for the agent
+func (a *TxplainAgent) SetVerbose(verbose bool) {
+	a.explainer.SetVerbose(verbose)
+}
+
 // ExplainTransaction processes a transaction with enhanced baggage pipeline
 func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.TransactionRequest) (*models.ExplanationResult, error) {
 	// Validate input
@@ -120,6 +125,14 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, transferExtractor)
 
+	// Add NFT decoder (extracts and enriches NFT transfers)
+	nftDecoder := txtools.NewNFTDecoder()
+	nftDecoder.SetRPCClient(client)
+	if err := pipeline.AddProcessor(nftDecoder); err != nil {
+		return nil, fmt.Errorf("failed to add NFT decoder: %w", err)
+	}
+	contextProviders = append(contextProviders, nftDecoder)
+
 	// Add token metadata enricher
 	tokenMetadata := txtools.NewTokenMetadataEnricher()
 	tokenMetadata.SetRPCClient(client)
@@ -137,7 +150,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		contextProviders = append(contextProviders, priceLookup)
 
 		// Add monetary value enricher (runs after price lookup)
-		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm)
+		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.coinMarketCapAPIKey)
 		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
 			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)
 		}

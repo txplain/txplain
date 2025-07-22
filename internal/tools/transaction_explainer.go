@@ -8,25 +8,34 @@ import (
 	"strings"
 	"time"
 
+	"os"
+
 	"github.com/tmc/langchaingo/llms"
 	"github.com/txplain/txplain/internal/models"
 )
 
 // TransactionExplainer generates human-readable explanations from decoded transaction data
 type TransactionExplainer struct {
-	llm llms.Model
+	llm     llms.Model
+	verbose bool
 }
 
 // NewTransactionExplainer creates a new TransactionExplainer tool
 func NewTransactionExplainer(llm llms.Model) *TransactionExplainer {
 	return &TransactionExplainer{
-		llm: llm,
+		llm:     llm,
+		verbose: false,
 	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (t *TransactionExplainer) SetVerbose(verbose bool) {
+	t.verbose = verbose
 }
 
 // Dependencies returns the tools this processor depends on
 func (t *TransactionExplainer) Dependencies() []string {
-	return []string{"abi_resolver", "log_decoder", "token_transfer_extractor", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver", "protocol_resolver"}
+	return []string{"abi_resolver", "log_decoder", "token_transfer_extractor", "nft_decoder", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver", "protocol_resolver"}
 }
 
 // Process generates explanation using all information from baggage
@@ -178,29 +187,27 @@ func (t *TransactionExplainer) extractDecodedData(input map[string]interface{}) 
 
 // generateExplanationWithBaggage uses the LLM to create a human-readable explanation with additional context from baggage
 func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Context, baggage map[string]interface{}, additionalContext []string) (*models.ExplanationResult, error) {
-	// Build the prompt with additional context from baggage
-	prompt := t.buildExplanationPromptFromBaggage(baggage, additionalContext)
+	// Extract data from baggage
+	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
+	rawData, _ := baggage["raw_data"].(map[string]interface{})
 
-	// Call LLM
-	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
-		{
-			Role: llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{
-				llms.TextPart(prompt),
-			},
-		},
-	})
+	// If no decoded data, create empty structure
+	if decodedData == nil {
+		decodedData = &models.DecodedData{}
+	}
+
+	// Generate explanation using the main method
+	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, additionalContext)
 	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
+		return nil, err
 	}
 
-	// Parse the LLM response and build the explanation result
-	responseText := ""
-	if response != nil && len(response.Choices) > 0 {
-		responseText = response.Choices[0].Content
+	// Update the result with baggage-specific data (transfers from TokenTransferExtractor)
+	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok {
+		explanation.Transfers = transfers
+		// Regenerate wallet effects with the updated transfers
+		explanation.Effects = t.generateWalletEffects(explanation.Transfers)
 	}
-
-	explanation := t.parseExplanationResponseFromBaggage(responseText, baggage)
 
 	return explanation, nil
 }
@@ -210,6 +217,13 @@ func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Contex
 	// Build the prompt with additional context
 	prompt := t.buildExplanationPrompt(decodedData, rawData, additionalContext)
 
+	if t.verbose {
+		fmt.Println("=== TRANSACTION EXPLAINER: PROMPT SENT TO LLM ===")
+		fmt.Println(prompt)
+		fmt.Println("=== END OF PROMPT ===")
+		fmt.Println()
+	}
+
 	// Call LLM
 	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
 		{
@@ -229,24 +243,19 @@ func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Contex
 		responseText = response.Choices[0].Content
 	}
 
+	if t.verbose {
+		fmt.Println("=== TRANSACTION EXPLAINER: LLM RESPONSE ===")
+		fmt.Println(responseText)
+		fmt.Println("=== END OF LLM RESPONSE ===")
+		fmt.Println()
+	}
+
 	explanation := t.parseExplanationResponse(responseText, decodedData, rawData)
 
 	return explanation, nil
 }
 
-// buildExplanationPromptFromBaggage creates the prompt for the LLM using data from baggage
-func (t *TransactionExplainer) buildExplanationPromptFromBaggage(baggage map[string]interface{}, additionalContexts []string) string {
-	// Get decoded data and raw data from baggage
-	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
-	rawData, _ := baggage["raw_data"].(map[string]interface{})
 
-	// If no decoded data, create empty structure
-	if decodedData == nil {
-		decodedData = &models.DecodedData{}
-	}
-
-	return t.buildExplanationPrompt(decodedData, rawData, additionalContexts)
-}
 
 // buildExplanationPrompt creates the prompt for the LLM
 func (t *TransactionExplainer) buildExplanationPrompt(decodedData *models.DecodedData, rawData map[string]interface{}, additionalContexts []string) string {
@@ -343,6 +352,30 @@ Event #%d:
 
 Write a single, short sentence (under 30 words) describing the main action. 
 
+MINTING DETECTION:
+- When NFTs are minted from zero address (0x0000000000000000000000000000000000000000), use "minted" language
+- The recipients are the addresses that RECEIVE the NFTs, not the payer
+- For minting: "Minted X NFTs for Y USDC paid by payer-address to recipients"
+- Use payment flow analysis to identify the actual payer and recipients correctly
+- Multiple recipients should be handled: "Minted NFTs to 2 recipients for X USDC"
+
+TRANSACTION TYPE DETECTION:
+- When NFTs are involved alongside token transfers, prioritize describing it as a purchase/mint/trade rather than a swap
+- Look for patterns: User pays tokens → receives NFTs = PURCHASE
+- Look for patterns: User pays tokens → NFTs minted to recipients = MINTING
+- Look for patterns: User pays tokens → receives NFTs + change = PURCHASE with change
+- Look for patterns: User sends Token A → receives Token B (no NFTs) = SWAP
+- PURCHASE examples: "Purchased 2 NFTs for 30 USDC", "Minted 5 NFTs from collection for 0.1 ETH"
+- MINTING examples: "Minted 3,226x PAYKEN tokens for 30.32 USDC to 2 recipients"
+- Avoid describing NFT transactions as "swaps" unless it's actually NFT-to-NFT trading
+
+RECIPIENT IDENTIFICATION:
+- For MINTING: Recipients are those who receive the newly minted NFTs
+- For PURCHASES: Recipients are those who receive the purchased NFTs
+- Use Payment Flow Analysis section to identify the correct payer
+- Use NFT Transfers section to identify the correct recipients
+- Don't confuse the payer with the recipients
+
 MULTI-HOP SWAP DETECTION:
 - For complex transactions with multiple token transfers, focus on the NET EFFECT for the user
 - Look for the pattern: User sends Token A → Multiple intermediary transfers → User receives Token B
@@ -354,6 +387,43 @@ MULTI-HOP SWAP DETECTION:
 - Example: User sends USDT → Router converts to WETH → Router converts WETH to GrowAI → User receives GrowAI
 - In this case, report "Swapped USDT for GrowAI tokens" NOT "Swapped USDT for WETH"
 
+USER IDENTIFICATION IN DEFI:
+- CRITICAL: Always check for "ACTUAL USER" in Payment Flow Analysis section
+- When ACTUAL USER is provided, use that address, NOT the contract/router addresses
+- DeFi transactions often use intermediary contracts - show the real beneficiary
+- Format examples:
+  - "Repaid 25 USDC debt on Morpho for 0xea7b...1889 + $0.55 gas"
+  - "Borrowed 100 DAI on Aave for 0x1234...5678 + $2.30 gas"
+  - "Supplied 50 USDC to Compound for 0x9876...4321 + $1.20 gas"
+- NEVER say "by 0xbbbb...ffcb" when the actual user is "0xea7b...1889"
+- The contract address is the intermediary, not the user
+
+PAYMENT FLOW ANALYSIS:
+- Use the "Payment Flow Analysis" section to identify:
+  - Who paid (the payer)
+  - How much was paid initially 
+  - How much reached the final recipient
+  - What fees were deducted
+  - CRITICAL: Who is the ACTUAL USER vs intermediary contracts
+- CRITICAL: Always include fee information from "Fee Summary for Final Explanation" section
+- Use suggested fee formats provided in the context
+- For minting with fees: "Minted NFTs for 30.32 USDC (3.55 USDC fees + $0.85 gas)"
+- For purchases with change: "Purchased NFTs for ~27.55 USDC net cost + $1.20 gas"
+- Never omit fee information - users must know where all their value went
+
+MANDATORY FEE REQUIREMENTS:
+- ALWAYS include transaction fees when they exist (shown in Payment Flow Analysis)
+- ALWAYS include gas fees when they exist (shown in Fee Summary)
+- ALWAYS include fee recipient addresses when available (shown in Fee recipients section)
+- Format examples:
+  - "for 30.32 USDC (3.55 USDC fees to 0x0705...64e0 + $0.85 gas)"
+  - "for 30.32 USDC (3.55 USDC fees to 3 recipients + $0.85 gas)"
+  - "for 50 ETH + $12.50 gas"  
+  - "for 100 USDT (2.5 USDT fees to 0x1234...5678)"
+- Use "Fee Summary for Final Explanation" for exact formatting suggestions
+- Show total cost to user when provided: "total cost $32.17"
+- Fee recipients provide transparency about where fees went - include when available
+
 IMPORTANT: 
 - Use enriched monetary values from "Enriched Token Transfers" section when available (FormattedAmount and USD Value fields).
 - Prefer specific USD values from the enriched data over raw hex values or basic token prices.
@@ -362,7 +432,8 @@ IMPORTANT:
 - Always use the total converted amount, not the base unit price.
 - Use the address formatting provided in the "Address Formatting Guide" section.
 - Follow the address usage instructions from the ENS Names section.
-- If gas fees in USD are provided in the "Transaction Fees" section, include them in your explanation when relevant (e.g., "with $2.15 gas fee" or "paying $0.85 in fees").
+- CRITICAL: Always include gas fees and transaction fees from the "Fee Summary" section
+- Gas fees should be shown in USD format: "$0.85 gas", "$12.50 gas"
 
 PROTOCOL USAGE:
 - Always include specific protocol/aggregator names when available from the "Protocol Detection" section
@@ -370,17 +441,42 @@ PROTOCOL USAGE:
 - For aggregators, mention the aggregator name (e.g., "via 1inch aggregator", "through Paraswap")
 - For DEX protocols, include the protocol name (e.g., "on Uniswap v3", "via Curve pool")
 
+NFT HANDLING:
+- Always include NFT transfers from the "NFT Transfers" section when present
+- For ERC721 NFTs: mention the specific token ID and collection name
+- For ERC1155 tokens: include both token ID and amount transferred - be specific about quantities
+- Use collection names when available, otherwise use contract symbol or "Unknown NFT"
+- Include NFT transfers in the main action summary alongside token transfers
+- For large amounts, use clear formatting: "3,226 tokens of ID 3226" or "3,226x NFT #3226"
+- CRITICAL: Always show explicit recipients and amounts - never use generic terms like "to 2 recipients"
+- Use "Recipient Summary for Final Explanation" section to get specific recipient details
+- For multiple recipients: show each recipient explicitly: "3,226x to 0x6686...1f28 and 3,226x to 0xd53c...eb47"
+- For single recipients: show the recipient: "5 NFTs to 0x1234...5678"
+
+EXPLICIT RECIPIENT REQUIREMENTS:
+- NEVER say "to 2 recipients" or "to multiple recipients" - always show the specific addresses
+- ALWAYS include the amount each recipient received
+- Format: "3,226x PAYKEN tokens to 0x6686...1f28 and 3,226x to 0xd53c...eb47"
+- Format: "1 CryptoPunk NFT #1234 to 0x1234...5678"
+- Format: "5 BoredApes NFTs to 0x1111...2222, 3 to 0x3333...4444, and 2 to 0x5555...6666"
+- Use the "Recipient Summary" section to get exact recipient addresses and amounts
+
 Examples:
-- "Transferred 43.94 ATH ($1.45 USD) from one wallet to another"
-- "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap v3"  
-- "Swapped 100 USDT ($100) for 57,071 GrowAI tokens via 1inch v6 aggregator"
-- "Approved Uniswap v2 Router to spend unlimited DAI"
-- "Minted 5 NFTs from BoredApes collection"
-- "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth)"
-- "Swapped 0.5 ETH for 1,250 USDC ($1,250) on Curve with $2.15 gas fee"
-- "Transferred 1,000 USDT ($1,000) paying $0.85 in fees via Paraswap"
-- "Added liquidity to Uniswap v3 ETH/USDC pool"
-- "Swapped 50 USDT for 0.02 WETH through SushiSwap router"
+- "Minted 3,226x PAYKEN tokens (ID 3226) to 0x6686...1f28 and 3,226x to 0xd53c...eb47 for 30.32 USDC (3.55 USDC fees to 3 recipients + $0.18 gas)"
+- "Minted 6,452x PAYKEN tokens for 30.32 USDC: 3,226x to 0x6686...1f28 and 3,226x to 0xd53c...eb47 (fees to 0x0705...64e0 + $0.25 gas)"
+- "Purchased 2x NFT #3226 from PAYKEN collection for 30.32 USDC + $2.15 gas to 0x1234...5678"
+- "Minted 5 BoredApes NFTs to 0x1111...2222 for 0.5 ETH + $45.80 gas"
+- "Transferred 43.94 ATH ($1.45 USD) + $0.02 gas from one wallet to another"
+- "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap v3 + $15.20 gas"  
+- "Swapped 100 USDT ($100) for 57,071 GrowAI tokens via 1inch v6 aggregator + $3.45 gas"
+- "Approved Uniswap v2 Router to spend unlimited DAI + $8.90 gas"
+- "Transferred NFT #1234 from CryptoPunks collection + $12.50 gas"
+- "Received 2 ERC-1155 tokens (ID 3226) from Tappers Kingdom + $1.25 gas"
+- "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth) + $0.85 gas"
+- "Swapped 0.5 ETH for 1,250 USDC ($1,250) on Curve (0.1 ETH fees to 0x1234...5678 + $25.50 gas)"
+- "Transferred 1,000 USDT ($1,000) paying 5 USDT fees to 0x9876...4321 + $2.30 gas via Paraswap"
+- "Added liquidity to Uniswap v3 ETH/USDC pool + $18.75 gas"
+- "Swapped 50 USDT for 0.02 WETH through SushiSwap router + $4.60 gas"
 
 Be specific about amounts, tokens, protocols, and main action. No explanations or warnings.`
 
@@ -442,70 +538,7 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 	return result
 }
 
-// parseExplanationResponseFromBaggage parses the LLM response using data from baggage
-func (t *TransactionExplainer) parseExplanationResponseFromBaggage(response string, baggage map[string]interface{}) *models.ExplanationResult {
-	// Get data from baggage
-	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
-	rawData, _ := baggage["raw_data"].(map[string]interface{})
 
-	// If no decoded data, create empty structure
-	if decodedData == nil {
-		decodedData = &models.DecodedData{}
-	}
-
-	result := &models.ExplanationResult{
-		Summary:   response, // For now, use the full response as summary
-		Effects:   []models.WalletEffect{},
-		Transfers: []models.TokenTransfer{},
-		Links:     make(map[string]string),
-		Tags:      []string{},
-		Metadata:  make(map[string]interface{}),
-		Timestamp: time.Now(),
-	}
-
-	// Extract basic transaction info from raw data if available
-	if rawData != nil {
-		if networkID, ok := rawData["network_id"].(float64); ok {
-			result.NetworkID = int64(networkID)
-		}
-		if txHash, ok := rawData["tx_hash"].(string); ok {
-			result.TxHash = txHash
-		}
-
-		// Extract transaction details from receipt
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			if gasUsed, ok := receipt["gasUsed"].(string); ok {
-				if gas, err := strconv.ParseUint(gasUsed[2:], 16, 64); err == nil {
-					result.GasUsed = gas
-				}
-			}
-			if status, ok := receipt["status"].(string); ok {
-				result.Status = t.formatStatus(status)
-			}
-			if blockNumber, ok := receipt["blockNumber"].(string); ok {
-				if bn, err := strconv.ParseUint(blockNumber[2:], 16, 64); err == nil {
-					result.BlockNumber = bn
-				}
-			}
-		}
-	}
-
-	// Get transfers from baggage (populated by TokenTransferExtractor)
-	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok {
-		result.Transfers = transfers
-	}
-
-	// Generate wallet effects from transfers
-	result.Effects = t.generateWalletEffects(result.Transfers)
-
-	// Generate tags based on transaction content
-	result.Tags = t.generateTags(decodedData)
-
-	// Generate links to explorers
-	result.Links = t.generateLinks(result.TxHash, result.NetworkID, decodedData)
-
-	return result
-}
 
 // generateWalletEffects creates wallet effects from transfers
 func (t *TransactionExplainer) generateWalletEffects(transfers []models.TokenTransfer) []models.WalletEffect {
@@ -710,46 +743,60 @@ func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map
 		}
 	}
 
-	// Add debug information if available
-	if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
-		var debugParts []string
-		
-		// Add token metadata debug info
-		if tokenDebug, ok := debugInfo["token_metadata"].(map[string]interface{}); ok {
-			debugParts = append(debugParts, "=== TOKEN METADATA DEBUG ===")
-			if discoveredAddresses, ok := tokenDebug["discovered_addresses"].([]string); ok {
-				debugParts = append(debugParts, fmt.Sprintf("Discovered %d token addresses: %v", len(discoveredAddresses), discoveredAddresses))
-			}
-			if rpcResults, ok := tokenDebug["rpc_results"].([]string); ok {
-				debugParts = append(debugParts, "RPC Results:")
-				for _, result := range rpcResults {
-					debugParts = append(debugParts, "  - " + result)
-				}
-			}
-			if rpcErrors, ok := tokenDebug["token_metadata_rpc_errors"].([]string); ok {
-				debugParts = append(debugParts, "RPC Errors:")
-				for _, err := range rpcErrors {
-					debugParts = append(debugParts, "  - " + err)
-				}
-			}
-			if finalMetadata, ok := tokenDebug["final_metadata"].([]string); ok {
-				debugParts = append(debugParts, "Final Metadata:")
-				for _, metadata := range finalMetadata {
-					debugParts = append(debugParts, "  - " + metadata)
-				}
-			}
+	// Only add debug information if DEBUG environment variable is set to "true"
+	if os.Getenv("DEBUG") == "true" {
+		if t.verbose {
+			fmt.Println("=== DEBUG MODE ENABLED - INCLUDING BAGGAGE DEBUG INFO ===")
 		}
 		
-		// Add transfer enrichment debug info
-		if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
-			debugParts = append(debugParts, "=== TRANSFER ENRICHMENT DEBUG ===")
-			for _, debug := range transferDebug {
-				debugParts = append(debugParts, "  - " + debug)
+		// Add debug information if available
+		if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
+			var debugParts []string
+			
+			// Add token metadata debug info
+			if tokenDebug, ok := debugInfo["token_metadata"].(map[string]interface{}); ok {
+				debugParts = append(debugParts, "=== TOKEN METADATA DEBUG ===")
+				if discoveredAddresses, ok := tokenDebug["discovered_addresses"].([]string); ok {
+					debugParts = append(debugParts, fmt.Sprintf("Discovered %d token addresses: %v", len(discoveredAddresses), discoveredAddresses))
+				}
+				if rpcResults, ok := tokenDebug["rpc_results"].([]string); ok {
+					debugParts = append(debugParts, "RPC Results:")
+					for _, result := range rpcResults {
+						debugParts = append(debugParts, "  - " + result)
+					}
+				}
+				if rpcErrors, ok := tokenDebug["token_metadata_rpc_errors"].([]string); ok {
+					debugParts = append(debugParts, "RPC Errors:")
+					for _, err := range rpcErrors {
+						debugParts = append(debugParts, "  - " + err)
+					}
+				}
+				if finalMetadata, ok := tokenDebug["final_metadata"].([]string); ok {
+					debugParts = append(debugParts, "Final Metadata:")
+					for _, metadata := range finalMetadata {
+						debugParts = append(debugParts, "  - " + metadata)
+					}
+				}
 			}
-		}
-		
-		if len(debugParts) > 0 {
-			contextParts = append(contextParts, strings.Join(debugParts, "\n"))
+			
+			// Add transfer enrichment debug info
+			if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
+				debugParts = append(debugParts, "=== TRANSFER ENRICHMENT DEBUG ===")
+				for _, debug := range transferDebug {
+					debugParts = append(debugParts, "  - " + debug)
+				}
+			}
+			
+			if len(debugParts) > 0 {
+				contextParts = append(contextParts, strings.Join(debugParts, "\n"))
+				
+				if t.verbose {
+					fmt.Printf("=== BAGGAGE DEBUG CONTEXT (%d sections) ===\n", len(debugParts))
+					fmt.Println(strings.Join(debugParts, "\n"))
+					fmt.Println("=== END OF BAGGAGE DEBUG CONTEXT ===")
+					fmt.Println()
+				}
+			}
 		}
 	}
 
