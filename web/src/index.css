@@ -1,3 +1,34 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Tooltip table styles */
+.tooltip-content table {
+  color: #ffffff;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  table-layout: auto;
+}
+
+.tooltip-content table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid #4b5563;
+  vertical-align: top;
+}
+
+.tooltip-content table td:first-child {
+  font-weight: bold;
+  white-space: nowrap;
+  padding-right: 12px;
+}
+
+.tooltip-content table td:last-child {
+  width: auto;
+  max-width: 200px;
+  word-break: break-word;
+}
+
+.tooltip-content table tr:last-child td {
+  border-bottom: none;
+}

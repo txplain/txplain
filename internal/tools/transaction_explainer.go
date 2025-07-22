@@ -204,9 +204,18 @@ func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Contex
 
 	// Update the result with baggage-specific data (transfers from TokenTransferExtractor)
 	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok {
-		explanation.Transfers = transfers
-		// Regenerate wallet effects with the updated transfers
-		explanation.Effects = t.generateWalletEffects(explanation.Transfers)
+		// Filter out any remaining empty or invalid transfers
+		var validTransfers []models.TokenTransfer
+		for _, transfer := range transfers {
+			// Only include transfers with valid data
+			if transfer.From != "" && transfer.To != "" && 
+			   transfer.From != "0x" && transfer.To != "0x" &&
+			   len(transfer.From) >= 10 && len(transfer.To) >= 10 {
+				validTransfers = append(validTransfers, transfer)
+			}
+		}
+		
+		explanation.Transfers = validTransfers
 	}
 
 	return explanation, nil
@@ -487,7 +496,6 @@ Be specific about amounts, tokens, protocols, and main action. No explanations o
 func (t *TransactionExplainer) parseExplanationResponse(response string, decodedData *models.DecodedData, rawData map[string]interface{}) *models.ExplanationResult {
 	result := &models.ExplanationResult{
 		Summary:   response, // For now, use the full response as summary
-		Effects:   []models.WalletEffect{},
 		Transfers: []models.TokenTransfer{},
 		Links:     make(map[string]string),
 		Tags:      []string{},
@@ -519,15 +527,15 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 					result.BlockNumber = bn
 				}
 			}
+
+			// Calculate and format transaction fee
+			result.TxFee = t.calculateTransactionFee(receipt, result.NetworkID)
 		}
 	}
 
 	// Token transfers should be provided via the Process method/baggage
 	// For Run method, leave empty for now
 	result.Transfers = []models.TokenTransfer{}
-
-	// Generate wallet effects from transfers
-	result.Effects = t.generateWalletEffects(result.Transfers)
 
 	// Generate tags based on transaction content
 	result.Tags = t.generateTags(decodedData)
@@ -539,45 +547,6 @@ func (t *TransactionExplainer) parseExplanationResponse(response string, decoded
 }
 
 
-
-// generateWalletEffects creates wallet effects from transfers
-func (t *TransactionExplainer) generateWalletEffects(transfers []models.TokenTransfer) []models.WalletEffect {
-	effectsMap := make(map[string]*models.WalletEffect)
-
-	for _, transfer := range transfers {
-		// Effect on sender
-		if transfer.From != "" {
-			if effect, exists := effectsMap[transfer.From]; exists {
-				effect.Transfers = append(effect.Transfers, transfer)
-			} else {
-				effectsMap[transfer.From] = &models.WalletEffect{
-					Address:   transfer.From,
-					Transfers: []models.TokenTransfer{transfer},
-				}
-			}
-		}
-
-		// Effect on receiver
-		if transfer.To != "" {
-			if effect, exists := effectsMap[transfer.To]; exists {
-				effect.Transfers = append(effect.Transfers, transfer)
-			} else {
-				effectsMap[transfer.To] = &models.WalletEffect{
-					Address:   transfer.To,
-					Transfers: []models.TokenTransfer{transfer},
-				}
-			}
-		}
-	}
-
-	// Convert map to slice
-	var effects []models.WalletEffect
-	for _, effect := range effectsMap {
-		effects = append(effects, *effect)
-	}
-
-	return effects
-}
 
 // generateTags creates tags based on transaction content
 func (t *TransactionExplainer) generateTags(decodedData *models.DecodedData) []string {
@@ -728,6 +697,83 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 
 	// Fallback: return as-is
 	return amount
+}
+
+// calculateTransactionFee calculates and formats the transaction fee from receipt data
+func (t *TransactionExplainer) calculateTransactionFee(receipt map[string]interface{}, networkID int64) string {
+	// Check if enriched fee data is already available
+	if gasFeeUSD, ok := receipt["gas_fee_usd"].(string); ok {
+		if gasFeeNative, ok := receipt["gas_fee_native"].(string); ok {
+			// Use enriched data if available
+			return fmt.Sprintf("$%s (%s ETH)", gasFeeUSD, gasFeeNative)
+		}
+	}
+
+	// Calculate fee from raw data if enriched data not available
+	gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
+	if !hasGasUsed {
+		return ""
+	}
+
+	gasUsed, err := strconv.ParseUint(gasUsedHex[2:], 16, 64)
+	if err != nil {
+		return ""
+	}
+
+	// Try to get effective gas price, fallback to gas price
+	var gasPrice uint64
+	if effectiveGasPriceHex, ok := receipt["effectiveGasPrice"].(string); ok {
+		if price, err := strconv.ParseUint(effectiveGasPriceHex[2:], 16, 64); err == nil {
+			gasPrice = price
+		}
+	} else if gasPriceHex, ok := receipt["gasPrice"].(string); ok {
+		if price, err := strconv.ParseUint(gasPriceHex[2:], 16, 64); err == nil {
+			gasPrice = price
+		}
+	}
+
+	if gasPrice == 0 {
+		return ""
+	}
+
+	// Calculate fee in wei and convert to ETH
+	feeWei := gasUsed * gasPrice
+	feeETH := float64(feeWei) / 1e18
+
+	// Get approximate USD value based on network
+	nativeTokenPriceUSD := t.getNativeTokenPrice(networkID)
+	feeUSD := feeETH * nativeTokenPriceUSD
+
+	// Format as "wei (USD)"
+	if feeUSD >= 0.01 {
+		return fmt.Sprintf("$%.2f (%.6f ETH)", feeUSD, feeETH)
+	} else if feeUSD >= 0.001 {
+		return fmt.Sprintf("$%.3f (%.6f ETH)", feeUSD, feeETH)
+	} else {
+		return fmt.Sprintf("$%.4f (%.6f ETH)", feeUSD, feeETH)
+	}
+}
+
+// getNativeTokenPrice returns approximate native token price for USD conversion
+func (t *TransactionExplainer) getNativeTokenPrice(networkID int64) float64 {
+	switch networkID {
+	case 1: // Ethereum
+		return 2500.0 // ETH price estimate
+	case 137: // Polygon
+		return 0.85 // MATIC price estimate
+	case 42161: // Arbitrum
+		return 2500.0 // Uses ETH
+	case 10: // Optimism
+		return 2500.0 // Uses ETH
+	case 56: // BSC
+		return 300.0 // BNB price estimate
+	case 43114: // Avalanche
+		return 25.0 // AVAX price estimate
+	case 250: // Fantom
+		return 0.25 // FTM price estimate
+	default:
+		return 2500.0 // Default to ETH price
+	}
 }
 
 // GetPromptContext provides comprehensive context for the LLM prompt

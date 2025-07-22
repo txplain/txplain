@@ -25,19 +25,17 @@ export interface TokenTransfer {
   amount_usd?: string
 }
 
-export interface WalletEffect {
-  address: string
-  net_change: string
-  transfers: TokenTransfer[]
-  gas_spent: string
-  new_nonce: number
+export interface Annotation {
+  text: string
+  link?: string
+  tooltip?: string
+  icon?: string
 }
 
 export interface ExplanationResult {
   tx_hash: string
   network_id: number
   summary: string
-  effects: WalletEffect[]
   transfers: TokenTransfer[]
   gas_used: number
   gas_price: string
@@ -48,5 +46,6 @@ export interface ExplanationResult {
   links: Record<string, string>
   risks?: string[]
   tags?: string[]
-  metadata?: Record<string, any>
+  metadata?: Record<string, unknown>
+  annotations?: Annotation[]
 } 

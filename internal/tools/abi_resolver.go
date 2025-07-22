@@ -136,6 +136,9 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 
 	// Add resolved contracts to baggage
 	baggage["resolved_contracts"] = resolvedContracts
+	
+	// Also add the list of all discovered contract addresses for other tools to use
+	baggage["contract_addresses"] = contractAddresses
 	return nil
 }
 

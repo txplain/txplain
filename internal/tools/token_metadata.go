@@ -425,6 +425,61 @@ func (t *TokenMetadataEnricher) GetPromptContext(ctx context.Context, baggage ma
 	return "Token Metadata:\n" + strings.Join(contextParts, "\n")
 }
 
+// GetAnnotationContext provides annotation context for tokens
+func (t *TokenMetadataEnricher) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
+	annotationContext := &models.AnnotationContext{
+		Items: make([]models.AnnotationContextItem, 0),
+	}
+
+	// Get token metadata from baggage
+	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
+	if !ok || len(tokenMetadata) == 0 {
+		return annotationContext
+	}
+
+	// Add token annotation context
+	for _, metadata := range tokenMetadata {
+		if metadata.Address == "" {
+			continue
+		}
+
+		// Create token context item
+		description := fmt.Sprintf("%s token", metadata.Type)
+		if metadata.Decimals > 0 {
+			description += fmt.Sprintf(" with %d decimals", metadata.Decimals)
+		}
+
+		annotationContext.AddToken(
+			metadata.Address,
+			metadata.Symbol,
+			metadata.Name,
+			"", // Icon will be added by static context provider or from external API
+			description,
+			map[string]interface{}{
+				"decimals": metadata.Decimals,
+				"type":     metadata.Type,
+			},
+		)
+
+		// Also add by symbol for easier matching
+		if metadata.Symbol != "" {
+			annotationContext.AddItem(models.AnnotationContextItem{
+				Type:  "token",
+				Value: metadata.Symbol,
+				Name:  fmt.Sprintf("%s (%s)", metadata.Name, metadata.Symbol),
+				Description: description,
+				Metadata: map[string]interface{}{
+					"address":  metadata.Address,
+					"decimals": metadata.Decimals,
+					"type":     metadata.Type,
+				},
+			})
+		}
+	}
+
+	return annotationContext
+}
+
 // GetTokenMetadata is a helper function to get token metadata from baggage
 func GetTokenMetadata(baggage map[string]interface{}, address string) (*TokenMetadata, bool) {
 	if metadataMap, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok {

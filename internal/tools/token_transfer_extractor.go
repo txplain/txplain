@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/txplain/txplain/internal/models"
 )
@@ -47,7 +48,7 @@ func (t *TokenTransferExtractor) Process(ctx context.Context, baggage map[string
 	return nil
 }
 
-// extractTokenTransfers extracts token transfers from events
+// extractTokenTransfers extracts token transfers from events with proper filtering and cleaning
 func (t *TokenTransferExtractor) extractTokenTransfers(events []models.Event) []models.TokenTransfer {
 	var transfers []models.TokenTransfer
 
@@ -59,11 +60,12 @@ func (t *TokenTransferExtractor) extractTokenTransfers(events []models.Event) []
 
 			// Extract from, to, and amount/tokenId from parameters
 			if params := event.Parameters; params != nil {
+				// Clean and extract addresses
 				if from, ok := params["from"].(string); ok {
-					transfer.From = from
+					transfer.From = t.cleanAddress(from)
 				}
 				if to, ok := params["to"].(string); ok {
-					transfer.To = to
+					transfer.To = t.cleanAddress(to)
 				}
 				if value, ok := params["value"].(string); ok {
 					transfer.Amount = value
@@ -75,13 +77,118 @@ func (t *TokenTransferExtractor) extractTokenTransfers(events []models.Event) []
 				}
 			}
 
-			// Token metadata will be added later by the metadata enricher
+			// Skip if we don't have valid from/to addresses
+			if transfer.From == "" || transfer.To == "" {
+				continue
+			}
 
+			// Skip zero-amount ERC20 transfers (but keep ERC721 transfers)
+			if transfer.Type == "ERC20" && t.isZeroAmount(transfer.Amount) {
+				continue
+			}
+
+			// Token metadata will be added later by the metadata enricher
 			transfers = append(transfers, transfer)
 		}
 	}
 
-	return transfers
+	// Filter out irrelevant intermediate transfers
+	return t.filterRelevantTransfers(transfers)
+}
+
+// cleanAddress removes padding from addresses and validates format
+func (t *TokenTransferExtractor) cleanAddress(address string) string {
+	if address == "" {
+		return ""
+	}
+	
+	// Remove 0x prefix for processing
+	addr := address
+	hasPrefix := strings.HasPrefix(addr, "0x")
+	if hasPrefix {
+		addr = addr[2:]
+	}
+	
+	// If it's a padded 64-character address, extract the last 40 characters
+	if len(addr) == 64 {
+		addr = addr[24:] // Remove padding, keep last 40 chars
+	}
+	
+	// Validate it's a proper hex address (40 characters)
+	if len(addr) != 40 {
+		return ""
+	}
+	
+	// Re-add prefix and return
+	return "0x" + addr
+}
+
+// isZeroAmount checks if an amount string represents zero
+func (t *TokenTransferExtractor) isZeroAmount(amount string) bool {
+	if amount == "" || amount == "0x" || amount == "0x0" {
+		return true
+	}
+	
+	// Remove 0x prefix
+	if strings.HasPrefix(amount, "0x") {
+		amount = amount[2:]
+	}
+	
+	// Check if all characters are zeros
+	for _, char := range amount {
+		if char != '0' {
+			return false
+		}
+	}
+	
+	return true
+}
+
+// filterRelevantTransfers removes irrelevant intermediate transfers (like WETH in multi-hop swaps)
+func (t *TokenTransferExtractor) filterRelevantTransfers(transfers []models.TokenTransfer) []models.TokenTransfer {
+	if len(transfers) <= 2 {
+		return transfers // Keep simple transactions as-is
+	}
+	
+	var filtered []models.TokenTransfer
+	
+	// Group transfers by contract to identify patterns
+	contractTransfers := make(map[string][]models.TokenTransfer)
+	for _, transfer := range transfers {
+		contractTransfers[transfer.Contract] = append(contractTransfers[transfer.Contract], transfer)
+	}
+	
+	// Filter out WETH intermediate transfers in multi-hop swaps
+	wethContracts := map[string]bool{
+		"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": true, // WETH mainnet
+		"0x7ceb23fd6f88b04f24e48eee3d3b0a56b0a8f2a3": true, // WETH goerli
+	}
+	
+	for contract, contractTransferList := range contractTransfers {
+		isWETH := wethContracts[strings.ToLower(contract)]
+		
+		if isWETH && len(contractTransferList) >= 2 {
+			// For WETH, only include if it's the final destination token
+			// Check if there are non-WETH transfers to other addresses
+			hasNonWETHTransfers := false
+			for otherContract := range contractTransfers {
+				if !wethContracts[strings.ToLower(otherContract)] && len(contractTransfers[otherContract]) > 0 {
+					hasNonWETHTransfers = true
+					break
+				}
+			}
+			
+			// Skip WETH transfers if there are other token transfers (indicating it's intermediate)
+			if hasNonWETHTransfers {
+				continue
+			}
+		}
+		
+		// Add non-intermediate transfers
+		filtered = append(filtered, contractTransferList...)
+	}
+	
+	return filtered
 }
 
 // GetPromptContext provides transfer context for LLM prompts
