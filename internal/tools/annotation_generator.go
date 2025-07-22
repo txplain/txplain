@@ -194,6 +194,7 @@ AVAILABLE CONTEXT DATA:
 	protocolItems := []models.AnnotationContextItem{}
 	amountItems := []models.AnnotationContextItem{}
 	networkItems := []models.AnnotationContextItem{}
+	addressMappingItems := []models.AnnotationContextItem{}
 
 	for _, item := range annotationContext.Items {
 		switch item.Type {
@@ -207,6 +208,8 @@ AVAILABLE CONTEXT DATA:
 			amountItems = append(amountItems, item)
 		case "network":
 			networkItems = append(networkItems, item)
+		case "address_mapping", "ens":
+			addressMappingItems = append(addressMappingItems, item)
 		}
 	}
 
@@ -269,6 +272,20 @@ AVAILABLE CONTEXT DATA:
 		}
 	}
 
+	if len(addressMappingItems) > 0 {
+		prompt += "\nADDRESS MAPPING CONTEXT:\n"
+		for _, item := range addressMappingItems {
+			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
+			if item.Link != "" {
+				prompt += fmt.Sprintf(" (Link: %s)", item.Link)
+			}
+			if item.Description != "" {
+				prompt += fmt.Sprintf(" - %s", item.Description)
+			}
+			prompt += "\n"
+		}
+	}
+
 	prompt += `
 
 INSTRUCTIONS:
@@ -292,6 +309,10 @@ INSTRUCTIONS:
    - Token contract addresses → [NETWORK_EXPLORER]/token/[address]
    - Regular addresses → [NETWORK_EXPLORER]/address/[address]
    - Use the explorer URL from NETWORK CONTEXT above (e.g., https://etherscan.io for Ethereum)
+   - CRITICAL ADDRESS MAPPING: Use ADDRESS MAPPING CONTEXT to convert shortened addresses to full addresses
+   - If you see a shortened address like "0x22d4...ba3" in the text, look up the full address in ADDRESS MAPPING CONTEXT
+   - Example: "0x22d4...ba3" maps to "0x000000000022d473030f116ddee9f6b43ac78ba3" for explorer links
+   - NEVER use shortened addresses directly in explorer URLs - always use the full address from the mapping
 7. PROTOCOL LINKS - Link protocol names to their websites (ONLY use context data when available):
    - Extract protocol website URLs from PROTOCOL CONTEXT above - DO NOT hardcode any URLs
    - If no protocol context data available, do not create protocol links
@@ -370,6 +391,11 @@ EXAMPLES FORMAT (use ONLY context data, never hardcode):
     "text": "[ADDRESS from text]",
     "link": "[NETWORK_EXPLORER]/address/[address]",
     "tooltip": "<table><tr><td><strong>Address:</strong></td><td>[shortened address]</td></tr><tr><td><strong>Type:</strong></td><td>[Type from ADDRESS CONTEXT]</td></tr><tr><td><strong>Name:</strong></td><td>[Name from ADDRESS CONTEXT if available]</td></tr></table>"
+  },
+  {
+    "text": "[SHORTENED_ADDRESS from text like 0x22d4...ba3]",
+    "link": "[NETWORK_EXPLORER]/address/[FULL_ADDRESS from ADDRESS MAPPING CONTEXT]",
+    "tooltip": "<table><tr><td><strong>Address:</strong></td><td>[shortened address display]</td></tr><tr><td><strong>Full Address:</strong></td><td>[full address from mapping]</td></tr><tr><td><strong>ENS:</strong></td><td>[ENS name if available]</td></tr></table>"
   }
 ]
 

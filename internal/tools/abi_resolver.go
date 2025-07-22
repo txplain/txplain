@@ -149,44 +149,82 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 	var addresses []string
 
 	// From raw transaction data
-	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-		// Transaction 'to' address (main contract being called)
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			if to, ok := receipt["to"].(string); ok && to != "" && to != "0x" {
-				addressMap[strings.ToLower(to)] = true
+	if rawDataInterface, ok := baggage["raw_data"]; ok {
+		if rawData, ok := rawDataInterface.(map[string]interface{}); ok {
+			// Transaction 'to' address (main contract being called)
+			if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+				if to, ok := receipt["to"].(string); ok && to != "" && to != "0x" {
+					addressMap[strings.ToLower(to)] = true
+				}
 			}
-		}
 
-		// From ALL logs - this is the comprehensive approach
-		// Every log entry has an 'address' field which is the contract that emitted it
-		if logs, ok := rawData["logs"].([]interface{}); ok {
-			for _, logEntry := range logs {
-				if logMap, ok := logEntry.(map[string]interface{}); ok {
-					if address, ok := logMap["address"].(string); ok && address != "" {
-						addressMap[strings.ToLower(address)] = true
+			// From ALL logs - this is the comprehensive approach
+			// Every log entry has an 'address' field which is the contract that emitted it
+			if logs, ok := rawData["logs"].([]interface{}); ok {
+				for _, logInterface := range logs {
+					if logMap, ok := logInterface.(map[string]interface{}); ok {
+						if address, ok := logMap["address"].(string); ok && address != "" {
+							addressMap[strings.ToLower(address)] = true
+						}
 					}
 				}
 			}
-		}
 
-		// From trace data (if available) - get all contracts called
-		if trace, ok := rawData["trace"].(map[string]interface{}); ok {
-			// Extract addresses from trace calls
-			if traceResult, ok := trace["result"].(map[string]interface{}); ok {
-				if calls, ok := traceResult["calls"].([]interface{}); ok {
-					for _, call := range calls {
-						if callMap, ok := call.(map[string]interface{}); ok {
-							if to, ok := callMap["to"].(string); ok && to != "" {
-								addressMap[strings.ToLower(to)] = true
+			// Also extract from receipt logs (backup in case rawData logs are missing)
+			if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+				if logs, ok := receipt["logs"].([]interface{}); ok {
+					for _, logInterface := range logs {
+						if logMap, ok := logInterface.(map[string]interface{}); ok {
+							if address, ok := logMap["address"].(string); ok && address != "" {
+								addressMap[strings.ToLower(address)] = true
 							}
 						}
 					}
 				}
 			}
-			
-			// Also get the main trace 'to' address
-			if to, ok := trace["to"].(string); ok && to != "" {
-				addressMap[strings.ToLower(to)] = true
+
+			// From trace data (if available) - get all contracts called
+			if trace, ok := rawData["trace"].(map[string]interface{}); ok {
+				// Extract addresses from trace calls
+				if traceResult, ok := trace["result"].(map[string]interface{}); ok {
+					if calls, ok := traceResult["calls"].([]interface{}); ok {
+						for _, call := range calls {
+							if callMap, ok := call.(map[string]interface{}); ok {
+								if to, ok := callMap["to"].(string); ok && to != "" {
+									addressMap[strings.ToLower(to)] = true
+								}
+							}
+						}
+					}
+				}
+				
+				// Also get the main trace 'to' address
+				if to, ok := trace["to"].(string); ok && to != "" {
+					addressMap[strings.ToLower(to)] = true
+				}
+			}
+		}
+	}
+
+	// CRITICAL: Extract spender addresses from Approval events
+	// These are often protocol contracts/routers that users interact with
+	if events, ok := baggage["events"].([]models.Event); ok {
+		for _, event := range events {
+			if event.Name == "Approval" && event.Parameters != nil {
+				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
+					// Clean up padded addresses (remove leading zeros)
+					cleanSpender := strings.TrimPrefix(spender, "0x000000000000000000000000")
+					if len(cleanSpender) == 40 && cleanSpender != spender {
+						cleanSpender = "0x" + cleanSpender
+					} else {
+						cleanSpender = spender
+					}
+					
+					// Add the spender address to our contract list
+					if cleanSpender != "" && cleanSpender != "0x" {
+						addressMap[strings.ToLower(cleanSpender)] = true
+					}
+				}
 			}
 		}
 	}

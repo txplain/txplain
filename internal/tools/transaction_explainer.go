@@ -362,6 +362,13 @@ Event #%d:
 
 Write a single, short sentence (under 30 words) describing the main action. 
 
+CRITICAL FORMATTING RULE - AVOID REDUNDANCY:
+- NEVER repeat token amounts or token names in the same sentence
+- Format: "Swapped 100 USDT for 57,071 GrowAI tokens via 1inch v6 aggregator + $3.45 gas" ✅
+- NEVER: "Swapped 100 USDT for 57,071 GrowAI tokens via 1inch v6 aggregator for 57,071 GrowAI + $3.45 gas" ❌
+- If you mention a token amount and name once, don't repeat them again in the same sentence
+- Keep the format clean and concise - one mention per token is enough
+
 MINTING DETECTION:
 - When NFTs are minted from zero address (0x0000000000000000000000000000000000000000), use "minted" language
 - The recipients are the addresses that RECEIVE the NFTs, not the payer
@@ -478,15 +485,16 @@ Examples:
 - "Minted 5 BoredApes NFTs to 0x1111...2222 for 0.5 ETH + $45.80 gas"
 - "Transferred 43.94 ATH ($1.45 USD) + $0.02 gas from one wallet to another"
 - "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap v3 + $15.20 gas"  
-- "Swapped 100 USDT ($100) for 57,071 GrowAI tokens via 1inch v6 aggregator + $3.45 gas"
+- "Swapped 100 USDT for 57,071 GrowAI tokens via 1inch v6 aggregator + $3.45 gas"
+- "Swapped 500 USDC for 0.15 WBTC via Paraswap aggregator + $8.20 gas"
+- "Swapped 50 DAI for 1,250 USDT on Uniswap v3 + $4.60 gas"
 - "Approved Uniswap v2 Router to spend unlimited DAI + $8.90 gas"
 - "Transferred NFT #1234 from CryptoPunks collection + $12.50 gas"
 - "Received 2 ERC-1155 tokens (ID 3226) from Tappers Kingdom + $1.25 gas"
 - "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth) + $0.85 gas"
-- "Swapped 0.5 ETH for 1,250 USDC ($1,250) on Curve (0.1 ETH fees to 0x1234...5678 + $25.50 gas)"
-- "Transferred 1,000 USDT ($1,000) paying 5 USDT fees to 0x9876...4321 + $2.30 gas via Paraswap"
+- "Swapped 0.5 ETH for 1,250 USDC on Curve (0.1 ETH fees to 0x1234...5678) + $25.50 gas"
+- "Transferred 1,000 USDT paying 5 USDT fees to 0x9876...4321 via Paraswap + $2.30 gas"
 - "Added liquidity to Uniswap v3 ETH/USDC pool + $18.75 gas"
-- "Swapped 50 USDT for 0.02 WETH through SushiSwap router + $4.60 gas"
 
 Be specific about amounts, tokens, protocols, and main action. No explanations or warnings.`
 
@@ -546,6 +554,42 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 
 	// Generate AI-enhanced links with meaningful labels
 	result.Links = t.generateIntelligentLinks(ctx, result.TxHash, result.NetworkID, baggage)
+
+	// Add address categories to metadata for frontend legend grouping
+	if addressRoles, ok := baggage["address_roles"].(map[string]map[string]string); ok && len(addressRoles) > 0 {
+		// Create categories map for frontend
+		categories := make(map[string][]map[string]string)
+		
+		// Group addresses by category
+		for address, roleData := range addressRoles {
+			if roleData != nil {
+				role := roleData["role"]
+				category := roleData["category"]
+				
+				if role != "" && category != "" {
+					// Initialize category array if not exists
+					if categories[category] == nil {
+						categories[category] = make([]map[string]string, 0)
+					}
+					
+					// Add address to category
+					categories[category] = append(categories[category], map[string]string{
+						"address": address,
+						"role":    role,
+					})
+				}
+			}
+		}
+		
+		// Add to metadata for frontend access
+		result.Metadata["address_categories"] = categories
+		result.Metadata["available_categories"] = []string{}
+		
+		// Track which categories are actually used
+		for category := range categories {
+			result.Metadata["available_categories"] = append(result.Metadata["available_categories"].([]string), category)
+		}
+	}
 
 	return result
 }
@@ -610,7 +654,7 @@ func (t *TransactionExplainer) generateIntelligentLinks(ctx context.Context, txH
 		return links
 	}
 
-	// Always add the main transaction link
+	// Always add the main transaction link first
 	links["Main Transaction"] = fmt.Sprintf("%s/tx/%s", network.Explorer, txHash)
 
 	// Get all relevant addresses and contracts from the transaction context
@@ -620,10 +664,19 @@ func (t *TransactionExplainer) generateIntelligentLinks(ctx context.Context, txH
 		return t.generateFallbackLinks(txHash, networkID, baggage)
 	}
 
-	// Create links with meaningful role-based labels
-	for address, role := range addressRoles {
-		if address != "" && role != "" {
-			links[role] = fmt.Sprintf("%s/address/%s", network.Explorer, address)
+	// Store address roles in baggage for reuse in parseExplanationResponse
+	baggage["address_roles"] = addressRoles
+
+	// Create links with meaningful role-based labels using ALL addresses from role inference
+	// This ensures router addresses and other important contracts are included even if
+	// they're not in the contract_addresses baggage due to pipeline timing issues
+	for address, roleData := range addressRoles {
+		if address != "" && roleData != nil {
+			role := roleData["role"]
+			category := roleData["category"]
+			if role != "" && category != "" {
+				links[role] = fmt.Sprintf("%s/address/%s", network.Explorer, address)
+			}
 		}
 	}
 
@@ -631,7 +684,7 @@ func (t *TransactionExplainer) generateIntelligentLinks(ctx context.Context, txH
 }
 
 // inferAddressRoles uses AI to infer meaningful roles for addresses and contracts
-func (t *TransactionExplainer) inferAddressRoles(ctx context.Context, baggage map[string]interface{}, networkID int64) (map[string]string, error) {
+func (t *TransactionExplainer) inferAddressRoles(ctx context.Context, baggage map[string]interface{}, networkID int64) (map[string]map[string]string, error) {
 	// Build context for AI analysis
 	prompt := t.buildAddressRolePrompt(baggage, networkID)
 
@@ -673,7 +726,7 @@ func (t *TransactionExplainer) inferAddressRoles(ctx context.Context, baggage ma
 
 // buildAddressRolePrompt creates the prompt for AI address role inference
 func (t *TransactionExplainer) buildAddressRolePrompt(baggage map[string]interface{}, networkID int64) string {
-	prompt := `You are a blockchain transaction analyst. Analyze this transaction and identify the role of each address/contract involved. Provide meaningful labels that help users understand what each address represents in the context of this specific transaction.
+	prompt := `You are a blockchain transaction analyst. Analyze this transaction and identify the role of each address/contract involved, AND categorize them into groups. Provide meaningful labels that help users understand what each address represents in the context of this specific transaction.
 
 TRANSACTION CONTEXT:`
 
@@ -757,72 +810,104 @@ TRANSACTION CONTEXT:`
 	prompt += `
 
 CRITICAL RULE - TOKEN CONTRACTS vs PROTOCOL CONTRACTS:
-- If an address appears in the "TOKEN CONTRACTS" section above, it MUST be labeled as "Token Contract ([SYMBOL])"
+- If an address appears in the "TOKEN CONTRACTS" section above, it MUST be labeled as "Token Contract ([SYMBOL])" with category "token"
 - NEVER identify a token contract address as a protocol router, aggregator, or other protocol contract
 - Protocol contracts are routers, pools, aggregators - NOT the tokens themselves
 - Use spender addresses from Approval events as potential protocol contracts, NOT the token contract
 
-ROLE IDENTIFICATION GUIDELINES:
-Based on the transaction context, identify the most appropriate role for each address:
+ROLE IDENTIFICATION AND CATEGORIZATION:
+Based on the transaction context, identify the role AND category for each address:
 
-USER ROLES:
-- "Borrower" - address that borrows/receives funds in lending
-- "Lender" - address that provides/supplies funds in lending  
-- "Trader" - address performing swaps/exchanges
-- "Liquidity Provider" - address adding/removing liquidity
-- "NFT Buyer" - address purchasing NFTs
-- "NFT Seller" - address selling NFTs
-- "Token Sender" - address sending tokens (simple transfer)
-- "Token Receiver" - address receiving tokens (simple transfer)
+CATEGORY GUIDELINES (be creative and context-appropriate):
+- Use intuitive, descriptive categories that make sense for this specific transaction
+- Common categories include: "user", "trader", "protocol", "token", "nft", "defi", "exchange", "bridge", etc.
+- But feel free to create more specific categories like "lending", "staking", "gaming", "dao", "marketplace" if they better describe the context
+- Group similar addresses together with consistent category names
+- Prioritize clarity and user understanding over strict adherence to predefined lists
 
-PROTOCOL ROLES:
-- "Swap Router" - DEX router handling swaps (Uniswap Router, 1inch Aggregator, etc.)
-- "Lending Pool" - lending protocol pool (Aave Pool, Compound cToken, etc.)
-- "Liquidity Pool" - AMM liquidity pool contract
-- "NFT Marketplace" - NFT trading contract (OpenSea, LooksRare, etc.)
-- "Token Contract" - ERC20/ERC721/ERC1155 token contracts (use format: "Token Contract (SYMBOL)")
-- "Bridge Contract" - cross-chain bridge
-- "Aggregator" - DEX aggregator (1inch, Paraswap, etc.)
+ROLE EXAMPLES BY COMMON CATEGORIES:
 
-SPECIALIZED ROLES:
-- "Fee Recipient" - address receiving transaction/protocol fees
-- "Treasury" - protocol treasury or vault
-- "Multisig" - multi-signature wallet
-- "Factory" - contract factory for creating pools/pairs
-- "Oracle" - price oracle contract
+USER-TYPE CATEGORIES:
+- "Token Holder" - address holding/managing tokens
+- "Transaction Initiator" - address that started the transaction
+- "Recipient" - address receiving tokens/NFTs
+- "Investor" - address making investment decisions
+
+TRADER-TYPE CATEGORIES:
+- "Token Trader" - address performing token swaps
+- "NFT Trader" - address trading NFTs
+- "Arbitrageur" - address performing arbitrage
+- "Liquidity Provider" - address providing/managing liquidity
+
+PROTOCOL-TYPE CATEGORIES:
+- "DEX Router" - router contracts for decentralized exchanges
+- "Lending Pool" - lending protocol contracts
+- "Liquidity Pool" - AMM pool contracts
+- "Aggregator" - DEX aggregator contracts
+- "NFT Marketplace" - NFT trading platforms
+- "Bridge" - cross-chain bridge contracts
+
+TOKEN-TYPE CATEGORIES:
+- "Token Contract" - ERC20/ERC721/ERC1155 contracts
+- "Governance Token" - tokens used for DAO governance
+- "Utility Token" - tokens with specific utility functions
+
+SPECIALIZED CATEGORIES (use when contextually appropriate):
+- "defi" - for DeFi protocol addresses
+- "gaming" - for gaming-related contracts
+- "dao" - for DAO governance addresses  
+- "staking" - for staking-related contracts
+- "bridge" - for cross-chain bridge contracts
+- "oracle" - for price feed and oracle contracts
 
 PRIORITIZATION:
 1. Focus on the PRIMARY transaction purpose (swap, lend, NFT purchase, etc.)
-2. Identify the MAIN USER (the address initiating the transaction)
+2. Identify the MAIN USER (the address initiating the transaction) 
 3. Identify TOKEN CONTRACTS first using the "TOKEN CONTRACTS" section
 4. Identify PROTOCOL CONTRACTS (routers, pools, marketplaces) separately
-5. Include FEE RECIPIENTS if significant fees are involved
-6. Limit to 8-10 most relevant addresses to avoid clutter
+5. Include significant addresses only (limit to 6-8 most relevant)
 
 OUTPUT FORMAT:
-Respond with a JSON object mapping addresses to their roles:
+Respond with a JSON object mapping addresses to their role and category:
 {
-  "0x1234...5678": "Trader",
-  "0xabcd...ef01": "Swap Router", 
-  "0x9876...4321": "Token Contract (USDT)",
-  "0xdef0...1234": "Fee Recipient"
+  "0x1234...5678": {
+    "role": "Token Trader",
+    "category": "trader"
+  },
+  "0xabcd...ef01": {
+    "role": "DEX Router", 
+    "category": "protocol"
+  },
+  "0x9876...4321": {
+    "role": "Token Contract (USDT)",
+    "category": "token"
+  }
 }
 
 CORRECT EXAMPLE - Token Approval Transaction:
 {
-  "[user_address_from_transaction]": "Trader",
-  "[token_contract_from_token_metadata]": "Token Contract ([token_symbol_from_metadata])",
-  "[spender_address_from_approval_event]": "[protocol_name] Router"
+  "[user_address_from_transaction]": {
+    "role": "Token Holder",
+    "category": "user"
+  },
+  "[token_contract_from_token_metadata]": {
+    "role": "Token Contract ([token_symbol_from_metadata])",
+    "category": "token"
+  },
+  "[spender_address_from_approval_event]": {
+    "role": "DEX Router",
+    "category": "protocol"
+  }
 }
 
-Analyze the transaction context and identify the most meaningful roles for up to 8-10 key addresses:
+Analyze the transaction context and identify the most meaningful roles and categories for up to 6-8 key addresses:
 `
 
 	return prompt
 }
 
-// parseAddressRoleResponse parses the LLM response into address-role mappings
-func (t *TransactionExplainer) parseAddressRoleResponse(response string) (map[string]string, error) {
+// parseAddressRoleResponse parses the LLM response into address-role mappings with categories
+func (t *TransactionExplainer) parseAddressRoleResponse(response string) (map[string]map[string]string, error) {
 	response = strings.TrimSpace(response)
 
 	// Look for JSON object
@@ -835,19 +920,37 @@ func (t *TransactionExplainer) parseAddressRoleResponse(response string) (map[st
 
 	jsonStr := response[jsonStart : jsonEnd+1]
 
-	// Parse JSON
-	var addressRoles map[string]string
+	// Parse JSON with the new format: address -> {role, category}
+	var addressRoles map[string]map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &addressRoles); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
-	// Clean up and validate
-	cleaned := make(map[string]string)
-	for address, role := range addressRoles {
+	// Convert to string-string map and validate
+	cleaned := make(map[string]map[string]string)
+	for address, roleData := range addressRoles {
 		address = strings.TrimSpace(address)
-		role = strings.TrimSpace(role)
-		if address != "" && role != "" {
-			cleaned[address] = role
+		if address == "" {
+			continue
+		}
+
+		role := ""
+		category := ""
+
+		// Extract role and category from the nested object
+		if roleStr, ok := roleData["role"].(string); ok {
+			role = strings.TrimSpace(roleStr)
+		}
+		if categoryStr, ok := roleData["category"].(string); ok {
+			category = strings.TrimSpace(categoryStr)
+		}
+
+		// Ensure both role and category are present
+		if role != "" && category != "" {
+			cleaned[address] = map[string]string{
+				"role":     role,
+				"category": category,
+			}
 		}
 	}
 
