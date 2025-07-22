@@ -360,21 +360,24 @@ func (t *TokenMetadataEnricher) improveMetadataWithInference(baggage map[string]
 			for _, event := range eventsList {
 				if strings.EqualFold(event.Contract, address) && event.Name == "Transfer" {
 					if event.Parameters != nil {
-						// Try to infer decimals from value patterns
-						if valueHex, ok := event.Parameters["value"].(string); ok {
-							if valueDecimal, ok := event.Parameters["value_decimal"].(uint64); ok {
-								inferredDecimals := t.inferDecimals(valueHex, valueDecimal, metadata.Symbol)
-								if inferredDecimals >= 0 && inferredDecimals <= 30 {
-									metadata.Decimals = inferredDecimals
+						// Only infer decimals if we don't already have them from RPC
+						if metadata.Decimals <= 0 {
+							// Try to infer decimals from value patterns
+							if valueHex, ok := event.Parameters["value"].(string); ok {
+								if valueDecimal, ok := event.Parameters["value_decimal"].(uint64); ok {
+									inferredDecimals := t.inferDecimals(valueHex, valueDecimal, metadata.Symbol)
+									if inferredDecimals >= 0 && inferredDecimals <= 30 {
+										metadata.Decimals = inferredDecimals
+									}
 								}
 							}
 						}
 						
-						// Use contract metadata if available from RPC calls
-						if contractSymbol, ok := event.Parameters["contract_symbol"].(string); ok && contractSymbol != "" {
+						// Use contract metadata if available from RPC calls (only if not already set)
+						if contractSymbol, ok := event.Parameters["contract_symbol"].(string); ok && contractSymbol != "" && metadata.Symbol == "" {
 							metadata.Symbol = contractSymbol
 						}
-						if contractName, ok := event.Parameters["contract_name"].(string); ok && contractName != "" {
+						if contractName, ok := event.Parameters["contract_name"].(string); ok && contractName != "" && metadata.Name == "" {
 							metadata.Name = contractName
 						}
 					}
