@@ -1239,3 +1239,165 @@ func (m *MonetaryValueEnricher) extractUserFromEventParameters(logMap map[string
 	
 	return "", ""
 }
+
+// GetAnnotationContext implements AnnotationContextProvider interface
+func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
+	annotationContext := &models.AnnotationContext{
+		Items: make([]models.AnnotationContextItem, 0),
+	}
+
+	// Add gas fee context if available
+	rawData, ok := baggage["raw_data"].(map[string]interface{})
+	if ok {
+		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			// Get gas data
+			gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
+			effectiveGasPriceHex, hasGasPrice := receipt["effectiveGasPrice"].(string)
+			gasFeeUSD, hasGasFeeUSD := receipt["gas_fee_usd"].(string)
+			gasFeeNative, hasGasFeeNative := receipt["gas_fee_native"].(string)
+			
+			if hasGasUsed && hasGasPrice {
+				// Parse gas values for detailed information
+				gasUsed, err1 := strconv.ParseUint(gasUsedHex[2:], 16, 64)
+				gasPrice, err2 := strconv.ParseUint(effectiveGasPriceHex[2:], 16, 64)
+				
+				if err1 == nil && err2 == nil {
+					// Convert gas price to Gwei
+					gasPriceGwei := float64(gasPrice) / 1e9
+					
+					// Get network info
+					networkID := int64(1) // default to Ethereum
+					if netID, ok := rawData["network_id"].(float64); ok {
+						networkID = int64(netID)
+					}
+					nativeSymbol := m.getNativeTokenSymbol(networkID)
+					if nativeSymbol == "" {
+						nativeSymbol = "ETH" // fallback
+					}
+					
+					// Create context for any gas fee references in the text
+					gasFeeTexts := []string{}
+					if hasGasFeeUSD {
+						gasFeeTexts = append(gasFeeTexts, fmt.Sprintf("$%s gas", gasFeeUSD))
+						gasFeeTexts = append(gasFeeTexts, fmt.Sprintf("$%s", gasFeeUSD))
+					}
+					if hasGasFeeNative {
+						gasFeeTexts = append(gasFeeTexts, fmt.Sprintf("%s %s", gasFeeNative, nativeSymbol))
+					}
+					
+					// Add annotation context for each possible gas fee text pattern
+					for _, gasText := range gasFeeTexts {
+						description := "Transaction gas fee breakdown"
+						
+						// Create detailed tooltip content
+						tooltipRows := []string{
+							fmt.Sprintf("<tr><td><strong>Gas Used:</strong></td><td>%s</td></tr>", formatNumber(gasUsed)),
+							fmt.Sprintf("<tr><td><strong>Gas Price:</strong></td><td>%.2f Gwei</td></tr>", gasPriceGwei),
+						}
+						
+						if hasGasFeeNative {
+							tooltipRows = append(tooltipRows, 
+								fmt.Sprintf("<tr><td><strong>%s Cost:</strong></td><td>%s %s</td></tr>", nativeSymbol, gasFeeNative, nativeSymbol))
+						}
+						
+						if hasGasFeeUSD {
+							tooltipRows = append(tooltipRows, 
+								fmt.Sprintf("<tr><td><strong>USD Cost:</strong></td><td>$%s</td></tr>", gasFeeUSD))
+						}
+						
+						tooltip := fmt.Sprintf("<table>%s</table>", strings.Join(tooltipRows, ""))
+						
+						annotationContext.AddItem(models.AnnotationContextItem{
+							Type:        "gas_fee",
+							Value:       gasText,
+							Name:        "Gas Fee",
+							Description: description,
+							Metadata: map[string]interface{}{
+								"gas_used":       gasUsed,
+								"gas_price_gwei": gasPriceGwei,
+								"gas_fee_usd":    gasFeeUSD,
+								"gas_fee_native": gasFeeNative,
+								"native_symbol":  nativeSymbol,
+								"tooltip":        tooltip,
+							},
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// Add enriched transfer amounts context
+	transfers, ok := baggage["transfers"].([]models.TokenTransfer)
+	if ok {
+		for _, transfer := range transfers {
+			// Add context for formatted amounts with USD values
+			if transfer.FormattedAmount != "" && transfer.Symbol != "" && transfer.AmountUSD != "" {
+				amountText := fmt.Sprintf("%s %s", transfer.FormattedAmount, transfer.Symbol)
+				usdText := fmt.Sprintf("$%s", transfer.AmountUSD)
+				
+				description := fmt.Sprintf("Token transfer: %s worth $%s USD", amountText, transfer.AmountUSD)
+				
+				// Create tooltip for token amounts
+				tooltipRows := []string{
+					fmt.Sprintf("<tr><td><strong>Amount:</strong></td><td>%s %s</td></tr>", transfer.FormattedAmount, transfer.Symbol),
+					fmt.Sprintf("<tr><td><strong>USD Value:</strong></td><td>$%s</td></tr>", transfer.AmountUSD),
+					fmt.Sprintf("<tr><td><strong>Token:</strong></td><td>%s</td></tr>", transfer.Name),
+					fmt.Sprintf("<tr><td><strong>Contract:</strong></td><td>%s...%s</td></tr>", 
+						transfer.Contract[:6], transfer.Contract[len(transfer.Contract)-4:]),
+				}
+				tooltip := fmt.Sprintf("<table>%s</table>", strings.Join(tooltipRows, ""))
+				
+				// Add context for the token amount
+				annotationContext.AddItem(models.AnnotationContextItem{
+					Type:        "amount",
+					Value:       amountText,
+					Name:        fmt.Sprintf("%s Amount", transfer.Symbol),
+					Description: description,
+					Metadata: map[string]interface{}{
+						"formatted_amount": transfer.FormattedAmount,
+						"symbol":          transfer.Symbol,
+						"usd_value":       transfer.AmountUSD,
+						"token_name":      transfer.Name,
+						"contract":        transfer.Contract,
+						"tooltip":         tooltip,
+					},
+				})
+				
+				// Add context for USD amounts  
+				annotationContext.AddItem(models.AnnotationContextItem{
+					Type:        "amount",
+					Value:       usdText,
+					Name:        "USD Value",
+					Description: fmt.Sprintf("$%s USD equivalent of %s", transfer.AmountUSD, amountText),
+					Metadata: map[string]interface{}{
+						"usd_value":       transfer.AmountUSD,
+						"token_amount":    transfer.FormattedAmount,
+						"token_symbol":    transfer.Symbol,
+						"tooltip":         tooltip,
+					},
+				})
+			}
+		}
+	}
+
+	return annotationContext
+}
+
+// formatNumber formats a number with commas for readability
+func formatNumber(n uint64) string {
+	str := fmt.Sprintf("%d", n)
+	if len(str) <= 3 {
+		return str
+	}
+	
+	// Add commas every 3 digits from the right
+	var result []rune
+	for i, r := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, r)
+	}
+	return string(result)
+}

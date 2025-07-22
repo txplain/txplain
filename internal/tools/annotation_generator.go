@@ -195,6 +195,7 @@ AVAILABLE CONTEXT DATA:
 	amountItems := []models.AnnotationContextItem{}
 	networkItems := []models.AnnotationContextItem{}
 	addressMappingItems := []models.AnnotationContextItem{}
+	gasFeeItems := []models.AnnotationContextItem{}
 
 	for _, item := range annotationContext.Items {
 		switch item.Type {
@@ -210,6 +211,8 @@ AVAILABLE CONTEXT DATA:
 			networkItems = append(networkItems, item)
 		case "address_mapping", "ens":
 			addressMappingItems = append(addressMappingItems, item)
+		case "gas_fee":
+			gasFeeItems = append(gasFeeItems, item)
 		}
 	}
 
@@ -286,6 +289,20 @@ AVAILABLE CONTEXT DATA:
 		}
 	}
 
+	if len(gasFeeItems) > 0 {
+		prompt += "\nGAS FEE CONTEXT:\n"
+		for _, item := range gasFeeItems {
+			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
+			if tooltip, ok := item.Metadata["tooltip"].(string); ok {
+				prompt += fmt.Sprintf(" (Tooltip: %s)", tooltip)
+			}
+			if item.Description != "" {
+				prompt += fmt.Sprintf(" - %s", item.Description)
+			}
+			prompt += "\n"
+		}
+	}
+
 	prompt += `
 
 INSTRUCTIONS:
@@ -295,7 +312,7 @@ INSTRUCTIONS:
 4. MANDATORY ANNOTATIONS - you MUST annotate these if they appear in the text:
    - ANY token symbol (USDT, ETH, PEPE, GrowAI, etc.) - TABLE with: Token name, Symbol, Type, Decimals, Current price (if available), Contract address
    - ANY token amounts (100 USDT, 57,071 GrowAI, 0.5 ETH) - TABLE with: Amount, USD value (if available), Token name, Price per token, Contract address  
-   - ANY gas fees ($0.82 gas, + $1.23 gas) - TABLE with: USD value, ETH value, Gas used, Gas price (Gwei), Total cost
+   - ANY gas fees ($0.82 gas, + $1.23 gas, $1.024) - Use GAS FEE CONTEXT above to provide detailed breakdown with: USD value, Native token value, Gas used, Gas price (Gwei), Total cost
    - ANY addresses (0x39e5...09c5, 0x1234...5678) - TABLE with: Address (shortened), ENS name (if available), Type (EOA/Contract), Link to explorer
    - ANY protocol names (1inch v6 aggregator, Uniswap, etc.) - TABLE with: Protocol name, Type (DEX/Aggregator/Lending), Function, Website link
    - ANY USD values ($100.00, $0.82) - TABLE with calculation breakdown and source data
@@ -396,6 +413,10 @@ EXAMPLES FORMAT (use ONLY context data, never hardcode):
     "text": "[SHORTENED_ADDRESS from text like 0x22d4...ba3]",
     "link": "[NETWORK_EXPLORER]/address/[FULL_ADDRESS from ADDRESS MAPPING CONTEXT]",
     "tooltip": "<table><tr><td><strong>Address:</strong></td><td>[shortened address display]</td></tr><tr><td><strong>Full Address:</strong></td><td>[full address from mapping]</td></tr><tr><td><strong>ENS:</strong></td><td>[ENS name if available]</td></tr></table>"
+  },
+  {
+    "text": "[GAS_FEE from text like $1.024 gas or $0.82]",
+    "tooltip": "[Use the exact tooltip from GAS FEE CONTEXT above - DO NOT modify it]"
   }
 ]
 

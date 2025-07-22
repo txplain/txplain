@@ -218,6 +218,14 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	if priceLookup != nil {
 		annotationGenerator.AddContextProvider(priceLookup)
 	}
+	
+	// Add monetary enricher if available (for gas fee tooltips)
+	for _, provider := range contextProviders {
+		if monetaryProvider, ok := provider.(*txtools.MonetaryValueEnricher); ok {
+			annotationGenerator.AddContextProvider(monetaryProvider)
+			break
+		}
+	}
 	if err := pipeline.AddProcessor(annotationGenerator); err != nil {
 		return nil, fmt.Errorf("failed to add annotation generator: %w", err)
 	}
