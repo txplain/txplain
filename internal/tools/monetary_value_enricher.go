@@ -77,34 +77,84 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 		return nil
 	}
 
+	var enrichmentDebug []string
 	for i, transfer := range transfers {
+		transferDebug := fmt.Sprintf("Transfer %d (contract: %s)", i, transfer.Contract)
+		
 		// Get token metadata
 		metadata := tokenMetadata[strings.ToLower(transfer.Contract)]
 		if metadata == nil {
-			continue
+			transferDebug += " - NO METADATA"
+			// Try to create fallback metadata based on transfer patterns
+			metadata = m.createFallbackMetadata(transfer.Contract, transfer.Amount, transfer.Symbol)
+			if metadata == nil {
+				transferDebug += " - FALLBACK FAILED"
+				enrichmentDebug = append(enrichmentDebug, transferDebug)
+				continue
+			} else {
+				transferDebug += fmt.Sprintf(" - FALLBACK CREATED (decimals=%d)", metadata.Decimals)
+			}
+		} else {
+			transferDebug += fmt.Sprintf(" - METADATA OK (name=%s, symbol=%s, decimals=%d)", metadata.Name, metadata.Symbol, metadata.Decimals)
 		}
 
-		// Get token price
-		price := tokenPrices[strings.ToLower(transfer.Contract)]
-		if price == nil {
-			continue
-		}
-
-		// Add metadata to transfer
+		// Always set metadata fields regardless of price availability
 		transfers[i].Name = metadata.Name
 		transfers[i].Symbol = metadata.Symbol
 		transfers[i].Decimals = metadata.Decimals
 
-		// Convert raw amount to formatted amount
+		// Always try to format amount if we have metadata, even without price
 		if transfer.Amount != "" {
 			formattedAmount := m.convertAmountToTokens(transfer.Amount, metadata.Decimals)
-			transfers[i].FormattedAmount = fmt.Sprintf("%.6f", formattedAmount)
-			transfers[i].FormattedAmount = strings.TrimRight(transfers[i].FormattedAmount, "0")
-			transfers[i].FormattedAmount = strings.TrimRight(transfers[i].FormattedAmount, ".")
+			transferDebug += fmt.Sprintf(" - RAW AMOUNT: %s", transfer.Amount)
+			
+			// Format the amount based on its magnitude for better readability
+			var formattedStr string
+			if formattedAmount >= 1000000 {
+				// For millions and above, use 2 decimal places
+				formattedStr = fmt.Sprintf("%.2f", formattedAmount)
+			} else if formattedAmount >= 1000 {
+				// For thousands, use 3 decimal places
+				formattedStr = fmt.Sprintf("%.3f", formattedAmount)
+			} else if formattedAmount >= 1 {
+				// For regular amounts, use 6 decimal places
+				formattedStr = fmt.Sprintf("%.6f", formattedAmount)
+			} else {
+				// For very small amounts, use more precision
+				formattedStr = fmt.Sprintf("%.8f", formattedAmount)
+			}
+			
+			// Remove trailing zeros and decimal point if not needed
+			formattedStr = strings.TrimRight(formattedStr, "0")
+			formattedStr = strings.TrimRight(formattedStr, ".")
+			transfers[i].FormattedAmount = formattedStr
+			transferDebug += fmt.Sprintf(" - FORMATTED: %s", formattedStr)
 
-			// Calculate USD value
-			usdValue := formattedAmount * price.Price
-			transfers[i].AmountUSD = fmt.Sprintf("%.2f", usdValue)
+			// Only calculate USD value if we have price data
+			price := tokenPrices[strings.ToLower(transfer.Contract)]
+			if price != nil {
+				transferDebug += fmt.Sprintf(" - PRICE OK ($%.6f)", price.Price)
+				usdValue := formattedAmount * price.Price
+				transfers[i].AmountUSD = fmt.Sprintf("%.2f", usdValue)
+				transferDebug += fmt.Sprintf(" - USD: $%s", transfers[i].AmountUSD)
+			} else {
+				transferDebug += " - NO PRICE - USD VALUE NOT CALCULATED"
+			}
+		} else {
+			transferDebug += " - NO AMOUNT"
+		}
+		
+		enrichmentDebug = append(enrichmentDebug, transferDebug)
+	}
+
+	// Store debug information
+	if len(enrichmentDebug) > 0 {
+		if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
+			debugInfo["transfer_enrichment"] = enrichmentDebug
+		} else {
+			baggage["debug_info"] = map[string]interface{}{
+				"transfer_enrichment": enrichmentDebug,
+			}
 		}
 	}
 
@@ -137,7 +187,27 @@ func (m *MonetaryValueEnricher) enrichEvents(baggage map[string]interface{}, tok
 			// Add formatted value if "value" parameter exists
 			if valueStr, ok := event.Parameters["value"].(string); ok && valueStr != "" {
 				formattedAmount := m.convertAmountToTokens(valueStr, metadata.Decimals)
-				events[i].Parameters["value_formatted"] = fmt.Sprintf("%.6f", formattedAmount)
+				
+				// Format the amount based on its magnitude for better readability
+				var formattedStr string
+				if formattedAmount >= 1000000 {
+					// For millions and above, use 2 decimal places
+					formattedStr = fmt.Sprintf("%.2f", formattedAmount)
+				} else if formattedAmount >= 1000 {
+					// For thousands, use 3 decimal places
+					formattedStr = fmt.Sprintf("%.3f", formattedAmount)
+				} else if formattedAmount >= 1 {
+					// For regular amounts, use 6 decimal places
+					formattedStr = fmt.Sprintf("%.6f", formattedAmount)
+				} else {
+					// For very small amounts, use more precision
+					formattedStr = fmt.Sprintf("%.8f", formattedAmount)
+				}
+				
+				// Remove trailing zeros and decimal point if not needed
+				formattedStr = strings.TrimRight(formattedStr, "0")
+				formattedStr = strings.TrimRight(formattedStr, ".")
+				events[i].Parameters["value_formatted"] = formattedStr
 
 				// Calculate USD value
 				usdValue := formattedAmount * price.Price
@@ -192,20 +262,95 @@ func (m *MonetaryValueEnricher) convertAmountToTokens(amountStr string, decimals
 	if strings.HasPrefix(amountStr, "0x") {
 		// Convert hex to decimal
 		amountBig := new(big.Int)
-		amountBig.SetString(amountStr[2:], 16)
+		if _, ok := amountBig.SetString(amountStr[2:], 16); !ok {
+			return 0
+		}
 		amountStr = amountBig.String()
 	}
 
-	// Parse the amount
+	// Parse the amount as big.Int
 	amountBig := new(big.Int)
-	amountBig, ok := amountBig.SetString(amountStr, 10)
-	if !ok {
+	if _, ok := amountBig.SetString(amountStr, 10); !ok {
 		return 0
 	}
 
-	// Convert to float and adjust for decimals
-	amountFloat, _ := new(big.Float).SetInt(amountBig).Float64()
-	return amountFloat / math.Pow10(decimals)
+	// Convert to big.Float and adjust for decimals to maintain precision
+	amountFloat := new(big.Float).SetInt(amountBig)
+	
+	if decimals > 0 {
+		// Create divisor (10^decimals) as big.Float for precise division
+		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+		amountFloat.Quo(amountFloat, divisor)
+	}
+
+	// Convert to float64 only at the end
+	result, _ := amountFloat.Float64()
+	return result
+}
+
+// createFallbackMetadata creates basic metadata when not available from other sources
+func (m *MonetaryValueEnricher) createFallbackMetadata(contractAddress, amount, symbol string) *TokenMetadata {
+	// Start with safe defaults
+	decimals := 18 // Default to 18 for most ERC20 tokens
+	name := symbol // Use symbol as name if available
+	
+	// Only use symbol-based inference for well-known, stable tokens to avoid hardcoding
+	if symbol != "" {
+		switch strings.ToUpper(symbol) {
+		case "USDT", "USDC": // Stablecoins commonly use 6 decimals
+			decimals = 6
+		case "WBTC": // Wrapped Bitcoin uses 8 decimals like Bitcoin
+			decimals = 8
+		}
+		// For all other tokens including newer/unknown ones, use amount pattern analysis
+	}
+	
+	// Try to infer decimals from amount patterns if we have transaction data
+	if amount != "" && strings.HasPrefix(amount, "0x") {
+		inferredDecimals := m.inferDecimalsFromAmount(amount)
+		if inferredDecimals >= 0 && inferredDecimals <= 30 {
+			// Only override defaults if the inference seems reasonable
+			// For common decimals (0, 6, 8, 9, 12, 18), trust the inference more
+			commonDecimals := map[int]bool{0: true, 6: true, 8: true, 9: true, 12: true, 18: true}
+			if commonDecimals[inferredDecimals] {
+				decimals = inferredDecimals
+			} else if inferredDecimals < decimals {
+				// If inferred decimals are less than default, it might be more accurate
+				decimals = inferredDecimals
+			}
+		}
+	}
+
+	return &TokenMetadata{
+		Address:  contractAddress,
+		Name:     name,
+		Symbol:   symbol,
+		Decimals: decimals,
+		Type:     "ERC20",
+	}
+}
+
+// inferDecimalsFromAmount analyzes hex amount patterns to guess decimals
+func (m *MonetaryValueEnricher) inferDecimalsFromAmount(amount string) int {
+	if !strings.HasPrefix(amount, "0x") {
+		return -1 // Invalid
+	}
+	
+	// Look at the length of the hex value to guess decimals
+	hexLen := len(amount) - 2 // Remove 0x prefix
+	if hexLen <= 8 {
+		// Small hex values (<=8 chars = <=32 bits) often indicate few/no decimals
+		return 0
+	} else if hexLen <= 16 {
+		// Medium hex values (<=16 chars = <=64 bits) might be 6-8 decimals
+		return 6
+	} else if hexLen > 20 {
+		// Very large hex values often indicate 18+ decimals
+		return 18
+	}
+	
+	// For middle range, be conservative
+	return 18
 }
 
 // hexToUint64 converts hex string to uint64

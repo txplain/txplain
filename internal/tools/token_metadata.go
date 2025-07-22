@@ -62,21 +62,122 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 
 	// Create metadata map
 	tokenMetadata := make(map[string]*TokenMetadata)
+	
+	// Debug: log discovered token addresses
+	var discoveredAddresses []string
+	for addr := range tokenAddresses {
+		discoveredAddresses = append(discoveredAddresses, addr)
+	}
 
 	// First, try to extract metadata from event parameters (this is often already available)
+	eventExtractedCount := 0
 	t.extractMetadataFromEvents(baggage, tokenMetadata)
+	for _, metadata := range tokenMetadata {
+		if metadata.Symbol != "" || metadata.Name != "" {
+			eventExtractedCount++
+		}
+	}
 
 	// Then, fetch metadata via RPC for any tokens we don't have metadata for
+	var rpcErrors []string
+	var rpcResults []string
+	rpcAttempts := 0
 	if t.rpcClient != nil {
 		for address := range tokenAddresses {
-			// Skip if we already have metadata from events
-			if _, exists := tokenMetadata[strings.ToLower(address)]; exists {
+			addressLower := strings.ToLower(address)
+			rpcAttempts++
+			
+			// Skip if we already have complete metadata from events
+			if existing, exists := tokenMetadata[addressLower]; exists && 
+				existing.Symbol != "" && existing.Name != "" && existing.Decimals > 0 {
+				rpcResults = append(rpcResults, fmt.Sprintf("%s: skipped_complete_metadata", address))
 				continue
 			}
 
+			rpcResults = append(rpcResults, fmt.Sprintf("%s: attempting_rpc", address))
 			if metadata, err := t.fetchTokenMetadata(ctx, address); err == nil {
-				tokenMetadata[strings.ToLower(address)] = metadata
+				rpcResults = append(rpcResults, fmt.Sprintf("%s: rpc_success(name=%s,symbol=%s,decimals=%d)", 
+					address, metadata.Name, metadata.Symbol, metadata.Decimals))
+				
+				// Merge with existing metadata if any, preferring RPC data
+				if existing, exists := tokenMetadata[addressLower]; exists {
+					if metadata.Name != "" {
+						existing.Name = metadata.Name
+					}
+					if metadata.Symbol != "" {
+						existing.Symbol = metadata.Symbol
+					}
+					if metadata.Decimals >= 0 { // Accept 0 decimals
+						existing.Decimals = metadata.Decimals
+					}
+					if metadata.Type != "" && metadata.Type != "Unknown" {
+						existing.Type = metadata.Type
+					}
+					rpcResults = append(rpcResults, fmt.Sprintf("%s: merged_with_existing", address))
+				} else {
+					tokenMetadata[addressLower] = metadata
+					rpcResults = append(rpcResults, fmt.Sprintf("%s: created_new_metadata", address))
+				}
+			} else {
+				rpcErrors = append(rpcErrors, fmt.Sprintf("%s: %v", address, err))
+				rpcResults = append(rpcResults, fmt.Sprintf("%s: rpc_failed", address))
 			}
+		}
+	} else {
+		rpcErrors = append(rpcErrors, "RPC client not available")
+	}
+
+	// For any tokens we still don't have complete metadata, try to infer from transaction data
+	inferenceCount := 0
+	for address := range tokenAddresses {
+		addressLower := strings.ToLower(address)
+		metadata := tokenMetadata[addressLower]
+		
+		// Create minimal metadata if none exists
+		if metadata == nil {
+			metadata = &TokenMetadata{
+				Address: address,
+				Type:    "ERC20", // Assume ERC20 if found in token transfers
+				Decimals: 18,     // Safe default
+			}
+			tokenMetadata[addressLower] = metadata
+			inferenceCount++
+		}
+		
+		// Try to improve metadata with smarter inference
+		t.improveMetadataWithInference(baggage, addressLower, metadata)
+	}
+
+	// Comprehensive debug information
+	debugInfo := map[string]interface{}{
+		"discovered_addresses":     discoveredAddresses,
+		"total_addresses":          len(tokenAddresses),
+		"event_extracted_count":    eventExtractedCount,
+		"rpc_attempts":            rpcAttempts,
+		"rpc_results":             rpcResults,
+		"inference_created_count": inferenceCount,
+		"final_metadata_count":    len(tokenMetadata),
+	}
+	
+	// Add final metadata summary for debugging
+	var finalSummary []string
+	for address, metadata := range tokenMetadata {
+		finalSummary = append(finalSummary, fmt.Sprintf("%s: name=%q symbol=%q decimals=%d type=%s", 
+			address, metadata.Name, metadata.Symbol, metadata.Decimals, metadata.Type))
+	}
+	debugInfo["final_metadata"] = finalSummary
+
+	// Add RPC errors if any
+	if len(rpcErrors) > 0 {
+		debugInfo["token_metadata_rpc_errors"] = rpcErrors
+	}
+
+	// Store debug info
+	if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
+		existingDebug["token_metadata"] = debugInfo
+	} else {
+		baggage["debug_info"] = map[string]interface{}{
+			"token_metadata": debugInfo,
 		}
 	}
 
@@ -141,7 +242,7 @@ func (t *TokenMetadataEnricher) extractMetadataFromEvents(baggage map[string]int
 
 // inferDecimals tries to infer token decimals from hex and decimal values
 func (t *TokenMetadataEnricher) inferDecimals(valueHex string, valueDecimal uint64, symbol string) int {
-	// For known tokens, use standard decimals
+	// For known tokens, use standard decimals - keep minimal for common cases
 	switch strings.ToUpper(symbol) {
 	case "USDT", "USDC":
 		return 6
@@ -161,18 +262,25 @@ func (t *TokenMetadataEnricher) inferDecimals(valueHex string, valueDecimal uint
 				return 0
 			}
 
-			// Try common decimal values
-			for _, decimals := range []int{18, 6, 8, 9, 12} {
+			// Try common decimal values, starting with most common
+			for _, decimals := range []int{18, 6, 8, 9, 12, 4, 2} {
 				divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-				expected := new(big.Int).Div(hexValue, divisor)
-				if expected.Uint64() == valueDecimal {
+				
+				// Use big.Float for more precise division
+				hexFloat := new(big.Float).SetInt(hexValue)
+				divisorFloat := new(big.Float).SetInt(divisor)
+				result := new(big.Float).Quo(hexFloat, divisorFloat)
+				
+				// Convert result to uint64 for comparison
+				if resultUint64, accuracy := result.Uint64(); accuracy == big.Exact && resultUint64 == valueDecimal {
 					return decimals
 				}
 			}
 		}
 	}
 
-	return 0 // Unable to infer
+	// If we can't infer, return 18 as a reasonable default for most ERC20 tokens
+	return 18
 }
 
 // extractTokenAddresses extracts unique token contract addresses from baggage
@@ -225,16 +333,57 @@ func (t *TokenMetadataEnricher) isLikelyTokenMethod(method string) bool {
 func (t *TokenMetadataEnricher) fetchTokenMetadata(ctx context.Context, address string) (*TokenMetadata, error) {
 	contractInfo, err := t.rpcClient.GetContractInfo(ctx, address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GetContractInfo failed: %w", err)
 	}
 
-	return &TokenMetadata{
+	metadata := &TokenMetadata{
 		Address:  address,
 		Name:     contractInfo.Name,
 		Symbol:   contractInfo.Symbol,
 		Decimals: contractInfo.Decimals,
 		Type:     contractInfo.Type,
-	}, nil
+	}
+	
+	// Log the raw RPC debug info if available
+	if debugInfo, ok := contractInfo.Metadata["rpc_debug"].(string); ok {
+		metadata.Address = fmt.Sprintf("%s (RPC: %s)", address, debugInfo)
+	}
+
+	return metadata, nil
+}
+
+// improveMetadataWithInference tries to improve token metadata using transaction data analysis
+func (t *TokenMetadataEnricher) improveMetadataWithInference(baggage map[string]interface{}, address string, metadata *TokenMetadata) {
+	// Look for Transfer events from this contract to infer decimals more accurately
+	if eventsInterface, ok := baggage["events"]; ok {
+		if eventsList, ok := eventsInterface.([]models.Event); ok {
+			for _, event := range eventsList {
+				if strings.EqualFold(event.Contract, address) && event.Name == "Transfer" {
+					if event.Parameters != nil {
+						// Try to infer decimals from value patterns
+						if valueHex, ok := event.Parameters["value"].(string); ok {
+							if valueDecimal, ok := event.Parameters["value_decimal"].(uint64); ok {
+								inferredDecimals := t.inferDecimals(valueHex, valueDecimal, metadata.Symbol)
+								if inferredDecimals >= 0 && inferredDecimals <= 30 {
+									metadata.Decimals = inferredDecimals
+								}
+							}
+						}
+						
+						// Use contract metadata if available from RPC calls
+						if contractSymbol, ok := event.Parameters["contract_symbol"].(string); ok && contractSymbol != "" {
+							metadata.Symbol = contractSymbol
+						}
+						if contractName, ok := event.Parameters["contract_name"].(string); ok && contractName != "" {
+							metadata.Name = contractName
+						}
+					}
+					// Only need one Transfer event for inference
+					break
+				}
+			}
+		}
+	}
 }
 
 // GetPromptContext provides token metadata context for LLM prompts
@@ -267,4 +416,38 @@ func GetTokenMetadata(baggage map[string]interface{}, address string) (*TokenMet
 		return metadata, exists
 	}
 	return nil, false
+}
+
+// DebugTokenContract is a utility function for debugging individual token contracts
+func (t *TokenMetadataEnricher) DebugTokenContract(ctx context.Context, contractAddress string) map[string]interface{} {
+	if t.rpcClient == nil {
+		return map[string]interface{}{
+			"error": "RPC client not available",
+		}
+	}
+	
+	result := map[string]interface{}{
+		"contract_address": contractAddress,
+	}
+	
+	// Try to get contract info via RPC
+	contractInfo, err := t.rpcClient.GetContractInfo(ctx, contractAddress)
+	if err != nil {
+		result["rpc_error"] = err.Error()
+		return result
+	}
+	
+	result["rpc_success"] = true
+	result["name"] = contractInfo.Name
+	result["symbol"] = contractInfo.Symbol  
+	result["decimals"] = contractInfo.Decimals
+	result["type"] = contractInfo.Type
+	result["total_supply"] = contractInfo.TotalSupply
+	
+	// Include debug info from RPC calls
+	if debugInfo, ok := contractInfo.Metadata["rpc_debug"].(string); ok {
+		result["rpc_debug"] = debugInfo
+	}
+	
+	return result
 }

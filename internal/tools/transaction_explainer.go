@@ -346,9 +346,13 @@ Write a single, short sentence (under 30 words) describing the main action.
 MULTI-HOP SWAP DETECTION:
 - For complex transactions with multiple token transfers, focus on the NET EFFECT for the user
 - Look for the pattern: User sends Token A → Multiple intermediary transfers → User receives Token B
-- The user is typically the address that appears in both the first "from" and final "to" positions
+- The user is typically the address that appears in both the FIRST "from" and FINAL "to" positions across all transfers
 - Ignore intermediary router/contract addresses that facilitate the swap
-- The final output token is what the user ultimately receives, not intermediate tokens like WETH
+- CRITICAL: The final output token is what the user ultimately receives, NOT intermediate tokens like WETH
+- When WETH appears in transfers, it's usually an intermediary step - look for the final non-WETH token received by the user
+- Trace through ALL transfers to find what the user actually ends up with after all conversions
+- Example: User sends USDT → Router converts to WETH → Router converts WETH to GrowAI → User receives GrowAI
+- In this case, report "Swapped USDT for GrowAI tokens" NOT "Swapped USDT for WETH"
 
 IMPORTANT: 
 - Use enriched monetary values from "Enriched Token Transfers" section when available (FormattedAmount and USD Value fields).
@@ -360,17 +364,25 @@ IMPORTANT:
 - Follow the address usage instructions from the ENS Names section.
 - If gas fees in USD are provided in the "Transaction Fees" section, include them in your explanation when relevant (e.g., "with $2.15 gas fee" or "paying $0.85 in fees").
 
+PROTOCOL USAGE:
+- Always include specific protocol/aggregator names when available from the "Protocol Detection" section
+- Use specific protocol names like "1inch v6", "Uniswap v3", "Curve", etc. instead of generic terms
+- For aggregators, mention the aggregator name (e.g., "via 1inch aggregator", "through Paraswap")
+- For DEX protocols, include the protocol name (e.g., "on Uniswap v3", "via Curve pool")
+
 Examples:
 - "Transferred 43.94 ATH ($1.45 USD) from one wallet to another"
-- "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap"  
-- "Swapped 100 USDT ($100) for 57,071 GrowAI tokens via DEX aggregator"
-- "Approved Uniswap to spend unlimited DAI"
+- "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap v3"  
+- "Swapped 100 USDT ($100) for 57,071 GrowAI tokens via 1inch v6 aggregator"
+- "Approved Uniswap v2 Router to spend unlimited DAI"
 - "Minted 5 NFTs from BoredApes collection"
 - "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth)"
-- "Swapped 0.5 ETH for 1,250 USDC ($1,250) with $2.15 gas fee"
-- "Transferred 1,000 USDT ($1,000) paying $0.85 in fees"
+- "Swapped 0.5 ETH for 1,250 USDC ($1,250) on Curve with $2.15 gas fee"
+- "Transferred 1,000 USDT ($1,000) paying $0.85 in fees via Paraswap"
+- "Added liquidity to Uniswap v3 ETH/USDC pool"
+- "Swapped 50 USDT for 0.02 WETH through SushiSwap router"
 
-Be specific about amounts, tokens, and main action. No explanations or warnings.`
+Be specific about amounts, tokens, protocols, and main action. No explanations or warnings.`
 
 	return prompt
 }
@@ -662,7 +674,7 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 				// Create divisor (10^decimals)
 				divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
 
-				// Convert to big.Float for decimal division
+				// Convert to big.Float for decimal division with precision
 				valueBig := new(big.Float).SetInt(value)
 				divisorBig := new(big.Float).SetInt(divisor)
 				result := new(big.Float).Quo(valueBig, divisorBig)
@@ -683,4 +695,63 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 
 	// Fallback: return as-is
 	return amount
+}
+
+// GetPromptContext provides comprehensive context for the LLM prompt
+func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+	var contextParts []string
+
+	// Get all context from tools
+	if contextProviders, ok := baggage["context_providers"].([]ContextProvider); ok {
+		for _, provider := range contextProviders {
+			if context := provider.GetPromptContext(ctx, baggage); context != "" {
+				contextParts = append(contextParts, context)
+			}
+		}
+	}
+
+	// Add debug information if available
+	if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
+		var debugParts []string
+		
+		// Add token metadata debug info
+		if tokenDebug, ok := debugInfo["token_metadata"].(map[string]interface{}); ok {
+			debugParts = append(debugParts, "=== TOKEN METADATA DEBUG ===")
+			if discoveredAddresses, ok := tokenDebug["discovered_addresses"].([]string); ok {
+				debugParts = append(debugParts, fmt.Sprintf("Discovered %d token addresses: %v", len(discoveredAddresses), discoveredAddresses))
+			}
+			if rpcResults, ok := tokenDebug["rpc_results"].([]string); ok {
+				debugParts = append(debugParts, "RPC Results:")
+				for _, result := range rpcResults {
+					debugParts = append(debugParts, "  - " + result)
+				}
+			}
+			if rpcErrors, ok := tokenDebug["token_metadata_rpc_errors"].([]string); ok {
+				debugParts = append(debugParts, "RPC Errors:")
+				for _, err := range rpcErrors {
+					debugParts = append(debugParts, "  - " + err)
+				}
+			}
+			if finalMetadata, ok := tokenDebug["final_metadata"].([]string); ok {
+				debugParts = append(debugParts, "Final Metadata:")
+				for _, metadata := range finalMetadata {
+					debugParts = append(debugParts, "  - " + metadata)
+				}
+			}
+		}
+		
+		// Add transfer enrichment debug info
+		if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
+			debugParts = append(debugParts, "=== TRANSFER ENRICHMENT DEBUG ===")
+			for _, debug := range transferDebug {
+				debugParts = append(debugParts, "  - " + debug)
+			}
+		}
+		
+		if len(debugParts) > 0 {
+			contextParts = append(contextParts, strings.Join(debugParts, "\n"))
+		}
+	}
+
+	return strings.Join(contextParts, "\n\n")
 }

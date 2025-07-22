@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -241,20 +240,30 @@ func (t *ERC20PriceLookup) convertAmountToTokens(amountStr string, decimals int)
 	if strings.HasPrefix(amountStr, "0x") {
 		// Convert hex to decimal
 		amountBig := new(big.Int)
-		amountBig.SetString(amountStr[2:], 16)
+		if _, ok := amountBig.SetString(amountStr[2:], 16); !ok {
+			return 0
+		}
 		amountStr = amountBig.String()
 	}
 
-	// Parse the amount
+	// Parse the amount as big.Int
 	amountBig := new(big.Int)
-	amountBig, ok := amountBig.SetString(amountStr, 10)
-	if !ok {
+	if _, ok := amountBig.SetString(amountStr, 10); !ok {
 		return 0
 	}
 
-	// Convert to float and adjust for decimals
-	amountFloat, _ := new(big.Float).SetInt(amountBig).Float64()
-	return amountFloat / math.Pow10(decimals)
+	// Convert to big.Float and adjust for decimals to maintain precision
+	amountFloat := new(big.Float).SetInt(amountBig)
+	
+	if decimals > 0 {
+		// Create divisor (10^decimals) as big.Float for precise division
+		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+		amountFloat.Quo(amountFloat, divisor)
+	}
+
+	// Convert to float64 only at the end
+	result, _ := amountFloat.Float64()
+	return result
 }
 
 // Run executes the price lookup

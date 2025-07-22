@@ -17,19 +17,19 @@ var SupportedNetworks = map[int64]Network{
 	1: {
 		ID:       1,
 		Name:     "Ethereum",
-		RPCUrl:   "https://eth.llamarpc.com",
+		RPCUrl:   "https://c9856.pubgw0.us-west-2.aws.erpc.cloud/main/mainnet",
 		Explorer: "https://etherscan.io",
 	},
 	137: {
 		ID:       137,
 		Name:     "Polygon",
-		RPCUrl:   "https://polygon.llamarpc.com",
+		RPCUrl:   "https://c9856.pubgw0.us-west-2.aws.erpc.cloud/main/polygon",
 		Explorer: "https://polygonscan.com",
 	},
 	42161: {
 		ID:       42161,
 		Name:     "Arbitrum",
-		RPCUrl:   "https://arb1.arbitrum.io/rpc",
+		RPCUrl:   "https://c9856.pubgw0.us-west-2.aws.erpc.cloud/main/arbitrum-one",
 		Explorer: "https://arbiscan.io",
 	},
 }

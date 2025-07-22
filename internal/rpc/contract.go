@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 )
 
 // ContractInfo represents information about a contract
@@ -143,33 +144,73 @@ func (c *Client) hasERC20Methods(ctx context.Context, contractAddress string) bo
 
 // fetchERC20Info fetches ERC20 token information
 func (c *Client) fetchERC20Info(ctx context.Context, contractAddress string, info *ContractInfo) {
+	// Add debug context
+	var debugInfo []string
+	
 	// Fetch name
 	if nameResult, err := c.ethCall(ctx, contractAddress, ERC20_NAME); err == nil {
 		if name := c.decodeString(nameResult); name != "" {
 			info.Name = name
+			debugInfo = append(debugInfo, fmt.Sprintf("name=%s", name))
+		} else {
+			debugInfo = append(debugInfo, "name=empty_decode")
 		}
+	} else {
+		debugInfo = append(debugInfo, fmt.Sprintf("name_error=%v", err))
 	}
 
 	// Fetch symbol
 	if symbolResult, err := c.ethCall(ctx, contractAddress, ERC20_SYMBOL); err == nil {
 		if symbol := c.decodeString(symbolResult); symbol != "" {
 			info.Symbol = symbol
+			debugInfo = append(debugInfo, fmt.Sprintf("symbol=%s", symbol))
+		} else {
+			debugInfo = append(debugInfo, "symbol=empty_decode")
 		}
+	} else {
+		debugInfo = append(debugInfo, fmt.Sprintf("symbol_error=%v", err))
 	}
 
-	// Fetch decimals
+	// Fetch decimals - FIXED: properly handle 0 decimals
+	decimalsSet := false
 	if decimalsResult, err := c.ethCall(ctx, contractAddress, ERC20_DECIMALS); err == nil {
 		if decimals := c.decodeUint256(decimalsResult); decimals != nil {
-			info.Decimals = int(decimals.Int64())
+			fetchedDecimals := int(decimals.Int64())
+			// Accept any reasonable decimals value including 0
+			if fetchedDecimals >= 0 && fetchedDecimals <= 30 {
+				info.Decimals = fetchedDecimals
+				decimalsSet = true
+				debugInfo = append(debugInfo, fmt.Sprintf("decimals=%d", fetchedDecimals))
+			} else {
+				debugInfo = append(debugInfo, fmt.Sprintf("decimals_out_of_range=%d", fetchedDecimals))
+			}
+		} else {
+			debugInfo = append(debugInfo, "decimals=decode_failed")
 		}
+	} else {
+		debugInfo = append(debugInfo, fmt.Sprintf("decimals_error=%v", err))
+	}
+	
+	// Only default to 18 if we couldn't fetch decimals at all
+	if !decimalsSet {
+		info.Decimals = 18
+		debugInfo = append(debugInfo, "decimals=default_18")
 	}
 
 	// Fetch total supply
 	if supplyResult, err := c.ethCall(ctx, contractAddress, ERC20_TOTAL_SUPPLY); err == nil {
 		if supply := c.decodeUint256(supplyResult); supply != nil {
 			info.TotalSupply = supply.String()
+			debugInfo = append(debugInfo, "totalSupply=ok")
+		} else {
+			debugInfo = append(debugInfo, "totalSupply=decode_failed")
 		}
+	} else {
+		debugInfo = append(debugInfo, fmt.Sprintf("totalSupply_error=%v", err))
 	}
+	
+	// Store debug info in metadata for troubleshooting
+	info.Metadata["rpc_debug"] = strings.Join(debugInfo, ", ")
 }
 
 // tryFetchERC20Info tries to fetch ERC20 info even if interface detection failed

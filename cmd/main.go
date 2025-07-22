@@ -17,6 +17,8 @@ import (
 	"github.com/txplain/txplain/internal/api"
 	"github.com/txplain/txplain/internal/mcp"
 	"github.com/txplain/txplain/internal/models"
+	"github.com/txplain/txplain/internal/rpc"
+	"github.com/txplain/txplain/internal/tools"
 )
 
 func main() {
@@ -36,10 +38,9 @@ func main() {
 		enableMCP     = flag.Bool("mcp", true, "Enable MCP server")
 		showVersion   = flag.Bool("version", false, "Show version and exit")
 		verbose       = flag.Bool("v", false, "Verbose mode - show full prompt and context")
-
-		// New flags for transaction processing
-		txHash    = flag.String("tx", "", "Transaction hash to explain")
-		networkID = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
+		debugToken    = flag.String("debug-token", "", "Debug specific token contract (address)")
+		txHash        = flag.String("tx", "", "Transaction hash to explain")
+		networkID     = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
 	)
 	flag.Parse()
 
@@ -48,6 +49,12 @@ func main() {
 		fmt.Println("Txplain v1.0.0")
 		fmt.Println("AI-powered blockchain transaction explanation service")
 		os.Exit(0)
+	}
+
+	// Handle debug token mode
+	if *debugToken != "" {
+		debugTokenContract(*debugToken, *networkID)
+		return
 	}
 
 	// Check if transaction hash is provided
@@ -132,6 +139,46 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		// Show baggage contents (metadata)
 		if result.Metadata != nil {
 			if baggage, ok := result.Metadata["pipeline_baggage"].(map[string]interface{}); ok {
+				
+				// First, display formatted debug information if available
+				if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
+					// Display token metadata debug
+					if tokenDebug, ok := debugInfo["token_metadata"].(map[string]interface{}); ok {
+						fmt.Println("=== TOKEN METADATA DEBUG ===")
+						if discoveredAddresses, ok := tokenDebug["discovered_addresses"].([]string); ok {
+							fmt.Printf("Discovered %d token addresses: %v\n", len(discoveredAddresses), discoveredAddresses)
+						}
+						if rpcResults, ok := tokenDebug["rpc_results"].([]string); ok {
+							fmt.Println("RPC Results:")
+							for _, result := range rpcResults {
+								fmt.Println("  - " + result)
+							}
+						}
+						if rpcErrors, ok := tokenDebug["token_metadata_rpc_errors"].([]string); ok {
+							fmt.Println("RPC Errors:")
+							for _, err := range rpcErrors {
+								fmt.Println("  - " + err)
+							}
+						}
+						if finalMetadata, ok := tokenDebug["final_metadata"].([]string); ok {
+							fmt.Println("Final Metadata:")
+							for _, metadata := range finalMetadata {
+								fmt.Println("  - " + metadata)
+							}
+						}
+						fmt.Println()
+					}
+					
+					// Display transfer enrichment debug
+					if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
+						fmt.Println("=== TRANSFER ENRICHMENT DEBUG ===")
+						for _, debug := range transferDebug {
+							fmt.Println("  - " + debug)
+						}
+						fmt.Println()
+					}
+				}
+
 				fmt.Println("📦 Pipeline Baggage Contents:")
 
 				// Create a safe copy of baggage to avoid circular references
@@ -328,4 +375,33 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 	case <-time.After(2 * time.Second):
 		log.Println("Shutdown completed")
 	}
+}
+
+// debugTokenContract debugs a specific token contract
+func debugTokenContract(contractAddress string, networkID int64) {
+	ctx := context.Background()
+	
+	fmt.Printf("=== DEBUGGING TOKEN CONTRACT ===\n")
+	fmt.Printf("Contract: %s\n", contractAddress)
+	fmt.Printf("Network: %d\n", networkID)
+	fmt.Printf("\n")
+
+	// Create RPC client
+	client, err := rpc.NewClient(networkID)
+	if err != nil {
+		fmt.Printf("ERROR: Failed to create RPC client: %v\n", err)
+		return
+	}
+
+	// Create token metadata enricher
+	enricher := tools.NewTokenMetadataEnricher()
+	enricher.SetRPCClient(client)
+
+	// Debug the specific contract
+	result := enricher.DebugTokenContract(ctx, contractAddress)
+
+	// Print results
+	fmt.Printf("=== RESULTS ===\n")
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Printf("%s\n", resultJSON)
 }
