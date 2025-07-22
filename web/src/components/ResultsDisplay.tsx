@@ -23,21 +23,22 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
         // Check if it's all zeros
         if (hexValue.replace(/0/g, '') === '') return '0'
         
-        // Convert hex to decimal
-        const num = parseInt(hexValue, 16)
-        if (num === 0) return '0'
+        // Use BigInt for large numbers instead of parseInt
+        const bigNum = BigInt('0x' + hexValue)
+        if (bigNum === BigInt(0)) return '0'
         
-        // For display, just show the decimal value
+        // For display, just show the decimal value (raw amount, no decimals applied)
+        const numStr = bigNum.toString()
         if (symbol) {
-          return `${num} ${symbol}`
+          return `${numStr} ${symbol}`
         }
-        return num.toString()
+        return numStr
       } catch {
         return '0'
       }
     }
     
-    // Convert from wei if needed (simple approach)
+    // Handle regular numeric strings
     try {
       const num = parseFloat(amount)
       if (num === 0) return '0'
@@ -84,14 +85,10 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
         </div>
 
         {/* Transaction Details */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-gray-200">
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-gray-200">
           <div>
             <dt className="text-sm font-medium text-gray-500">Gas Used</dt>
             <dd className="mt-1 text-sm text-gray-900">{result.gas_used.toLocaleString()}</dd>
-          </div>
-          <div>
-            <dt className="text-sm font-medium text-gray-500">Transaction Fee</dt>
-            <dd className="mt-1 text-sm text-gray-900">{result.tx_fee}</dd>
           </div>
           <div>
             <dt className="text-sm font-medium text-gray-500">Block</dt>
@@ -113,14 +110,25 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
                 }
                 
                 // Filter out zero amounts (but keep NFTs)
-                if (transfer.type === 'ERC20' && (!transfer.formatted_amount || transfer.formatted_amount === '0')) {
-                  const rawAmount = formatAmount(transfer.amount, transfer.symbol)
-                  if (!rawAmount || rawAmount === '0') {
-                    return false
+                if (transfer.type === 'ERC20') {
+                  // If we have a formatted amount, check if it's zero
+                  if (transfer.formatted_amount && transfer.formatted_amount !== '0') {
+                    return true // Valid formatted amount
                   }
+                  
+                  // If no formatted amount, try to parse the raw amount
+                  if (transfer.amount) {
+                    const rawAmount = formatAmount(transfer.amount, transfer.symbol)
+                    if (rawAmount && rawAmount !== '0') {
+                      return true // Valid raw amount
+                    }
+                  }
+                  
+                  // Filter out if both formatted and raw amounts are zero/empty
+                  return false
                 }
                 
-                return true
+                return true // Keep NFTs and other types
               })
               .map((transfer, index) => (
               <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -207,37 +215,97 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
         </div>
       )}
 
-      {/* Links */}
+      {/* Address Roles & Links */}
       {result.links && Object.keys(result.links).length > 0 && (
         <div className="bg-white rounded-lg shadow-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-3">Related Links</h3>
-          <div className="space-y-2">
-            {Object.entries(result.links).map(([name, url], index) => (
-              <div key={index}>
-                <a
-                  href={url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-800 text-sm flex items-center"
-                >
-                  {name}
-                  <svg
-                    className="w-4 h-4 ml-1"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                    xmlns="http://www.w3.org/2000/svg"
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction Participants</h3>
+          <div className="space-y-3">
+            {Object.entries(result.links).map(([role, url], index) => {
+              const isMainTransaction = role === "Main Transaction"
+              const isUserRole = ['Trader', 'Borrower', 'Lender', 'Liquidity Provider', 'NFT Buyer', 'NFT Seller', 'Token Sender', 'Token Receiver'].includes(role)
+              const isProtocolRole = role.includes('Router') || role.includes('Pool') || role.includes('Contract') || role.includes('Marketplace') || role.includes('Aggregator') || role.includes('Bridge')
+              
+              // Extract address from URL if possible
+              const addressMatch = url.match(/address\/([^/?]+)/) || url.match(/tx\/([^/?]+)/)
+              const address = addressMatch ? addressMatch[1] : ''
+              
+              return (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                  <div className="flex items-center space-x-3">
+                    {/* Role Icon */}
+                    <div className={`flex-shrink-0 w-2 h-2 rounded-full ${
+                      isMainTransaction ? 'bg-purple-500' :
+                      isUserRole ? 'bg-blue-500' :
+                      isProtocolRole ? 'bg-green-500' :
+                      'bg-gray-400'
+                    }`}></div>
+                    
+                    {/* Role & Address Info */}
+                    <div className="flex-1">
+                      <div className={`font-medium ${
+                        isMainTransaction ? 'text-purple-700' :
+                        isUserRole ? 'text-blue-700' :
+                        isProtocolRole ? 'text-green-700' :
+                        'text-gray-700'
+                      }`}>
+                        {role}
+                      </div>
+                      {address && address !== role && (
+                        <div className="text-xs text-gray-500 font-mono">
+                          {formatAddress(address)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Link Button */}
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-shrink-0 inline-flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 hover:text-blue-700 transition-colors"
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-                    />
-                  </svg>
-                </a>
+                    View
+                    <svg
+                      className="w-3 h-3 ml-1"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                      />
+                    </svg>
+                  </a>
+                </div>
+              )
+            })}
+          </div>
+          
+          {/* Legend */}
+          <div className="mt-4 pt-3 border-t border-gray-200">
+            <div className="flex flex-wrap gap-4 text-xs text-gray-600">
+              <div className="flex items-center space-x-1">
+                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                <span>Transaction</span>
               </div>
-            ))}
+              <div className="flex items-center space-x-1">
+                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                <span>Users</span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                <span>Protocols</span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <div className="w-2 h-2 rounded-full bg-gray-400"></div>
+                <span>Other</span>
+              </div>
+            </div>
           </div>
         </div>
       )}

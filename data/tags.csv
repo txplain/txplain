@@ -1,0 +1,45 @@
+tag,category,description,patterns,confidence_weight
+defi,DeFi,Decentralized Finance operations,"swap,liquidity,lending,borrowing,yield",0.9
+swap,DeFi,Token swapping/exchange operations,"Swap event,swapExact,swap,exchange",0.95
+liquidity,DeFi,Liquidity provision or removal,"addLiquidity,removeLiquidity,Mint,Burn on AMM",0.9
+lending,DeFi,Lending and borrowing operations,"borrow,repay,supply,withdraw,Aave,Compound",0.9
+yield-farming,DeFi,Yield farming and staking,"stake,unstake,reward,harvest,farm",0.85
+bridge,DeFi,Cross-chain bridge operations,"bridge,deposit,withdraw,L1,L2",0.8
+token-transfer,Transfer,Token transfer operations,"Transfer event,transfer,transferFrom",0.95
+token-approval,Authorization,Token spending approval,"Approval event,approve",0.95
+minting,Creation,Token or NFT minting,"mint,Mint event,from zero address",0.9
+burning,Destruction,Token or NFT burning,"burn,Burn event,to zero address",0.9
+nft,NFT,Non-fungible token operations,"ERC721,ERC1155,NFT,collectible",0.9
+nft-marketplace,NFT,NFT marketplace transactions,"OpenSea,LooksRare,marketplace,bid,offer",0.85
+gaming,Gaming,Gaming-related transactions,"game,gaming,play,quest,reward",0.8
+dao,Governance,DAO governance operations,"vote,propose,execute,governance",0.8
+airdrop,Distribution,Token airdrop or distribution,"claim,airdrop,distribute,merkle",0.85
+arbitrage,Trading,Arbitrage opportunities,"arbitrage,MEV,sandwich,frontrun",0.7
+flash-loan,DeFi,Flash loan operations,"flashloan,flash,borrow,repay same tx",0.9
+aggregator,DeFi,DEX aggregator usage,"1inch,Paraswap,0x,aggregator",0.9
+stablecoin,Payment,Stablecoin operations,"USDT,USDC,DAI,BUSD,stablecoin",0.8
+wrapped-token,DeFi,Wrapped token operations,"WETH,wrap,unwrap,deposit,withdraw",0.85
+oracle,Infrastructure,Price oracle interactions,"Chainlink,oracle,price,feed",0.8
+insurance,DeFi,DeFi insurance protocols,"insurance,cover,claim,nexus",0.8
+synthetic,DeFi,Synthetic asset operations,"synthetic,synth,derivative,mirror",0.8
+options,DeFi,Options trading,"option,put,call,strike,premium",0.85
+perpetuals,DeFi,Perpetual swaps/futures,"perp,future,long,short,leverage",0.85
+launchpad,DeFi,Token launch operations,"launch,presale,IDO,ICO,sale",0.8
+vesting,Distribution,Token vesting operations,"vest,cliff,linear,unlock",0.8
+multisig,Security,Multi-signature operations,"multisig,gnosis,safe,execute",0.9
+proxy,Infrastructure,Proxy contract interactions,"proxy,upgrade,implementation",0.7
+batch,Efficiency,Batch transaction operations,"batch,multicall,bulk",0.8
+gas-optimization,Efficiency,Gas optimization techniques,"gasless,meta,relay,subsidized",0.7
+erc20,Token,ERC20 token standard,"ERC20,transfer,approve,totalSupply",0.9
+erc721,NFT,ERC721 NFT standard,"ERC721,tokenId,ownerOf,safeTransfer",0.95
+erc1155,NFT,ERC1155 multi-token standard,"ERC1155,batch,balanceOf,uri",0.95
+payment,Transfer,Simple payment transactions,"transfer,send,payment,tip",0.8
+donation,Transfer,Donation transactions,"donate,tip,gitcoin,fund",0.7
+reward,Incentive,Reward distribution,"reward,incentive,bonus,cashback",0.8
+fee,Fee,Fee payment transactions,"fee,gas,tip,priority",0.9
+refund,Transfer,Refund transactions,"refund,return,cancel,rollback",0.8
+upgrade,Infrastructure,Contract upgrade operations,"upgrade,migrate,implementation",0.8
+emergency,Security,Emergency operations,"pause,emergency,stop,circuit",0.9
+slashing,Validation,Slashing operations,"slash,penalty,validator,stake",0.9
+checkpoint,Infrastructure,Checkpoint operations,"checkpoint,commit,finalize",0.8
+timelock,Security,Timelock operations,"timelock,delay,queue,execute",0.9 

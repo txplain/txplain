@@ -310,7 +310,6 @@ type ExplanationResult struct {
 	Transfers   []TokenTransfer        `json:"transfers"` // All transfers in the transaction
 	GasUsed     uint64                 `json:"gas_used"`
 	GasPrice    string                 `json:"gas_price"`
-	TxFee       string                 `json:"tx_fee"`
 	Status      string                 `json:"status"` // success, failed, reverted
 	Timestamp   time.Time              `json:"timestamp"`
 	BlockNumber uint64                 `json:"block_number"`
