@@ -13,6 +13,38 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
     return `${address.slice(0, 6)}...${address.slice(-4)}`
   }
 
+  // Deterministic color generation based on text hash
+  const getColorFromText = (text: string, colorType: 'bg' | 'text' = 'bg') => {
+    let hash = 0
+    for (let i = 0; i < text.length; i++) {
+      const char = text.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash = hash & hash // Convert to 32bit integer
+    }
+    
+    const bgColors = [
+      'bg-red-500', 'bg-blue-500', 'bg-green-800', 'bg-yellow-500',
+      'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-cyan-500',
+      'bg-emerald-500', 'bg-orange-500', 'bg-teal-500', 'bg-violet-500',
+      'bg-rose-500', 'bg-amber-500', 'bg-lime-500', 'bg-sky-500'
+    ]
+    
+    const textColors = [
+      'text-red-700', 'text-blue-700', 'text-green-700', 'text-yellow-700',
+      'text-purple-700', 'text-pink-700', 'text-indigo-700', 'text-cyan-700',
+      'text-emerald-700', 'text-orange-700', 'text-teal-700', 'text-violet-700',
+      'text-rose-700', 'text-amber-700', 'text-lime-700', 'text-sky-700'
+    ]
+    
+    // Special case for transaction to keep it purple for consistency
+    if (text === 'transaction') {
+      return colorType === 'bg' ? 'bg-purple-500' : 'text-purple-700'
+    }
+    
+    const colors = colorType === 'bg' ? bgColors : textColors
+    return colors[Math.abs(hash) % colors.length]
+  }
+
   const formatAmount = (amount: string, symbol?: string) => {
     if (!amount || amount === '0x' || amount === '0x0') return '0'
     
@@ -265,32 +297,48 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
           <div className="space-y-3">
             {Object.entries(result.links).map(([role, url], index) => {
               const isMainTransaction = role === "Main Transaction"
-              const isUserRole = ['Trader', 'Borrower', 'Lender', 'Liquidity Provider', 'NFT Buyer', 'NFT Seller', 'Token Sender', 'Token Receiver'].includes(role)
-              const isProtocolRole = role.includes('Router') || role.includes('Pool') || role.includes('Contract') || role.includes('Marketplace') || role.includes('Aggregator') || role.includes('Bridge')
               
-              // Extract address from URL if possible
+              // Get address categories from metadata if available
+              const addressCategories = result.metadata?.address_categories || {}
+              
+              // Find the category for this role by looking up the address in address categories
               const addressMatch = url.match(/address\/([^/?]+)/) || url.match(/tx\/([^/?]+)/)
               const address = addressMatch ? addressMatch[1] : ''
+              
+              let category = 'other' // default fallback
+              
+              if (isMainTransaction) {
+                category = 'transaction'
+              } else if (address) {
+                // Find which category this address belongs to
+                for (const [cat, addresses] of Object.entries(addressCategories)) {
+                  if (Array.isArray(addresses)) {
+                    const found = addresses.find((addr: { address?: string; role?: string }) => 
+                      addr.address && addr.address.toLowerCase() === address.toLowerCase()
+                    )
+                    if (found) {
+                      category = cat
+                      break
+                    }
+                  }
+                }
+              }
+              
+               // Deterministic color assignment based on category name hash
+               const getCategoryColor = (cat: string) => getColorFromText(cat, 'bg')
+               
+               // Deterministic text color based on category
+               const getCategoryTextColor = (cat: string) => getColorFromText(cat, 'text')
               
               return (
                 <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
                   <div className="flex items-center space-x-3">
                     {/* Role Icon */}
-                    <div className={`flex-shrink-0 w-2 h-2 rounded-full ${
-                      isMainTransaction ? 'bg-purple-500' :
-                      isUserRole ? 'bg-blue-500' :
-                      isProtocolRole ? 'bg-green-500' :
-                      'bg-gray-400'
-                    }`}></div>
+                    <div className={`flex-shrink-0 w-2 h-2 rounded-full ${getCategoryColor(category)}`}></div>
                     
                     {/* Role & Address Info */}
                     <div className="flex-1">
-                      <div className={`font-medium ${
-                        isMainTransaction ? 'text-purple-700' :
-                        isUserRole ? 'text-blue-700' :
-                        isProtocolRole ? 'text-green-700' :
-                        'text-gray-700'
-                      }`}>
+                      <div className={`font-medium ${getCategoryTextColor(category)}`}>
                         {role}
                       </div>
                       {address && address !== role && (
@@ -329,25 +377,30 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
             })}
           </div>
           
-          {/* Legend */}
+          {/* Dynamic Legend - only show categories that are actually present */}
           <div className="mt-4 pt-3 border-t border-gray-200">
             <div className="flex flex-wrap gap-4 text-xs text-gray-600">
+              {/* Always show transaction if we have links */}
               <div className="flex items-center space-x-1">
                 <div className="w-2 h-2 rounded-full bg-purple-500"></div>
                 <span>Transaction</span>
               </div>
-              <div className="flex items-center space-x-1">
-                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                <span>Users</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                <span>Protocols</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <div className="w-2 h-2 rounded-full bg-gray-400"></div>
-                <span>Other</span>
-              </div>
+              
+              {/* Show categories from metadata */}
+              {Object.entries(result.metadata?.address_categories || {}).map(([category, addresses]) => {
+                if (Array.isArray(addresses) && addresses.length > 0) {
+                  // Same deterministic color generation as above
+                  const getCategoryColor = (cat: string) => getColorFromText(cat, 'bg')
+                  
+                  return (
+                    <div key={category} className="flex items-center space-x-1">
+                      <div className={`w-2 h-2 rounded-full ${getCategoryColor(category)}`}></div>
+                      <span className="capitalize">{category}</span>
+                    </div>
+                  )
+                }
+                return null
+              })}
             </div>
           </div>
         </div>

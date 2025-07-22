@@ -133,6 +133,10 @@ OPENAI_API_KEY=your_openai_api_key_here
 
 # Etherscan API key for contract verification  
 ETHERSCAN_API_KEY=your_etherscan_api_key_here
+
+# Optional: CoinMarketCap API key for enhanced token pricing
+# Enables both centralized (CEX) and decentralized (DEX) exchange data
+COINMARKETCAP_API_KEY=your_coinmarketcap_api_key_here
 ```
 
 ## GUI Server

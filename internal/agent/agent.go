@@ -214,6 +214,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	annotationGenerator.AddContextProvider(iconResolver)
 	annotationGenerator.AddContextProvider(protocolResolver)
 	annotationGenerator.AddContextProvider(tagResolver)
+	annotationGenerator.AddContextProvider(ensResolver) // CRITICAL: Add ENS resolver for address mapping
 	if priceLookup != nil {
 		annotationGenerator.AddContextProvider(priceLookup)
 	}
