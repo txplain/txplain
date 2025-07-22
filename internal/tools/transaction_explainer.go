@@ -677,6 +677,14 @@ func (t *TransactionExplainer) buildAddressRolePrompt(baggage map[string]interfa
 
 TRANSACTION CONTEXT:`
 
+	// Add token metadata context FIRST - this is critical for distinguishing tokens from protocols
+	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok && len(tokenMetadata) > 0 {
+		prompt += "\n\nTOKEN CONTRACTS (these addresses are ERC20/ERC721/ERC1155 tokens, NOT protocol contracts):"
+		for addr, metadata := range tokenMetadata {
+			prompt += fmt.Sprintf("\n- %s: %s (%s) [%s token]", addr, metadata.Name, metadata.Symbol, metadata.Type)
+		}
+	}
+
 	// Add protocol context
 	if protocols, ok := baggage["protocols"].([]ProbabilisticProtocol); ok && len(protocols) > 0 {
 		prompt += "\n\nDETECTED PROTOCOLS:"
@@ -705,11 +713,27 @@ TRANSACTION CONTEXT:`
 		}
 	}
 
-	// Add events context
+	// Add events context with spender extraction
 	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
 		prompt += "\n\nKEY EVENTS:"
 		for _, event := range events {
-			prompt += fmt.Sprintf("\n- %s event on %s", event.Name, event.Contract)
+			eventInfo := fmt.Sprintf("%s event on %s", event.Name, event.Contract)
+			
+			// Extract spender from Approval events as potential protocol contracts
+			if event.Name == "Approval" && event.Parameters != nil {
+				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
+					// Clean up padded spender address
+					cleanSpender := strings.TrimPrefix(spender, "0x000000000000000000000000")
+					if cleanSpender != spender && len(cleanSpender) == 40 {
+						cleanSpender = "0x" + cleanSpender
+					} else {
+						cleanSpender = spender
+					}
+					eventInfo += fmt.Sprintf(" (approved spender: %s)", cleanSpender)
+				}
+			}
+			
+			prompt += fmt.Sprintf("\n- %s", eventInfo)
 		}
 	}
 
@@ -732,6 +756,12 @@ TRANSACTION CONTEXT:`
 
 	prompt += `
 
+CRITICAL RULE - TOKEN CONTRACTS vs PROTOCOL CONTRACTS:
+- If an address appears in the "TOKEN CONTRACTS" section above, it MUST be labeled as "Token Contract ([SYMBOL])"
+- NEVER identify a token contract address as a protocol router, aggregator, or other protocol contract
+- Protocol contracts are routers, pools, aggregators - NOT the tokens themselves
+- Use spender addresses from Approval events as potential protocol contracts, NOT the token contract
+
 ROLE IDENTIFICATION GUIDELINES:
 Based on the transaction context, identify the most appropriate role for each address:
 
@@ -750,7 +780,7 @@ PROTOCOL ROLES:
 - "Lending Pool" - lending protocol pool (Aave Pool, Compound cToken, etc.)
 - "Liquidity Pool" - AMM liquidity pool contract
 - "NFT Marketplace" - NFT trading contract (OpenSea, LooksRare, etc.)
-- "Token Contract" - ERC20/ERC721/ERC1155 token contracts
+- "Token Contract" - ERC20/ERC721/ERC1155 token contracts (use format: "Token Contract (SYMBOL)")
 - "Bridge Contract" - cross-chain bridge
 - "Aggregator" - DEX aggregator (1inch, Paraswap, etc.)
 
@@ -764,9 +794,10 @@ SPECIALIZED ROLES:
 PRIORITIZATION:
 1. Focus on the PRIMARY transaction purpose (swap, lend, NFT purchase, etc.)
 2. Identify the MAIN USER (the address initiating the transaction)
-3. Identify PROTOCOL CONTRACTS (routers, pools, marketplaces)
-4. Include FEE RECIPIENTS if significant fees are involved
-5. Limit to 8-10 most relevant addresses to avoid clutter
+3. Identify TOKEN CONTRACTS first using the "TOKEN CONTRACTS" section
+4. Identify PROTOCOL CONTRACTS (routers, pools, marketplaces) separately
+5. Include FEE RECIPIENTS if significant fees are involved
+6. Limit to 8-10 most relevant addresses to avoid clutter
 
 OUTPUT FORMAT:
 Respond with a JSON object mapping addresses to their roles:
@@ -777,21 +808,11 @@ Respond with a JSON object mapping addresses to their roles:
   "0xdef0...1234": "Fee Recipient"
 }
 
-EXAMPLE FORMAT (use context-based analysis, never hardcode addresses):
-DEX Transaction:
+CORRECT EXAMPLE - Token Approval Transaction:
 {
-  "[user_address_from_transaction]": "[role_based_on_transfer_patterns]",
-  "[router_address_from_calls]": "[protocol_name_from_context] Router",
-  "[token_contract_from_transfers]": "Token Contract ([token_symbol_from_context])",
-  "[another_token_contract]": "Token Contract ([another_symbol_from_context])"
-}
-
-Aggregator Transaction:
-{
-  "[user_address_from_transaction]": "[role_based_on_transfer_patterns]", 
-  "[aggregator_address_from_calls]": "[aggregator_name_from_protocol_context]",
-  "[token_address_from_transfers]": "Token Contract ([symbol_from_token_metadata])",
-  "[fee_recipient_from_transfers]": "Fee Recipient"
+  "[user_address_from_transaction]": "Trader",
+  "[token_contract_from_token_metadata]": "Token Contract ([token_symbol_from_metadata])",
+  "[spender_address_from_approval_event]": "[protocol_name] Router"
 }
 
 Analyze the transaction context and identify the most meaningful roles for up to 8-10 key addresses:

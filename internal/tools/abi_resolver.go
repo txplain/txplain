@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/txplain/txplain/internal/models"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -149,14 +150,15 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 
 	// From raw transaction data
 	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-		// Transaction 'to' address
+		// Transaction 'to' address (main contract being called)
 		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
 			if to, ok := receipt["to"].(string); ok && to != "" && to != "0x" {
 				addressMap[strings.ToLower(to)] = true
 			}
 		}
 
-		// From logs
+		// From ALL logs - this is the comprehensive approach
+		// Every log entry has an 'address' field which is the contract that emitted it
 		if logs, ok := rawData["logs"].([]interface{}); ok {
 			for _, logEntry := range logs {
 				if logMap, ok := logEntry.(map[string]interface{}); ok {
@@ -167,7 +169,7 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 			}
 		}
 
-		// From trace (if available)
+		// From trace data (if available) - get all contracts called
 		if trace, ok := rawData["trace"].(map[string]interface{}); ok {
 			// Extract addresses from trace calls
 			if traceResult, ok := trace["result"].(map[string]interface{}); ok {
@@ -180,6 +182,20 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 						}
 					}
 				}
+			}
+			
+			// Also get the main trace 'to' address
+			if to, ok := trace["to"].(string); ok && to != "" {
+				addressMap[strings.ToLower(to)] = true
+			}
+		}
+	}
+
+	// Also extract from decoded events (if any) - this catches edge cases
+	if events, ok := baggage["events"].([]models.Event); ok {
+		for _, event := range events {
+			if event.Contract != "" {
+				addressMap[strings.ToLower(event.Contract)] = true
 			}
 		}
 	}
@@ -460,26 +476,49 @@ func (a *ABIResolver) generateEventHash(signature string) string {
 	return "0x" + fmt.Sprintf("%x", hash)
 }
 
-// getEtherscanURL returns the appropriate Etherscan API URL for the network
+// getEtherscanURL returns the appropriate explorer API URL for the network
+// Priority: 1) Environment variable, 2) URL pattern matching, 3) Network config derivation
 func (a *ABIResolver) getEtherscanURL(networkID int64) string {
-	switch networkID {
-	case 1: // Ethereum mainnet
-		return "https://api.etherscan.io"
-	case 5: // Goerli
-		return "https://api-goerli.etherscan.io"
-	case 11155111: // Sepolia
-		return "https://api-sepolia.etherscan.io"
-	case 137: // Polygon
-		return "https://api.polygonscan.com"
-	case 42161: // Arbitrum
-		return "https://api.arbiscan.io"
-	case 10: // Optimism
-		return "https://api-optimistic.etherscan.io"
-	case 56: // BSC
-		return "https://api.bscscan.com"
-	default:
+	// Priority 1: Check for environment variable configuration
+	envKey := fmt.Sprintf("ETHERSCAN_ENDPOINT_CHAIN_%d", networkID)
+	if endpoint := os.Getenv(envKey); endpoint != "" {
+		// If the endpoint doesn't end with /api, append it for consistency
+		if !strings.HasSuffix(endpoint, "/api") {
+			endpoint += "/api"
+		}
+		return endpoint
+	}
+	
+	// Priority 2: Get network configuration for fallback
+	network, exists := models.GetNetwork(networkID)
+	if !exists {
 		return ""
 	}
+	
+	// Priority 3: Derive API URL from explorer URL using common patterns
+	// This works with any network without hardcoding specific chain IDs
+	explorerURL := network.Explorer
+	if explorerURL == "" {
+		return ""
+	}
+	
+	// Convert explorer URL to API URL using common patterns
+	if strings.Contains(explorerURL, "etherscan.io") {
+		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
+	} else if strings.Contains(explorerURL, "polygonscan.com") {
+		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
+	} else if strings.Contains(explorerURL, "arbiscan.io") {
+		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
+	} else if strings.Contains(explorerURL, "bscscan.com") {
+		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
+	} else if strings.Contains(explorerURL, "optimistic.etherscan.io") {
+		return strings.Replace(explorerURL, "https://optimistic.", "https://api-optimistic.", 1) + "/api"
+	} else if strings.Contains(explorerURL, "snowtrace.io") {
+		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
+	}
+	
+	// For unknown explorers, try the most common pattern
+	return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
 }
 
 // GetPromptContext provides ABI context for LLM prompts

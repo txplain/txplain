@@ -163,22 +163,21 @@ func (t *TokenTransferExtractor) filterRelevantTransfers(transfers []models.Toke
 	
 	for contract, contractTransferList := range contractTransfers {
 		// Generic pattern detection: identify intermediate tokens by transfer patterns
-		// instead of hardcoding specific addresses
-		isLikelyIntermediate := t.isLikelyIntermediateToken(contract, contractTransferList, contractTransfers)
+		// This is more generic than hardcoding specific addresses
+		mightBeIntermediate := len(contractTransferList) >= 2
 		
-		if isLikelyIntermediate && len(contractTransferList) >= 2 {
-			// For likely intermediate tokens, only include if it's the final destination
+		if mightBeIntermediate {
 			// Check if there are other token transfers (indicating this might be intermediate)
 			hasOtherTokenTransfers := false
 			for otherContract := range contractTransfers {
 				if otherContract != contract && len(contractTransfers[otherContract]) > 0 {
-					hasNonWETHTransfers = true
+					hasOtherTokenTransfers = true
 					break
 				}
 			}
 			
-			// Skip WETH transfers if there are other token transfers (indicating it's intermediate)
-			if hasNonWETHTransfers {
+			// Skip intermediate transfers if there are other token transfers
+			if hasOtherTokenTransfers {
 				continue
 			}
 		}
