@@ -24,9 +24,9 @@ func NewTransactionExplainer(llm llms.Model) *TransactionExplainer {
 	}
 }
 
-// Dependencies returns the tools this processor depends on  
+// Dependencies returns the tools this processor depends on
 func (t *TransactionExplainer) Dependencies() []string {
-	return []string{"log_decoder", "token_transfer_extractor", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver"}
+	return []string{"abi_resolver", "log_decoder", "token_transfer_extractor", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver", "protocol_resolver"}
 }
 
 // Process generates explanation using all information from baggage
@@ -60,8 +60,6 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 	baggage["explanation"] = explanation
 	return nil
 }
-
-
 
 // Name returns the tool name
 func (t *TransactionExplainer) Name() string {
@@ -104,7 +102,7 @@ func (t *TransactionExplainer) extractDecodedData(input map[string]interface{}) 
 		for _, callInterface := range callsInterface {
 			if callMap, ok := callInterface.(map[string]interface{}); ok {
 				call := models.Call{}
-				
+
 				if contract, ok := callMap["contract"].(string); ok {
 					call.Contract = contract
 				}
@@ -148,7 +146,7 @@ func (t *TransactionExplainer) extractDecodedData(input map[string]interface{}) 
 			for _, eventInterface := range eventsInterface {
 				if eventMap, ok := eventInterface.(map[string]interface{}); ok {
 					event := models.Event{}
-					
+
 					if contract, ok := eventMap["contract"].(string); ok {
 						event.Contract = contract
 					}
@@ -236,19 +234,17 @@ func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Contex
 	return explanation, nil
 }
 
-
-
 // buildExplanationPromptFromBaggage creates the prompt for the LLM using data from baggage
 func (t *TransactionExplainer) buildExplanationPromptFromBaggage(baggage map[string]interface{}, additionalContexts []string) string {
 	// Get decoded data and raw data from baggage
 	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
 	rawData, _ := baggage["raw_data"].(map[string]interface{})
-	
+
 	// If no decoded data, create empty structure
 	if decodedData == nil {
 		decodedData = &models.DecodedData{}
 	}
-	
+
 	return t.buildExplanationPrompt(decodedData, rawData, additionalContexts)
 }
 
@@ -272,8 +268,8 @@ Call #%d:
 - Call Type: %s
 - Value: %s ETH
 - Gas Used: %d
-- Success: %t`, 
-			i+1, call.Contract, call.Method, call.CallType, 
+- Success: %t`,
+			i+1, call.Contract, call.Method, call.CallType,
 			t.weiToEther(call.Value), call.GasUsed, call.Success)
 
 		if call.ErrorReason != "" {
@@ -302,7 +298,7 @@ Call #%d:
 Event #%d:
 - Contract: %s
 - Event: %s
-- Topics: %v`, 
+- Topics: %v`,
 			i+1, event.Contract, event.Name, event.Topics)
 
 		if len(event.Parameters) > 0 {
@@ -347,6 +343,13 @@ Event #%d:
 
 Write a single, short sentence (under 30 words) describing the main action. 
 
+MULTI-HOP SWAP DETECTION:
+- For complex transactions with multiple token transfers, focus on the NET EFFECT for the user
+- Look for the pattern: User sends Token A → Multiple intermediary transfers → User receives Token B
+- The user is typically the address that appears in both the first "from" and final "to" positions
+- Ignore intermediary router/contract addresses that facilitate the swap
+- The final output token is what the user ultimately receives, not intermediate tokens like WETH
+
 IMPORTANT: 
 - Use enriched monetary values from "Enriched Token Transfers" section when available (FormattedAmount and USD Value fields).
 - Prefer specific USD values from the enriched data over raw hex values or basic token prices.
@@ -355,13 +358,17 @@ IMPORTANT:
 - Always use the total converted amount, not the base unit price.
 - Use the address formatting provided in the "Address Formatting Guide" section.
 - Follow the address usage instructions from the ENS Names section.
+- If gas fees in USD are provided in the "Transaction Fees" section, include them in your explanation when relevant (e.g., "with $2.15 gas fee" or "paying $0.85 in fees").
 
 Examples:
 - "Transferred 43.94 ATH ($1.45 USD) from one wallet to another"
 - "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap"  
+- "Swapped 100 USDT ($100) for 57,071 GrowAI tokens via DEX aggregator"
 - "Approved Uniswap to spend unlimited DAI"
 - "Minted 5 NFTs from BoredApes collection"
 - "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth)"
+- "Swapped 0.5 ETH for 1,250 USDC ($1,250) with $2.15 gas fee"
+- "Transferred 1,000 USDT ($1,000) paying $0.85 in fees"
 
 Be specific about amounts, tokens, and main action. No explanations or warnings.`
 
@@ -428,12 +435,12 @@ func (t *TransactionExplainer) parseExplanationResponseFromBaggage(response stri
 	// Get data from baggage
 	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
 	rawData, _ := baggage["raw_data"].(map[string]interface{})
-	
+
 	// If no decoded data, create empty structure
 	if decodedData == nil {
 		decodedData = &models.DecodedData{}
 	}
-	
+
 	result := &models.ExplanationResult{
 		Summary:   response, // For now, use the full response as summary
 		Effects:   []models.WalletEffect{},
@@ -645,7 +652,7 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 	if amount == "" {
 		return "0"
 	}
-	
+
 	// Try to convert hex amount to decimal
 	if strings.HasPrefix(amount, "0x") {
 		// Parse hex to big int
@@ -654,18 +661,18 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 			if decimals > 0 {
 				// Create divisor (10^decimals)
 				divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-				
+
 				// Convert to big.Float for decimal division
 				valueBig := new(big.Float).SetInt(value)
 				divisorBig := new(big.Float).SetInt(divisor)
 				result := new(big.Float).Quo(valueBig, divisorBig)
-				
+
 				// Format with reasonable precision
 				formatted := result.Text('f', 6) // 6 decimal places
 				// Remove trailing zeros
 				formatted = strings.TrimRight(formatted, "0")
 				formatted = strings.TrimRight(formatted, ".")
-				
+
 				return formatted
 			} else {
 				// No decimals, just show the integer value
@@ -673,9 +680,7 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 			}
 		}
 	}
-	
+
 	// Fallback: return as-is
 	return amount
 }
-
- 

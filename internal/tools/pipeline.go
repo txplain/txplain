@@ -24,9 +24,9 @@ func (p *BaggagePipeline) AddProcessor(processor BaggageProcessor) error {
 	if _, exists := p.processors[name]; exists {
 		return fmt.Errorf("processor with name %s already exists", name)
 	}
-	
+
 	p.processors[name] = processor
-	
+
 	// Recalculate execution order
 	return p.calculateOrder()
 }
@@ -38,7 +38,7 @@ func (p *BaggagePipeline) calculateOrder() error {
 	if err != nil {
 		return err
 	}
-	
+
 	p.order = order
 	return nil
 }
@@ -48,13 +48,13 @@ func (p *BaggagePipeline) topologicalSort() ([]string, error) {
 	// Build adjacency list and in-degree count
 	adjList := make(map[string][]string)
 	inDegree := make(map[string]int)
-	
+
 	// Initialize all processors
 	for name := range p.processors {
 		adjList[name] = []string{}
 		inDegree[name] = 0
 	}
-	
+
 	// Build dependency graph
 	for name, processor := range p.processors {
 		deps := processor.Dependencies()
@@ -66,7 +66,7 @@ func (p *BaggagePipeline) topologicalSort() ([]string, error) {
 			inDegree[name]++
 		}
 	}
-	
+
 	// Kahn's algorithm for topological sorting
 	var queue []string
 	for name, degree := range inDegree {
@@ -74,14 +74,14 @@ func (p *BaggagePipeline) topologicalSort() ([]string, error) {
 			queue = append(queue, name)
 		}
 	}
-	
+
 	var result []string
 	for len(queue) > 0 {
 		// Pop from queue
 		current := queue[0]
 		queue = queue[1:]
 		result = append(result, current)
-		
+
 		// Process neighbors
 		for _, neighbor := range adjList[current] {
 			inDegree[neighbor]--
@@ -90,12 +90,12 @@ func (p *BaggagePipeline) topologicalSort() ([]string, error) {
 			}
 		}
 	}
-	
+
 	// Check for circular dependencies
 	if len(result) != len(p.processors) {
 		return nil, fmt.Errorf("circular dependency detected in processor chain")
 	}
-	
+
 	return result, nil
 }
 
@@ -104,18 +104,18 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 	if len(p.order) == 0 {
 		return fmt.Errorf("no processors registered or order not calculated")
 	}
-	
+
 	for _, name := range p.order {
 		processor, exists := p.processors[name]
 		if !exists {
 			return fmt.Errorf("processor %s not found", name)
 		}
-		
+
 		if err := processor.Process(ctx, baggage); err != nil {
 			return fmt.Errorf("processor %s failed: %w", name, err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -168,4 +168,4 @@ func (p *BaggagePipeline) HasProcessor(name string) bool {
 func (p *BaggagePipeline) GetProcessor(name string) (BaggageProcessor, bool) {
 	processor, exists := p.processors[name]
 	return processor, exists
-} 
+}

@@ -88,9 +88,18 @@ func (c *Client) call(ctx context.Context, method string, params interface{}) (j
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// Debug: print raw response if it's not JSON
+	if len(body) > 0 && body[0] != '{' && body[0] != '[' {
+		fmt.Printf("DEBUG: Non-JSON response from %s: %s\n", c.network.RPCUrl, string(body))
+	}
+
 	var rpcResp JSONRPCResponse
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		bodyPreview := string(body)
+		if len(bodyPreview) > 200 {
+			bodyPreview = bodyPreview[:200]
+		}
+		return nil, fmt.Errorf("failed to unmarshal response: %w (body: %s)", err, bodyPreview)
 	}
 
 	if rpcResp.Error != nil {
@@ -287,7 +296,7 @@ func (c *Client) ResolveENSName(ctx context.Context, address string) (string, er
 	// Remove 0x prefix and convert to lowercase
 	addr := address[2:]
 	addr = fmt.Sprintf("%040s", addr) // Ensure it's 40 characters
-	
+
 	// Create the ENS reverse lookup domain
 	// For address 0x5c0a3834648c766dfa1c06b62520f222a4cd89a0
 	// We create: 5c0a3834648c766dfa1c06b62520f222a4cd89a0.addr.reverse
@@ -295,13 +304,13 @@ func (c *Client) ResolveENSName(ctx context.Context, address string) (string, er
 
 	// ENS Registry address on mainnet
 	ensRegistryAddress := "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e"
-	
+
 	// resolver(bytes32) function signature
 	resolverSig := "0x0178b8bf"
-	
+
 	// Calculate the namehash of the reverse domain
 	nameHash := c.namehash(ensReverseDomain)
-	
+
 	// Call ENS registry to get resolver
 	params := []interface{}{
 		map[string]interface{}{
@@ -328,7 +337,7 @@ func (c *Client) ResolveENSName(ctx context.Context, address string) (string, er
 
 	// Extract resolver address (last 40 characters)
 	resolverAddress := "0x" + resolverResult[len(resolverResult)-40:]
-	
+
 	// If resolver is zero address, no ENS name
 	if resolverAddress == "0x0000000000000000000000000000000000000000" {
 		return "", nil
@@ -378,26 +387,26 @@ func (c *Client) namehash(name string) string {
 
 	// Start with 32 zero bytes
 	node := make([]byte, 32)
-	
+
 	// Split the name into labels (e.g., "vitalik.eth" -> ["vitalik", "eth"])
 	labels := strings.Split(name, ".")
-	
+
 	// Process labels in reverse order (from right to left)
 	for i := len(labels) - 1; i >= 0; i-- {
 		label := labels[i]
-		
+
 		// Calculate keccak256 of the label
 		labelHash := sha3.NewLegacyKeccak256()
 		labelHash.Write([]byte(label))
 		labelHashBytes := labelHash.Sum(nil)
-		
+
 		// Calculate keccak256 of (current_node + label_hash)
 		nodeHash := sha3.NewLegacyKeccak256()
 		nodeHash.Write(node)
 		nodeHash.Write(labelHashBytes)
 		node = nodeHash.Sum(nil)
 	}
-	
+
 	return "0x" + hex.EncodeToString(node)
 }
 
@@ -439,7 +448,7 @@ func (c *Client) decodeStringResult(hexData string) (string, error) {
 func (c *Client) resolveENSForward(ctx context.Context, name string) (string, error) {
 	// ENS Registry address on mainnet
 	ensRegistryAddress := "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e"
-	
+
 	// This would implement forward ENS resolution
 	// For now, return empty to avoid infinite loops
 	_ = ensRegistryAddress
@@ -452,4 +461,4 @@ func hexToUint64(hex string) (uint64, error) {
 		return 0, nil
 	}
 	return strconv.ParseUint(hex[2:], 16, 64)
-} 
+}

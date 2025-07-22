@@ -39,9 +39,9 @@ func (t *LogDecoder) Description() string {
 	return "Decodes blockchain transaction logs into structured events and token transfers"
 }
 
-// Dependencies returns the tools this processor depends on (none for log decoder)
+// Dependencies returns the tools this processor depends on
 func (t *LogDecoder) Dependencies() []string {
-	return []string{} // Log decoder is typically run first
+	return []string{"abi_resolver"} // Use ABI resolver before decoding
 }
 
 // Process processes logs and adds decoded events to baggage
@@ -74,7 +74,7 @@ func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		t.signatureResolver = rpc.NewSignatureResolver(t.rpcClient, true)
 	}
 
-	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID)
+	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID, baggage)
 	if err != nil {
 		return fmt.Errorf("failed to decode logs: %w", err)
 	}
@@ -115,7 +115,7 @@ func (t *LogDecoder) Run(ctx context.Context, input map[string]interface{}) (map
 		t.signatureResolver = rpc.NewSignatureResolver(t.rpcClient, true)
 	}
 
-	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID)
+	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID, nil)
 	if err != nil {
 		return nil, NewToolError("log_decoder", fmt.Sprintf("failed to decode logs: %v", err), "DECODE_ERROR")
 	}
@@ -233,7 +233,7 @@ func (t *LogDecoder) decodeEventFromTopics(topics []string, data string) (string
 	}
 
 	parameters := make(map[string]interface{})
-	
+
 	// Parse parameters based on known event signatures
 	switch eventName {
 	case "Transfer":
@@ -299,17 +299,17 @@ func (t *LogDecoder) hexToUint64(hex string) (uint64, error) {
 	if hex == "" || hex == "0x" {
 		return 0, nil
 	}
-	
+
 	// Remove 0x prefix if present
 	if strings.HasPrefix(hex, "0x") {
 		hex = hex[2:]
 	}
-	
+
 	return strconv.ParseUint(hex, 16, 64)
-} 
+}
 
 // decodeLogsWithRPC processes log entries with RPC enhancements
-func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, networkID int64) ([]models.Event, error) {
+func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, networkID int64, baggage map[string]interface{}) ([]models.Event, error) {
 	var events []models.Event
 
 	for _, logEntry := range logs {
@@ -318,7 +318,7 @@ func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, 
 			continue
 		}
 
-		event, err := t.decodeLogWithRPC(ctx, logMap)
+		event, err := t.decodeLogWithRPC(ctx, logMap, baggage)
 		if err != nil {
 			continue
 		}
@@ -332,7 +332,7 @@ func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, 
 }
 
 // decodeLogWithRPC decodes a single log entry with RPC enhancement
-func (t *LogDecoder) decodeLogWithRPC(ctx context.Context, log map[string]interface{}) (*models.Event, error) {
+func (t *LogDecoder) decodeLogWithRPC(ctx context.Context, log map[string]interface{}, baggage map[string]interface{}) (*models.Event, error) {
 	event := &models.Event{}
 
 	// Extract contract address
@@ -379,10 +379,10 @@ func (t *LogDecoder) decodeLogWithRPC(ctx context.Context, log map[string]interf
 
 	// Enhanced event decoding with RPC signature resolution
 	if len(event.Topics) > 0 {
-		eventName, parameters, err := t.decodeEventWithSignatureResolution(ctx, event.Topics, event.Data, event.Contract)
+		eventName, parameters, err := t.decodeEventWithSignatureResolution(ctx, event.Topics, event.Data, event.Contract, baggage)
 		if err != nil {
-					// Fall back to basic decoding
-		eventName, parameters = t.decodeEventFromTopics(event.Topics, event.Data)
+			// Fall back to basic decoding
+			eventName, parameters = t.decodeEventFromTopics(event.Topics, event.Data)
 		}
 		event.Name = eventName
 		event.Parameters = parameters
@@ -391,26 +391,50 @@ func (t *LogDecoder) decodeLogWithRPC(ctx context.Context, log map[string]interf
 	return event, nil
 }
 
-// decodeEventWithSignatureResolution uses RPC and signature resolution for event decoding
-func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, topics []string, data string, contractAddress string) (string, map[string]interface{}, error) {
+// decodeEventWithSignatureResolution uses resolved ABIs first, then falls back to RPC and signature resolution
+func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, topics []string, data string, contractAddress string, baggage map[string]interface{}) (string, map[string]interface{}, error) {
 	if len(topics) == 0 {
 		return "", nil, fmt.Errorf("no topics")
 	}
 
-	// Resolve event signature using our enhanced resolver
 	eventSig := topics[0]
-	sigInfo, err := t.signatureResolver.ResolveEventSignature(ctx, eventSig)
-	if err != nil {
-		return eventSig, nil, err
+	eventName := ""
+	signature := ""
+
+	// First, try to resolve using ABI resolver data if available
+	if baggage != nil {
+		if resolvedContracts, ok := baggage["resolved_contracts"].(map[string]*ContractInfo); ok {
+			if contractInfo, exists := resolvedContracts[strings.ToLower(contractAddress)]; exists && contractInfo.IsVerified {
+				// Look for matching event in parsed ABI
+				for _, method := range contractInfo.ParsedABI {
+					if method.Type == "event" && method.Hash == eventSig {
+						eventName = method.Name
+						signature = method.Signature
+						break
+					}
+				}
+			}
+		}
 	}
 
-	eventName := sigInfo.Name
-	if eventName == "unknown" {
+	// If not found in resolved ABIs, fall back to signature resolver
+	if eventName == "" && t.signatureResolver != nil {
+		sigInfo, err := t.signatureResolver.ResolveEventSignature(ctx, eventSig)
+		if err == nil {
+			eventName = sigInfo.Name
+			signature = sigInfo.Signature
+		}
+	}
+
+	// Final fallback
+	if eventName == "" || eventName == "unknown" {
 		eventName = eventSig
 	}
 
 	parameters := make(map[string]interface{})
-	parameters["signature"] = sigInfo.Signature
+	if signature != "" {
+		parameters["signature"] = signature
+	}
 
 	// Enhanced parameter parsing based on known event signatures and contract info
 	if t.rpcClient != nil && contractAddress != "" {
@@ -483,4 +507,4 @@ func (t *LogDecoder) parseSwapEvent(topics []string, data string, parameters map
 	if len(topics) >= 3 {
 		parameters["to"] = topics[2]
 	}
-} 
+}

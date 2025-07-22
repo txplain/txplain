@@ -1,0 +1,520 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/sha3"
+)
+
+// ABIResolver fetches contract ABIs and source code from Etherscan API v2
+type ABIResolver struct {
+	httpClient *http.Client
+	apiKey     string
+}
+
+// ContractInfo represents resolved contract information
+type ContractInfo struct {
+	Address         string      `json:"address"`
+	ABI             string      `json:"abi"`           // Raw ABI JSON string
+	SourceCode      string      `json:"source_code"`   // Contract source code
+	ContractName    string      `json:"contract_name"` // Name from verification
+	CompilerVersion string      `json:"compiler_version"`
+	IsVerified      bool        `json:"is_verified"`
+	IsProxy         bool        `json:"is_proxy"`
+	Implementation  string      `json:"implementation,omitempty"` // For proxy contracts
+	ParsedABI       []ABIMethod `json:"parsed_abi"`               // Parsed ABI for easier access
+}
+
+// ABIMethod represents a parsed ABI method or event
+type ABIMethod struct {
+	Name      string     `json:"name"`
+	Type      string     `json:"type"`      // function, event, constructor, etc.
+	Signature string     `json:"signature"` // e.g. "Transfer(address,address,uint256)"
+	Hash      string     `json:"hash"`      // 4-byte hash for functions, topic hash for events
+	Inputs    []ABIInput `json:"inputs"`
+}
+
+// ABIInput represents an ABI input parameter
+type ABIInput struct {
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Indexed      bool   `json:"indexed,omitempty"`      // For events
+	InternalType string `json:"internalType,omitempty"` // For structs
+}
+
+// EtherscanResponse represents the API response structure
+type EtherscanResponse struct {
+	Status  string      `json:"status"`
+	Message string      `json:"message"`
+	Result  interface{} `json:"result"`
+}
+
+// SourceCodeResult represents the structure for source code API responses
+type SourceCodeResult struct {
+	SourceCode           string `json:"SourceCode"`
+	ABI                  string `json:"ABI"`
+	ContractName         string `json:"ContractName"`
+	CompilerVersion      string `json:"CompilerVersion"`
+	OptimizationUsed     string `json:"OptimizationUsed"`
+	Runs                 string `json:"Runs"`
+	ConstructorArguments string `json:"ConstructorArguments"`
+	EVMVersion           string `json:"EVMVersion"`
+	Library              string `json:"Library"`
+	LicenseType          string `json:"LicenseType"`
+	Proxy                string `json:"Proxy"`
+	Implementation       string `json:"Implementation"`
+	SwarmSource          string `json:"SwarmSource"`
+}
+
+// NewABIResolver creates a new ABI resolver with Etherscan API key
+func NewABIResolver() *ABIResolver {
+	apiKey := os.Getenv("ETHERSCAN_API_KEY")
+	if apiKey == "" {
+		fmt.Println("Warning: ETHERSCAN_API_KEY not set, ABI resolution will be limited")
+	}
+
+	return &ABIResolver{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		apiKey: apiKey,
+	}
+}
+
+// Name returns the tool name
+func (a *ABIResolver) Name() string {
+	return "abi_resolver"
+}
+
+// Description returns the tool description
+func (a *ABIResolver) Description() string {
+	return "Resolves contract ABIs and source code from Etherscan API v2 for verified contracts"
+}
+
+// Dependencies returns the tools this processor depends on (none - runs first)
+func (a *ABIResolver) Dependencies() []string {
+	return []string{} // No dependencies, runs first in pipeline
+}
+
+// Process resolves ABIs for all contract addresses and adds to baggage
+func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Extract all contract addresses from transaction data
+	contractAddresses := a.extractContractAddresses(baggage)
+
+	if len(contractAddresses) == 0 {
+		// Add empty resolved contracts to baggage
+		baggage["resolved_contracts"] = make(map[string]*ContractInfo)
+		return nil
+	}
+
+	// Get network ID for appropriate Etherscan API endpoint
+	networkID := int64(1) // Default to Ethereum mainnet
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		if nid, ok := rawData["network_id"].(float64); ok {
+			networkID = int64(nid)
+		}
+	}
+
+	// Resolve contracts
+	resolvedContracts := make(map[string]*ContractInfo)
+	for _, address := range contractAddresses {
+		if contractInfo, err := a.resolveContract(ctx, address, networkID); err == nil {
+			resolvedContracts[strings.ToLower(address)] = contractInfo
+		}
+
+		// Add small delay to respect API rate limits
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Add resolved contracts to baggage
+	baggage["resolved_contracts"] = resolvedContracts
+	return nil
+}
+
+// extractContractAddresses extracts all unique contract addresses from transaction data
+func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) []string {
+	addressMap := make(map[string]bool)
+	var addresses []string
+
+	// From raw transaction data
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		// Transaction 'to' address
+		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			if to, ok := receipt["to"].(string); ok && to != "" && to != "0x" {
+				addressMap[strings.ToLower(to)] = true
+			}
+		}
+
+		// From logs
+		if logs, ok := rawData["logs"].([]interface{}); ok {
+			for _, logEntry := range logs {
+				if logMap, ok := logEntry.(map[string]interface{}); ok {
+					if address, ok := logMap["address"].(string); ok && address != "" {
+						addressMap[strings.ToLower(address)] = true
+					}
+				}
+			}
+		}
+
+		// From trace (if available)
+		if trace, ok := rawData["trace"].(map[string]interface{}); ok {
+			// Extract addresses from trace calls
+			if traceResult, ok := trace["result"].(map[string]interface{}); ok {
+				if calls, ok := traceResult["calls"].([]interface{}); ok {
+					for _, call := range calls {
+						if callMap, ok := call.(map[string]interface{}); ok {
+							if to, ok := callMap["to"].(string); ok && to != "" {
+								addressMap[strings.ToLower(to)] = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Convert map to slice
+	for address := range addressMap {
+		addresses = append(addresses, address)
+	}
+
+	return addresses
+}
+
+// resolveContract fetches contract information from Etherscan API
+func (a *ABIResolver) resolveContract(ctx context.Context, address string, networkID int64) (*ContractInfo, error) {
+	if a.apiKey == "" {
+		return nil, fmt.Errorf("no Etherscan API key configured")
+	}
+
+	// Get the appropriate Etherscan API endpoint
+	baseURL := a.getEtherscanURL(networkID)
+	if baseURL == "" {
+		return nil, fmt.Errorf("unsupported network ID: %d", networkID)
+	}
+
+	contractInfo := &ContractInfo{
+		Address:    address,
+		IsVerified: false,
+	}
+
+	// First, try to get contract source code
+	if err := a.fetchSourceCode(ctx, baseURL, address, contractInfo); err != nil {
+		// If source code fetch fails, try ABI only
+		if err := a.fetchABI(ctx, baseURL, address, contractInfo); err != nil {
+			return nil, fmt.Errorf("failed to resolve contract: %w", err)
+		}
+	}
+
+	// Parse ABI if we have it
+	if contractInfo.ABI != "" {
+		if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
+			contractInfo.ParsedABI = parsedABI
+		}
+	}
+
+	return contractInfo, nil
+}
+
+// fetchSourceCode fetches contract source code and metadata
+func (a *ABIResolver) fetchSourceCode(ctx context.Context, baseURL, address string, contractInfo *ContractInfo) error {
+	// Build URL for getsourcecode API
+	params := url.Values{}
+	params.Set("module", "contract")
+	params.Set("action", "getsourcecode")
+	params.Set("address", address)
+	params.Set("apikey", a.apiKey)
+
+	apiURL := baseURL + "/api?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var etherscanResp EtherscanResponse
+	if err := json.Unmarshal(body, &etherscanResp); err != nil {
+		return fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if etherscanResp.Status != "1" {
+		return fmt.Errorf("API error: %s", etherscanResp.Message)
+	}
+
+	// Parse result array
+	resultArray, ok := etherscanResp.Result.([]interface{})
+	if !ok || len(resultArray) == 0 {
+		return fmt.Errorf("unexpected result format")
+	}
+
+	// Convert to SourceCodeResult
+	resultBytes, err := json.Marshal(resultArray[0])
+	if err != nil {
+		return fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	var sourceResult SourceCodeResult
+	if err := json.Unmarshal(resultBytes, &sourceResult); err != nil {
+		return fmt.Errorf("failed to unmarshal source result: %w", err)
+	}
+
+	// Check if contract is verified
+	if sourceResult.SourceCode == "" && sourceResult.ABI == "Contract source code not verified" {
+		return fmt.Errorf("contract not verified")
+	}
+
+	// Fill in contract info
+	contractInfo.SourceCode = sourceResult.SourceCode
+	contractInfo.ABI = sourceResult.ABI
+	contractInfo.ContractName = sourceResult.ContractName
+	contractInfo.CompilerVersion = sourceResult.CompilerVersion
+	contractInfo.IsVerified = true
+
+	// Check if it's a proxy
+	if sourceResult.Proxy == "1" && sourceResult.Implementation != "" {
+		contractInfo.IsProxy = true
+		contractInfo.Implementation = sourceResult.Implementation
+	}
+
+	return nil
+}
+
+// fetchABI fetches only the contract ABI (fallback)
+func (a *ABIResolver) fetchABI(ctx context.Context, baseURL, address string, contractInfo *ContractInfo) error {
+	// Build URL for getabi API
+	params := url.Values{}
+	params.Set("module", "contract")
+	params.Set("action", "getabi")
+	params.Set("address", address)
+	params.Set("apikey", a.apiKey)
+
+	apiURL := baseURL + "/api?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var etherscanResp EtherscanResponse
+	if err := json.Unmarshal(body, &etherscanResp); err != nil {
+		return fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if etherscanResp.Status != "1" {
+		return fmt.Errorf("API error: %s", etherscanResp.Message)
+	}
+
+	abi, ok := etherscanResp.Result.(string)
+	if !ok {
+		return fmt.Errorf("unexpected result format")
+	}
+
+	if abi == "Contract source code not verified" {
+		return fmt.Errorf("contract not verified")
+	}
+
+	contractInfo.ABI = abi
+	contractInfo.IsVerified = true
+
+	return nil
+}
+
+// parseABI parses the ABI JSON and extracts method/event information
+func (a *ABIResolver) parseABI(abiJSON string) ([]ABIMethod, error) {
+	var rawABI []map[string]interface{}
+	if err := json.Unmarshal([]byte(abiJSON), &rawABI); err != nil {
+		return nil, fmt.Errorf("failed to parse ABI: %w", err)
+	}
+
+	var methods []ABIMethod
+
+	for _, item := range rawABI {
+		itemType, ok := item["type"].(string)
+		if !ok {
+			continue
+		}
+
+		name, _ := item["name"].(string)
+		inputs := a.parseABIInputs(item["inputs"])
+
+		method := ABIMethod{
+			Name:   name,
+			Type:   itemType,
+			Inputs: inputs,
+		}
+
+		// Generate signature and hash based on type
+		if itemType == "function" {
+			method.Signature = a.generateFunctionSignature(name, inputs)
+			method.Hash = a.generateFunctionHash(method.Signature)
+		} else if itemType == "event" {
+			method.Signature = a.generateEventSignature(name, inputs)
+			method.Hash = a.generateEventHash(method.Signature)
+		}
+
+		methods = append(methods, method)
+	}
+
+	return methods, nil
+}
+
+// parseABIInputs parses ABI inputs from raw JSON
+func (a *ABIResolver) parseABIInputs(inputsRaw interface{}) []ABIInput {
+	var inputs []ABIInput
+
+	inputsArray, ok := inputsRaw.([]interface{})
+	if !ok {
+		return inputs
+	}
+
+	for _, inputRaw := range inputsArray {
+		inputMap, ok := inputRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		input := ABIInput{}
+		if name, ok := inputMap["name"].(string); ok {
+			input.Name = name
+		}
+		if inputType, ok := inputMap["type"].(string); ok {
+			input.Type = inputType
+		}
+		if indexed, ok := inputMap["indexed"].(bool); ok {
+			input.Indexed = indexed
+		}
+		if internalType, ok := inputMap["internalType"].(string); ok {
+			input.InternalType = internalType
+		}
+
+		inputs = append(inputs, input)
+	}
+
+	return inputs
+}
+
+// generateFunctionSignature generates function signature string
+func (a *ABIResolver) generateFunctionSignature(name string, inputs []ABIInput) string {
+	var paramTypes []string
+	for _, input := range inputs {
+		paramTypes = append(paramTypes, input.Type)
+	}
+	return fmt.Sprintf("%s(%s)", name, strings.Join(paramTypes, ","))
+}
+
+// generateEventSignature generates event signature string
+func (a *ABIResolver) generateEventSignature(name string, inputs []ABIInput) string {
+	var paramTypes []string
+	for _, input := range inputs {
+		paramTypes = append(paramTypes, input.Type)
+	}
+	return fmt.Sprintf("%s(%s)", name, strings.Join(paramTypes, ","))
+}
+
+// generateFunctionHash generates 4-byte function selector
+func (a *ABIResolver) generateFunctionHash(signature string) string {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write([]byte(signature))
+	hash := hasher.Sum(nil)
+	return "0x" + fmt.Sprintf("%x", hash[:4])
+}
+
+// generateEventHash generates 32-byte event topic hash
+func (a *ABIResolver) generateEventHash(signature string) string {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write([]byte(signature))
+	hash := hasher.Sum(nil)
+	return "0x" + fmt.Sprintf("%x", hash)
+}
+
+// getEtherscanURL returns the appropriate Etherscan API URL for the network
+func (a *ABIResolver) getEtherscanURL(networkID int64) string {
+	switch networkID {
+	case 1: // Ethereum mainnet
+		return "https://api.etherscan.io"
+	case 5: // Goerli
+		return "https://api-goerli.etherscan.io"
+	case 11155111: // Sepolia
+		return "https://api-sepolia.etherscan.io"
+	case 137: // Polygon
+		return "https://api.polygonscan.com"
+	case 42161: // Arbitrum
+		return "https://api.arbiscan.io"
+	case 10: // Optimism
+		return "https://api-optimistic.etherscan.io"
+	case 56: // BSC
+		return "https://api.bscscan.com"
+	default:
+		return ""
+	}
+}
+
+// GetPromptContext provides ABI context for LLM prompts
+func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+	resolvedContracts, ok := baggage["resolved_contracts"].(map[string]*ContractInfo)
+	if !ok || len(resolvedContracts) == 0 {
+		return ""
+	}
+
+	var contextParts []string
+	for _, contract := range resolvedContracts {
+		if contract.IsVerified {
+			contractDesc := fmt.Sprintf("- %s", contract.Address)
+			if contract.ContractName != "" {
+				contractDesc += fmt.Sprintf(" (%s)", contract.ContractName)
+			}
+			contractDesc += " - Verified contract"
+
+			if contract.IsProxy && contract.Implementation != "" {
+				contractDesc += fmt.Sprintf(" (Proxy -> %s)", contract.Implementation)
+			}
+
+			contextParts = append(contextParts, contractDesc)
+		}
+	}
+
+	if len(contextParts) == 0 {
+		return ""
+	}
+
+	return "### Verified Contracts:\n" + strings.Join(contextParts, "\n")
+}
+
+// GetResolvedContract is a helper function to get resolved contract from baggage
+func GetResolvedContract(baggage map[string]interface{}, address string) (*ContractInfo, bool) {
+	if contractsMap, ok := baggage["resolved_contracts"].(map[string]*ContractInfo); ok {
+		contract, exists := contractsMap[strings.ToLower(address)]
+		return contract, exists
+	}
+	return nil, false
+}

@@ -15,12 +15,12 @@ import (
 
 // TxplainAgent orchestrates the transaction explanation workflow
 type TxplainAgent struct {
-	llm                llms.Model
-	rpcClients         map[int64]*rpc.Client
-	traceDecoder       *txtools.TraceDecoder
-	logDecoder         *txtools.LogDecoder
-	explainer          *txtools.TransactionExplainer
-	executor           *chains.SequentialChain
+	llm                 llms.Model
+	rpcClients          map[int64]*rpc.Client
+	traceDecoder        *txtools.TraceDecoder
+	logDecoder          *txtools.LogDecoder
+	explainer           *txtools.TransactionExplainer
+	executor            *chains.SequentialChain
 	coinMarketCapAPIKey string
 }
 
@@ -49,7 +49,7 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 	// We'll create RPC-enhanced tools when we have the specific network context
 	traceDecoder := txtools.NewTraceDecoder() // Will be enhanced per request
 	logDecoder := txtools.NewLogDecoder()     // Will be enhanced per request
-	
+
 	// Initialize transaction explainer (now uses baggage pipeline)
 	explainer := txtools.NewTransactionExplainer(llm)
 
@@ -100,7 +100,14 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	pipeline := txtools.NewBaggagePipeline()
 	var contextProviders []txtools.ContextProvider
 
-	// Add log decoder (processes events)
+	// Add ABI resolver (runs first - fetches contract ABIs from Etherscan)
+	abiResolver := txtools.NewABIResolver()
+	if err := pipeline.AddProcessor(abiResolver); err != nil {
+		return nil, fmt.Errorf("failed to add ABI resolver: %w", err)
+	}
+	contextProviders = append(contextProviders, abiResolver)
+
+	// Add log decoder (processes events using resolved ABIs)
 	logDecoder := txtools.NewLogDecoderWithRPC(client)
 	if err := pipeline.AddProcessor(logDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add log decoder: %w", err)
@@ -145,6 +152,13 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, ensResolver)
 
+	// Add protocol resolver (detects DEX protocols and aggregators)
+	protocolResolver := txtools.NewProtocolResolver()
+	if err := pipeline.AddProcessor(protocolResolver); err != nil {
+		return nil, fmt.Errorf("failed to add protocol resolver: %w", err)
+	}
+	contextProviders = append(contextProviders, protocolResolver)
+
 	// Add context providers to baggage for transaction explainer
 	baggage["context_providers"] = contextProviders
 
@@ -175,7 +189,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 // CreateLangChainAgent creates a LangChain agent with registered tools (alternative approach)
 func (a *TxplainAgent) CreateLangChainAgent() (*agents.Executor, error) {
-	// For now, return a simple implementation - the full LangChain integration 
+	// For now, return a simple implementation - the full LangChain integration
 	// can be enhanced later based on the specific LangChainGo version requirements
 	return nil, fmt.Errorf("LangChain agent creation not implemented yet - use ExplainTransaction method instead")
 }
@@ -189,7 +203,7 @@ func (a *TxplainAgent) GetSupportedNetworks() map[int64]models.Network {
 func (a *TxplainAgent) Close() error {
 	// Close RPC clients if needed
 	return nil
-} 
+}
 
 // enhanceExplanationWithRPC adds additional insights using RPC calls
 func (a *TxplainAgent) enhanceExplanationWithRPC(ctx context.Context, client *rpc.Client, explanation *models.ExplanationResult) error {
@@ -250,4 +264,4 @@ func (a *TxplainAgent) enhanceExplanationWithRPC(ctx context.Context, client *rp
 	}
 
 	return nil
-} 
+}

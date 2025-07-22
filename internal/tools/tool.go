@@ -42,4 +42,4 @@ func NewToolError(tool, message, code string) *ToolError {
 		Message: message,
 		Code:    code,
 	}
-} 
+}

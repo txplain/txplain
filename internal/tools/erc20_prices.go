@@ -36,8 +36,8 @@ type TokenPrice struct {
 	LastUpdated       time.Time              `json:"last_updated"`
 	Quote             map[string]interface{} `json:"quote,omitempty"`
 	// New fields for transfer calculations
-	TransferAmounts   map[string]float64     `json:"transfer_amounts,omitempty"`   // transfer_id -> amount in tokens
-	TransferValues    map[string]float64     `json:"transfer_values,omitempty"`    // transfer_id -> USD value
+	TransferAmounts map[string]float64 `json:"transfer_amounts,omitempty"` // transfer_id -> amount in tokens
+	TransferValues  map[string]float64 `json:"transfer_values,omitempty"`  // transfer_id -> USD value
 }
 
 // CoinMarketCapMapResponse represents the response from /v1/cryptocurrency/map
@@ -194,7 +194,7 @@ func (t *ERC20PriceLookup) calculateTransferValues(baggage map[string]interface{
 		// Find transfers for this token
 		for i, transferData := range tokenTransfers {
 			var transfer map[string]interface{}
-			
+
 			// Convert to map for easier access
 			switch v := transferData.(type) {
 			case map[string]interface{}:
@@ -211,12 +211,12 @@ func (t *ERC20PriceLookup) calculateTransferValues(baggage map[string]interface{
 					continue
 				}
 			}
-			
+
 			// Check if this transfer is for our token
 			tokenContract, _ := transfer["contract"].(string)
 			if strings.EqualFold(tokenContract, address) {
 				transferID := fmt.Sprintf("transfer_%d", i)
-				
+
 				// Get transfer amount
 				amountStr, ok := transfer["amount"].(string)
 				if !ok || amountStr == "" {
@@ -522,11 +522,11 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 	// Get token metadata and prices from baggage
 	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
 	tokenPrices, hasPrices := baggage["token_prices"].(map[string]*TokenPrice)
-	
+
 	if !hasMetadata || !hasPrices || len(tokenPrices) == 0 {
 		return ""
 	}
-	
+
 	// Build context string with both base prices and transfer values
 	var contextParts []string
 	for address, price := range tokenPrices {
@@ -536,29 +536,29 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 			if price.Price < 0.01 {
 				priceStr = fmt.Sprintf("$%.6f", price.Price)
 			}
-			
+
 			basePriceInfo := fmt.Sprintf("- %s (%s): %s USD per token", metadata.Name, metadata.Symbol, priceStr)
-			
+
 			// Add transfer values if available
 			if len(price.TransferValues) > 0 {
 				var transferInfo []string
 				for transferID, usdValue := range price.TransferValues {
 					tokenAmount := price.TransferAmounts[transferID]
-					transferInfo = append(transferInfo, fmt.Sprintf("  • Transfer: %.6f %s = $%.2f USD", 
+					transferInfo = append(transferInfo, fmt.Sprintf("  • Transfer: %.6f %s = $%.2f USD",
 						tokenAmount, metadata.Symbol, usdValue))
 				}
 				if len(transferInfo) > 0 {
 					basePriceInfo += "\n" + strings.Join(transferInfo, "\n")
 				}
 			}
-			
+
 			contextParts = append(contextParts, basePriceInfo)
 		}
 	}
-	
+
 	if len(contextParts) == 0 {
 		return ""
 	}
-	
+
 	return "Token Prices:\n" + strings.Join(contextParts, "\n")
-} 
+}

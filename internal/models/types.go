@@ -56,66 +56,66 @@ type Call struct {
 	Method      string                 `json:"method"`
 	Arguments   map[string]interface{} `json:"arguments"`
 	GasUsed     uint64                 `json:"gas_used"`
-	Value       string                 `json:"value"`        // Wei amount
-	CallType    string                 `json:"call_type"`    // call, delegatecall, staticcall, etc.
+	Value       string                 `json:"value"`     // Wei amount
+	CallType    string                 `json:"call_type"` // call, delegatecall, staticcall, etc.
 	Success     bool                   `json:"success"`
 	ErrorReason string                 `json:"error_reason,omitempty"`
-	Depth       int                    `json:"depth"`        // Call depth for nested calls
+	Depth       int                    `json:"depth"` // Call depth for nested calls
 }
 
 // Event represents a decoded emitted event
 type Event struct {
-	Contract     string                 `json:"contract"`
-	Name         string                 `json:"name"`
-	Parameters   map[string]interface{} `json:"parameters"`
-	Topics       []string               `json:"topics"`
-	Data         string                 `json:"data"`
-	BlockNumber  uint64                 `json:"block_number"`
-	TxIndex      uint                   `json:"tx_index"`
-	LogIndex     uint                   `json:"log_index"`
-	Removed      bool                   `json:"removed"`
+	Contract    string                 `json:"contract"`
+	Name        string                 `json:"name"`
+	Parameters  map[string]interface{} `json:"parameters"`
+	Topics      []string               `json:"topics"`
+	Data        string                 `json:"data"`
+	BlockNumber uint64                 `json:"block_number"`
+	TxIndex     uint                   `json:"tx_index"`
+	LogIndex    uint                   `json:"log_index"`
+	Removed     bool                   `json:"removed"`
 }
 
 // TokenTransfer represents a token transfer (ERC20/ERC721/ERC1155)
 type TokenTransfer struct {
-	Type            string `json:"type"`                        // ERC20, ERC721, ERC1155, ETH
-	Contract        string `json:"contract"`                    // Empty for ETH
+	Type            string `json:"type"`     // ERC20, ERC721, ERC1155, ETH
+	Contract        string `json:"contract"` // Empty for ETH
 	From            string `json:"from"`
 	To              string `json:"to"`
-	Amount          string `json:"amount"`                      // For ERC20 and ETH (raw hex amount)
-	TokenID         string `json:"token_id"`                    // For ERC721/ERC1155
+	Amount          string `json:"amount"`   // For ERC20 and ETH (raw hex amount)
+	TokenID         string `json:"token_id"` // For ERC721/ERC1155
 	Symbol          string `json:"symbol,omitempty"`
 	Name            string `json:"name,omitempty"`
 	Decimals        int    `json:"decimals,omitempty"`
-	FormattedAmount string `json:"formatted_amount,omitempty"`  // Human-readable amount (e.g. "43.94")
-	AmountUSD       string `json:"amount_usd,omitempty"`        // USD value (e.g. "1.45")
+	FormattedAmount string `json:"formatted_amount,omitempty"` // Human-readable amount (e.g. "43.94")
+	AmountUSD       string `json:"amount_usd,omitempty"`       // USD value (e.g. "1.45")
 }
 
 // WalletEffect represents the effect on a specific wallet
 type WalletEffect struct {
-	Address    string          `json:"address"`
-	NetChange  string          `json:"net_change"`     // Overall ETH change
-	Transfers  []TokenTransfer `json:"transfers"`      // All token transfers
-	GasSpent   string          `json:"gas_spent"`      // Gas spent (for tx sender)
-	NewNonce   uint64          `json:"new_nonce"`      // New nonce (for tx sender)
+	Address   string          `json:"address"`
+	NetChange string          `json:"net_change"` // Overall ETH change
+	Transfers []TokenTransfer `json:"transfers"`  // All token transfers
+	GasSpent  string          `json:"gas_spent"`  // Gas spent (for tx sender)
+	NewNonce  uint64          `json:"new_nonce"`  // New nonce (for tx sender)
 }
 
 // ExplanationResult holds the final narrative and metadata
 type ExplanationResult struct {
 	TxHash      string                 `json:"tx_hash"`
 	NetworkID   int64                  `json:"network_id"`
-	Summary     string                 `json:"summary"`           // Human-readable description
-	Effects     []WalletEffect         `json:"effects"`           // Effects on each wallet
-	Transfers   []TokenTransfer        `json:"transfers"`         // All transfers in the transaction
+	Summary     string                 `json:"summary"`   // Human-readable description
+	Effects     []WalletEffect         `json:"effects"`   // Effects on each wallet
+	Transfers   []TokenTransfer        `json:"transfers"` // All transfers in the transaction
 	GasUsed     uint64                 `json:"gas_used"`
 	GasPrice    string                 `json:"gas_price"`
 	TxFee       string                 `json:"tx_fee"`
-	Status      string                 `json:"status"`            // success, failed, reverted
+	Status      string                 `json:"status"` // success, failed, reverted
 	Timestamp   time.Time              `json:"timestamp"`
 	BlockNumber uint64                 `json:"block_number"`
-	Links       map[string]string      `json:"links"`             // Map of entity → URL
-	Risks       []string               `json:"risks,omitempty"`   // Potential risks or warnings
-	Tags        []string               `json:"tags,omitempty"`    // Transaction categorization tags
+	Links       map[string]string      `json:"links"`           // Map of entity → URL
+	Risks       []string               `json:"risks,omitempty"` // Potential risks or warnings
+	Tags        []string               `json:"tags,omitempty"`  // Transaction categorization tags
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -154,4 +154,4 @@ func GetNetwork(networkID int64) (Network, bool) {
 func ToJSON(v interface{}) string {
 	bytes, _ := json.Marshal(v)
 	return string(bytes)
-} 
+}

@@ -28,15 +28,15 @@ func main() {
 
 	// Command line flags
 	var (
-		httpAddr       = flag.String("http-addr", ":8080", "HTTP server address")
-		mcpAddr        = flag.String("mcp-addr", ":8081", "MCP server address")
-		openaiKey      = flag.String("openai-key", "", "OpenAI API key (can also be set via OPENAI_API_KEY env var)")
-		coinMarketKey  = flag.String("cmc-key", "", "CoinMarketCap API key (can also be set via COINMARKETCAP_API_KEY env var)")
-		enableHTTP     = flag.Bool("http", true, "Enable HTTP API server")
-		enableMCP      = flag.Bool("mcp", true, "Enable MCP server")
-		showVersion    = flag.Bool("version", false, "Show version and exit")
-		verbose        = flag.Bool("v", false, "Verbose mode - show full prompt and context")
-		
+		httpAddr      = flag.String("http-addr", ":8080", "HTTP server address")
+		mcpAddr       = flag.String("mcp-addr", ":8081", "MCP server address")
+		openaiKey     = flag.String("openai-key", "", "OpenAI API key (can also be set via OPENAI_API_KEY env var)")
+		coinMarketKey = flag.String("cmc-key", "", "CoinMarketCap API key (can also be set via COINMARKETCAP_API_KEY env var)")
+		enableHTTP    = flag.Bool("http", true, "Enable HTTP API server")
+		enableMCP     = flag.Bool("mcp", true, "Enable MCP server")
+		showVersion   = flag.Bool("version", false, "Show version and exit")
+		verbose       = flag.Bool("v", false, "Verbose mode - show full prompt and context")
+
 		// New flags for transaction processing
 		txHash    = flag.String("tx", "", "Transaction hash to explain")
 		networkID = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
@@ -116,7 +116,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 	if verbose {
 		fmt.Println("⏳ Fetching transaction data from blockchain...")
 	}
-	
+
 	// Process the transaction
 	result, err := txAgent.ExplainTransaction(ctx, request)
 	if err != nil {
@@ -128,12 +128,12 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		fmt.Println("\n" + strings.Repeat("=", 80))
 		fmt.Println("🔧 DEBUG INFORMATION")
 		fmt.Println(strings.Repeat("=", 80))
-		
+
 		// Show baggage contents (metadata)
 		if result.Metadata != nil {
 			if baggage, ok := result.Metadata["pipeline_baggage"].(map[string]interface{}); ok {
 				fmt.Println("📦 Pipeline Baggage Contents:")
-				
+
 				// Create a safe copy of baggage to avoid circular references
 				safeBaggage := make(map[string]interface{})
 				for key, value := range baggage {
@@ -144,7 +144,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 						safeBaggage[key] = value
 					}
 				}
-				
+
 				baggageJSON, err := json.MarshalIndent(safeBaggage, "", "  ")
 				if err != nil {
 					fmt.Printf("Error marshaling baggage to JSON: %v\n", err)
@@ -216,7 +216,7 @@ func formatNumber(n uint64) string {
 	if len(str) < 4 {
 		return str
 	}
-	
+
 	// Add commas every 3 digits from right
 	result := ""
 	for i, char := range str {
@@ -293,14 +293,14 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 	// Log startup completion
 	log.Println("Txplain service started successfully")
 	log.Println("Supported networks: Ethereum (1), Polygon (137), Arbitrum (42161)")
-	
+
 	if enableHTTP {
 		log.Printf("HTTP API endpoints:")
 		log.Printf("  Health: http://localhost%s/health", httpAddr)
 		log.Printf("  Networks: http://localhost%s/api/v1/networks", httpAddr)
 		log.Printf("  Explain: POST http://localhost%s/api/v1/explain", httpAddr)
 	}
-	
+
 	if enableMCP {
 		log.Printf("MCP server available at: http://localhost%s", mcpAddr)
 	}

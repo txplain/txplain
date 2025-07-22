@@ -64,13 +64,13 @@ func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string) 
 // setupRoutes configures the MCP server routes
 func (s *Server) setupRoutes() {
 	s.router.Use(s.loggingMiddleware)
-	
+
 	// MCP endpoint
 	s.router.HandleFunc("/mcp", s.handleMCPRequest).Methods("POST")
-	
+
 	// Health check
 	s.router.HandleFunc("/health", s.handleHealth).Methods("GET")
-	
+
 	// Capabilities endpoint
 	s.router.HandleFunc("/capabilities", s.handleCapabilities).Methods("GET")
 }
@@ -149,7 +149,7 @@ func (s *Server) handleExplainMethod(w http.ResponseWriter, request *MCPRequest)
 // handleNetworksMethod handles network list requests
 func (s *Server) handleNetworksMethod(w http.ResponseWriter, request *MCPRequest) {
 	networks := s.agent.GetSupportedNetworks()
-	
+
 	// Convert to array
 	var networkList []models.Network
 	for _, network := range networks {
@@ -223,7 +223,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"version": "1.0.0",
 		"methods": []string{
 			"txplain.explain",
-			"txplain.networks", 
+			"txplain.networks",
 			"txplain.capabilities",
 		},
 		"supported_networks": s.agent.GetSupportedNetworks(),
@@ -277,7 +277,7 @@ func (s *Server) Start() error {
 // Stop gracefully stops the MCP server
 func (s *Server) Stop(ctx context.Context) error {
 	log.Println("Shutting down Txplain MCP server...")
-	
+
 	if s.server != nil {
 		if err := s.server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("failed to shutdown MCP server: %w", err)
@@ -290,4 +290,4 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	return nil
-} 
+}

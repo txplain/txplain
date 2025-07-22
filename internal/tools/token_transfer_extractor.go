@@ -40,10 +40,10 @@ func (t *TokenTransferExtractor) Process(ctx context.Context, baggage map[string
 
 	// Extract transfers
 	transfers := t.extractTokenTransfers(events)
-	
+
 	// Add transfers to baggage for other tools to use
 	baggage["transfers"] = transfers
-	
+
 	return nil
 }
 
@@ -94,22 +94,22 @@ func (t *TokenTransferExtractor) GetPromptContext(ctx context.Context, baggage m
 
 	// Build basic token transfers section for the prompt
 	context := "### Basic Token Transfers:"
-	
+
 	for i, transfer := range transfers {
 		context += "\n\nTransfer #" + fmt.Sprintf("%d", i+1) + ":"
 		context += "\n- Type: " + transfer.Type
 		context += "\n- Contract: " + transfer.Contract
 		context += "\n- From: " + transfer.From
 		context += "\n- To: " + transfer.To
-		
+
 		if transfer.Amount != "" {
 			context += "\n- Raw Amount: " + transfer.Amount
 		}
-		
+
 		if transfer.TokenID != "" {
 			context += "\n- Token ID: " + transfer.TokenID
 		}
 	}
-	
+
 	return context
 }

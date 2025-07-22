@@ -17,10 +17,10 @@ import (
 
 // Server represents the API server
 type Server struct {
-	router   *mux.Router
-	agent    *agent.TxplainAgent
-	address  string
-	server   *http.Server
+	router  *mux.Router
+	agent   *agent.TxplainAgent
+	address string
+	server  *http.Server
 }
 
 // NewServer creates a new API server
@@ -53,10 +53,10 @@ func (s *Server) setupRoutes() {
 
 	// API version 1
 	v1 := s.router.PathPrefix("/api/v1").Subrouter()
-	
+
 	// Transaction explanation endpoint
 	v1.HandleFunc("/explain", s.handleExplainTransaction).Methods("POST")
-	
+
 	// Get supported networks
 	v1.HandleFunc("/networks", s.handleGetNetworks).Methods("GET")
 
@@ -118,7 +118,7 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 // handleGetNetworks returns the list of supported networks
 func (s *Server) handleGetNetworks(w http.ResponseWriter, r *http.Request) {
 	networks := s.agent.GetSupportedNetworks()
-	
+
 	// Convert to array for better API response
 	var networkList []models.Network
 	for _, network := range networks {
@@ -208,12 +208,12 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		
+
 		// Wrap the ResponseWriter to capture status code
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		
+
 		next.ServeHTTP(wrapped, r)
-		
+
 		duration := time.Since(start)
 		log.Printf("[%s] %s %s - %d (%v)",
 			r.Method,
@@ -241,7 +241,7 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:    s.address,
 		Handler: s.router,
-		
+
 		// Security settings
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second, // Long timeout for AI processing
@@ -255,7 +255,7 @@ func (s *Server) Start() error {
 // Stop gracefully stops the HTTP server
 func (s *Server) Stop(ctx context.Context) error {
 	log.Println("Shutting down Txplain API server...")
-	
+
 	if s.server != nil {
 		if err := s.server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("failed to shutdown server: %w", err)
@@ -268,4 +268,4 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	return nil
-} 
+}

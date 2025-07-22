@@ -44,7 +44,7 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	// Get token metadata and prices from baggage
 	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
 	tokenPrices, hasPrices := baggage["token_prices"].(map[string]*TokenPrice)
-	
+
 	if !hasMetadata || !hasPrices {
 		return nil // Can't enrich without metadata and prices
 	}
@@ -138,7 +138,7 @@ func (m *MonetaryValueEnricher) enrichEvents(baggage map[string]interface{}, tok
 			if valueStr, ok := event.Parameters["value"].(string); ok && valueStr != "" {
 				formattedAmount := m.convertAmountToTokens(valueStr, metadata.Decimals)
 				events[i].Parameters["value_formatted"] = fmt.Sprintf("%.6f", formattedAmount)
-				
+
 				// Calculate USD value
 				usdValue := formattedAmount * price.Price
 				events[i].Parameters["value_usd"] = fmt.Sprintf("%.2f", usdValue)
@@ -230,14 +230,14 @@ func (m *MonetaryValueEnricher) GetPromptContext(ctx context.Context, baggage ma
 			transferInfo += fmt.Sprintf("\n- Token: %s (%s)", transfer.Name, transfer.Symbol)
 			transferInfo += fmt.Sprintf("\n- From: %s", transfer.From)
 			transferInfo += fmt.Sprintf("\n- To: %s", transfer.To)
-			
+
 			if transfer.FormattedAmount != "" {
 				transferInfo += fmt.Sprintf("\n- Amount: %s %s", transfer.FormattedAmount, transfer.Symbol)
 			}
 			if transfer.AmountUSD != "" {
 				transferInfo += fmt.Sprintf("\n- USD Value: $%s", transfer.AmountUSD)
 			}
-			
+
 			contextParts = append(contextParts, transferInfo)
 		}
 	}
@@ -256,4 +256,4 @@ func (m *MonetaryValueEnricher) GetPromptContext(ctx context.Context, baggage ma
 	}
 
 	return strings.Join(contextParts, "\n")
-} 
+}

@@ -47,32 +47,32 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 
 	// Extract all addresses from transaction data
 	addresses := e.extractAllAddresses(baggage)
-	
+
 	// Convert map to slice for debug display
 	addressList := make([]string, 0, len(addresses))
 	for addr := range addresses {
 		addressList = append(addressList, addr)
 	}
-	
+
 	if len(addresses) == 0 {
 		baggage["ens_names"] = make(map[string]string)
 		return nil
 	}
 
 	ensNames := make(map[string]string)
-	
+
 	// Resolve ENS names for each address
 	for address := range addresses {
 		ensName, err := e.rpcClient.ResolveENSName(ctx, address)
 		if err != nil {
 			continue // Skip this address if resolution fails
 		}
-		
+
 		if ensName != "" {
 			ensNames[address] = ensName
 		}
 	}
-	
+
 	baggage["ens_names"] = ensNames
 	return nil
 }
@@ -122,7 +122,7 @@ func (e *ENSResolver) extractAllAddresses(baggage map[string]interface{}) map[st
 			if event.Contract != "" {
 				addresses[strings.ToLower(event.Contract)] = true
 			}
-			
+
 			// Extract from event parameters
 			if event.Parameters != nil {
 				if from, ok := event.Parameters["from"].(string); ok && from != "" {
@@ -191,11 +191,11 @@ func (e *ENSResolver) formatAddressWithENS(address string, ensNames map[string]s
 	}
 
 	shortened := e.shortenAddress(cleanAddr)
-	
+
 	if ensName, exists := ensNames[strings.ToLower(cleanAddr)]; exists {
 		return fmt.Sprintf("%s (%s)", shortened, ensName)
 	}
-	
+
 	return shortened
 }
 
@@ -213,7 +213,7 @@ func (e *ENSResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	}
 
 	var contextParts []string
-	
+
 	// Add ENS names section if any were resolved
 	if len(ensNames) > 0 {
 		contextParts = append(contextParts, "### ENS Names Resolved:")
@@ -227,13 +227,13 @@ func (e *ENSResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	// Add address formatting mappings for ALL addresses in the transaction
 	contextParts = append(contextParts, "### Address Formatting Guide:")
 	contextParts = append(contextParts, "Use these formatted addresses in your explanation instead of full addresses:")
-	
+
 	for fullAddress := range allAddresses {
 		cleanAddr := e.cleanAddress(fullAddress)
 		if cleanAddr == "" {
 			continue
 		}
-		
+
 		formattedAddr := e.formatAddressWithENS(cleanAddr, ensNames)
 		contextParts = append(contextParts, fmt.Sprintf("- %s → %s", cleanAddr, formattedAddr))
 	}
@@ -247,4 +247,4 @@ func (e *ENSResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	contextParts = append(contextParts, "- Never use padded 66-character addresses")
 
 	return strings.Join(contextParts, "\n")
-} 
+}

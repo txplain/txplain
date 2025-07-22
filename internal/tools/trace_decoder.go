@@ -186,7 +186,7 @@ func (t *TraceDecoder) decodeMethodCallWithRPC(ctx context.Context, input, contr
 
 	// Extract method signature (first 4 bytes / 8 hex chars after 0x)
 	methodSig := input[0:10]
-	
+
 	// Resolve signature using our enhanced resolver
 	sigInfo, err := t.signatureResolver.ResolveFunctionSignature(ctx, methodSig)
 	if err != nil {
@@ -221,7 +221,7 @@ func (t *TraceDecoder) decodeMethodCallWithRPC(ctx context.Context, input, contr
 func (t *TraceDecoder) parseArgumentsEnhanced(ctx context.Context, signature, argData, contractAddress string, args map[string]interface{}) error {
 	// This would implement full ABI decoding based on the signature
 	// For now, we'll handle the most common cases
-	
+
 	switch {
 	case strings.HasPrefix(signature, "transfer("):
 		return t.parseTransferArguments(argData, args)
@@ -234,7 +234,7 @@ func (t *TraceDecoder) parseArgumentsEnhanced(ctx context.Context, signature, ar
 	case strings.Contains(signature, "addLiquidity"):
 		return t.parseLiquidityArguments(signature, argData, args)
 	}
-	
+
 	return fmt.Errorf("signature not supported for enhanced parsing")
 }
 
@@ -243,20 +243,20 @@ func (t *TraceDecoder) parseTransferArguments(argData string, args map[string]in
 	if len(argData) < 128 {
 		return fmt.Errorf("insufficient data")
 	}
-	
+
 	// address to (32 bytes)
 	toAddress := "0x" + argData[24:64]
 	args["to"] = toAddress
-	
+
 	// uint256 amount/tokenId (32 bytes)
 	amountHex := argData[64:128]
 	args["amount"] = "0x" + amountHex
-	
+
 	// Try to parse as decimal
 	if amount, err := strconv.ParseUint(amountHex, 16, 64); err == nil {
 		args["amount_decimal"] = amount
 	}
-	
+
 	return nil
 }
 
@@ -265,19 +265,19 @@ func (t *TraceDecoder) parseTransferFromArguments(argData string, args map[strin
 	if len(argData) < 192 {
 		return fmt.Errorf("insufficient data")
 	}
-	
+
 	// address from (32 bytes)
 	fromAddress := "0x" + argData[24:64]
 	args["from"] = fromAddress
-	
+
 	// address to (32 bytes)
 	toAddress := "0x" + argData[88:128]
 	args["to"] = toAddress
-	
+
 	// uint256 amount/tokenId (32 bytes)
 	amountHex := argData[128:192]
 	args["amount"] = "0x" + amountHex
-	
+
 	return nil
 }
 
@@ -286,15 +286,15 @@ func (t *TraceDecoder) parseApprovalArguments(argData string, args map[string]in
 	if len(argData) < 128 {
 		return fmt.Errorf("insufficient data")
 	}
-	
+
 	// address spender (32 bytes)
 	spenderAddress := "0x" + argData[24:64]
 	args["spender"] = spenderAddress
-	
-	// uint256 amount (32 bytes)  
+
+	// uint256 amount (32 bytes)
 	amountHex := argData[64:128]
 	args["amount"] = "0x" + amountHex
-	
+
 	return nil
 }
 
@@ -302,19 +302,19 @@ func (t *TraceDecoder) parseApprovalArguments(argData string, args map[string]in
 func (t *TraceDecoder) parseSwapArguments(signature, argData string, args map[string]interface{}) error {
 	// This would be expanded based on specific swap function signatures
 	args["swap_type"] = "detected"
-	
+
 	// Basic parsing - would be enhanced based on specific signatures
 	if len(argData) >= 64 {
 		args["amount_in"] = "0x" + argData[0:64]
 	}
-	
+
 	return nil
 }
 
 // parseLiquidityArguments parses addLiquidity/removeLiquidity arguments
 func (t *TraceDecoder) parseLiquidityArguments(signature, argData string, args map[string]interface{}) error {
 	args["liquidity_operation"] = true
-	
+
 	// Would be expanded based on specific function signatures
 	return nil
 }
@@ -326,7 +326,7 @@ func (t *TraceDecoder) decodeMethodCallBasic(input string) (string, map[string]i
 	}
 
 	methodSig := input[0:10]
-	
+
 	// Use a minimal set of most common signatures
 	basicMethodMap := map[string]string{
 		"0xa9059cbb": "transfer",
@@ -349,7 +349,7 @@ func (t *TraceDecoder) decodeMethodCallBasic(input string) (string, map[string]i
 	return methodName, args
 }
 
-// decodeArbitrumTrace decodes Arbitrum-specific trace format  
+// decodeArbitrumTrace decodes Arbitrum-specific trace format
 func (t *TraceDecoder) decodeArbitrumTrace(ctx context.Context, trace map[string]interface{}, calls *[]models.Call) error {
 	// Arbitrum trace format implementation would go here
 	// For now, return empty to avoid errors
@@ -377,10 +377,10 @@ func (t *TraceDecoder) hexToUint64(hex string) (uint64, error) {
 	if hex == "" || hex == "0x" {
 		return 0, nil
 	}
-	
+
 	if strings.HasPrefix(hex, "0x") {
 		hex = hex[2:]
 	}
-	
+
 	return strconv.ParseUint(hex, 16, 64)
-} 
+}

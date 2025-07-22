@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/txplain/txplain/internal/models"
@@ -16,11 +17,11 @@ type TokenMetadataEnricher struct {
 
 // TokenMetadata represents metadata for a token
 type TokenMetadata struct {
-	Address   string `json:"address"`
-	Name      string `json:"name"`
-	Symbol    string `json:"symbol"`
-	Decimals  int    `json:"decimals"`
-	Type      string `json:"type"` // ERC20, ERC721, etc.
+	Address  string `json:"address"`
+	Name     string `json:"name"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+	Type     string `json:"type"` // ERC20, ERC721, etc.
 }
 
 // NewTokenMetadataEnricher creates a new token metadata enricher
@@ -54,7 +55,7 @@ func (t *TokenMetadataEnricher) Dependencies() []string {
 func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]interface{}) error {
 	// Extract token addresses from decoded events
 	tokenAddresses := t.extractTokenAddresses(baggage)
-	
+
 	if len(tokenAddresses) == 0 {
 		return nil // No tokens to enrich
 	}
@@ -62,9 +63,17 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 	// Create metadata map
 	tokenMetadata := make(map[string]*TokenMetadata)
 
-	// Fetch metadata for each unique token address
+	// First, try to extract metadata from event parameters (this is often already available)
+	t.extractMetadataFromEvents(baggage, tokenMetadata)
+
+	// Then, fetch metadata via RPC for any tokens we don't have metadata for
 	if t.rpcClient != nil {
 		for address := range tokenAddresses {
+			// Skip if we already have metadata from events
+			if _, exists := tokenMetadata[strings.ToLower(address)]; exists {
+				continue
+			}
+
 			if metadata, err := t.fetchTokenMetadata(ctx, address); err == nil {
 				tokenMetadata[strings.ToLower(address)] = metadata
 			}
@@ -75,6 +84,95 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 	baggage["token_metadata"] = tokenMetadata
 
 	return nil
+}
+
+// extractMetadataFromEvents extracts token metadata from event parameters
+func (t *TokenMetadataEnricher) extractMetadataFromEvents(baggage map[string]interface{}, tokenMetadata map[string]*TokenMetadata) {
+	// Look for events in baggage
+	if eventsInterface, ok := baggage["events"]; ok {
+		if eventsList, ok := eventsInterface.([]models.Event); ok {
+			for _, event := range eventsList {
+				if event.Parameters != nil && event.Contract != "" {
+					// Check if this event has token metadata
+					contractName, hasName := event.Parameters["contract_name"].(string)
+					contractSymbol, hasSymbol := event.Parameters["contract_symbol"].(string)
+					contractType, hasType := event.Parameters["contract_type"].(string)
+
+					if hasName || hasSymbol || hasType {
+						address := strings.ToLower(event.Contract)
+
+						// Initialize metadata if not exists
+						if tokenMetadata[address] == nil {
+							tokenMetadata[address] = &TokenMetadata{
+								Address: event.Contract,
+								Type:    "Unknown",
+							}
+						}
+
+						// Fill in the metadata from event parameters
+						if hasName && contractName != "" {
+							tokenMetadata[address].Name = contractName
+						}
+						if hasSymbol && contractSymbol != "" {
+							tokenMetadata[address].Symbol = contractSymbol
+						}
+						if hasType && contractType != "" {
+							tokenMetadata[address].Type = contractType
+						}
+
+						// Try to extract decimals from value_decimal in Transfer events
+						if event.Name == "Transfer" {
+							if valueDecimal, ok := event.Parameters["value_decimal"].(uint64); ok {
+								if valueHex, ok := event.Parameters["value"].(string); ok {
+									// Infer decimals from the relationship between hex value and decimal value
+									decimals := t.inferDecimals(valueHex, valueDecimal, contractSymbol)
+									if decimals > 0 {
+										tokenMetadata[address].Decimals = decimals
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// inferDecimals tries to infer token decimals from hex and decimal values
+func (t *TokenMetadataEnricher) inferDecimals(valueHex string, valueDecimal uint64, symbol string) int {
+	// For known tokens, use standard decimals
+	switch strings.ToUpper(symbol) {
+	case "USDT", "USDC":
+		return 6
+	case "WETH", "ETH", "DAI":
+		return 18
+	case "WBTC":
+		return 8
+	}
+
+	// Try to infer from the hex value
+	if strings.HasPrefix(valueHex, "0x") {
+		// Convert hex to big int
+		hexValue := new(big.Int)
+		if _, ok := hexValue.SetString(valueHex[2:], 16); ok {
+			// If they're equal, it's likely 0 decimals
+			if hexValue.Uint64() == valueDecimal {
+				return 0
+			}
+
+			// Try common decimal values
+			for _, decimals := range []int{18, 6, 8, 9, 12} {
+				divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+				expected := new(big.Int).Div(hexValue, divisor)
+				if expected.Uint64() == valueDecimal {
+					return decimals
+				}
+			}
+		}
+	}
+
+	return 0 // Unable to infer
 }
 
 // extractTokenAddresses extracts unique token contract addresses from baggage
@@ -146,7 +244,7 @@ func (t *TokenMetadataEnricher) GetPromptContext(ctx context.Context, baggage ma
 	if !ok || len(tokenMetadata) == 0 {
 		return ""
 	}
-	
+
 	// Build context string from metadata
 	var contextParts []string
 	for _, metadata := range tokenMetadata {
@@ -154,11 +252,11 @@ func (t *TokenMetadataEnricher) GetPromptContext(ctx context.Context, baggage ma
 			contextParts = append(contextParts, fmt.Sprintf("- %s (%s): %s with %d decimals", metadata.Name, metadata.Symbol, metadata.Type, metadata.Decimals))
 		}
 	}
-	
+
 	if len(contextParts) == 0 {
 		return ""
 	}
-	
+
 	return "Token Metadata:\n" + strings.Join(contextParts, "\n")
 }
 
@@ -169,4 +267,4 @@ func GetTokenMetadata(baggage map[string]interface{}, address string) (*TokenMet
 		return metadata, exists
 	}
 	return nil, false
-} 
+}
