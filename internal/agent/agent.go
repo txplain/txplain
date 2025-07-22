@@ -107,6 +107,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add static context provider first (loads CSV data - tokens, protocols, addresses)
 	staticContextProvider := txtools.NewStaticContextProvider()
+	staticContextProvider.SetVerbose(true) // Enable verbose for debugging token data loading
 	if err := pipeline.AddProcessor(staticContextProvider); err != nil {
 		return nil, fmt.Errorf("failed to add static context provider: %w", err)
 	}
@@ -149,6 +150,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add icon resolver (discovers token icons from TrustWallet GitHub)
 	iconResolver := txtools.NewIconResolver(staticContextProvider)
+	iconResolver.SetVerbose(true) // Enable verbose for debugging icon discovery
 	if err := pipeline.AddProcessor(iconResolver); err != nil {
 		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
 	}
@@ -204,11 +206,8 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add annotation generator (runs after explanation is generated)
 	annotationGenerator := txtools.NewAnnotationGenerator(a.llm)
-	// Set verbose mode to match explainer
-	if a.explainer != nil {
-		// We can't directly access explainer's verbose state, but we can enable it for debugging
-		annotationGenerator.SetVerbose(false) // Disable verbose mode in production
-	}
+	// Enable verbose mode for debugging annotation issues
+	annotationGenerator.SetVerbose(true) // Enable for debugging token symbol annotation issues
 	// Add all annotation context providers to the generator
 	annotationGenerator.AddContextProvider(staticContextProvider)
 	annotationGenerator.AddContextProvider(tokenMetadata)

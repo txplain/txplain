@@ -22,90 +22,102 @@ const AnnotatedText = ({ text, annotations, className = '' }: AnnotatedTextProps
       return [{ text, annotation: undefined, index: 0 }]
     }
 
-    // Create a map to track text occurrences for indexing
-    const textOccurrences: { [key: string]: number } = {}
-    
-    // Sort annotations by text length (longest first) to handle overlapping matches better
-    const sortedAnnotations = [...annotations].sort((a, b) => b.text.length - a.text.length)
-    
+    // Create a simplified approach for text parsing
     const segments: AnnotatedSegment[] = []
-    let remainingText = text
+    let segmentIndex = 0
 
-    while (remainingText.length > 0) {
-      let found = false
-      
-      for (const annotation of sortedAnnotations) {
-        let searchText = annotation.text
-        let targetIndex = 0
-        
-        // Handle indexed annotations like "0@USDT"
-        if (searchText.includes('@')) {
-          const parts = searchText.split('@')
-          if (parts.length === 2 && !isNaN(parseInt(parts[0]))) {
-            targetIndex = parseInt(parts[0])
-            searchText = parts[1]
-          }
+    // Process annotations by finding exact text matches
+    // Sort by text length (longest first) to handle overlapping matches
+    const sortedAnnotations = [...annotations].sort((a, b) => {
+      const textA = a.text.includes('@') ? a.text.split('@')[1] : a.text
+      const textB = b.text.includes('@') ? b.text.split('@')[1] : b.text
+      return textB.length - textA.length
+    })
+
+    // Keep track of which parts of the text have been processed
+    const processedRanges: Array<{start: number, end: number, annotation: Annotation}> = []
+
+    // Find all annotation matches first
+    for (const annotation of sortedAnnotations) {
+      let searchText = annotation.text
+      let targetIndex = 0
+
+      // Handle indexed annotations like "0@PEPE"
+      if (searchText.includes('@')) {
+        const parts = searchText.split('@')
+        if (parts.length === 2 && !isNaN(parseInt(parts[0]))) {
+          targetIndex = parseInt(parts[0])
+          searchText = parts[1]
         }
-        
-        const matchIndex = remainingText.indexOf(searchText)
-        if (matchIndex !== -1) {
-          // Check if this is the correct occurrence index
-          const currentOccurrence = textOccurrences[searchText] || 0
-          if (currentOccurrence === targetIndex) {
-            // Add text before the match as a non-annotated segment
-            if (matchIndex > 0) {
-              segments.push({
-                text: remainingText.substring(0, matchIndex),
-                annotation: undefined,
-                index: segments.length
-              })
-            }
-            
-            // Add the annotated segment
-            segments.push({
-              text: searchText,
-              annotation,
-              index: segments.length
+      }
+
+      // Find all occurrences of this text
+      let currentIndex = -1
+      let occurrenceCount = 0
+      
+      while ((currentIndex = text.indexOf(searchText, currentIndex + 1)) !== -1) {
+        // Check if this occurrence conflicts with already processed ranges
+        const conflictsWithExisting = processedRanges.some(range => 
+          (currentIndex >= range.start && currentIndex < range.end) ||
+          (currentIndex + searchText.length > range.start && currentIndex < range.end)
+        )
+
+        if (!conflictsWithExisting) {
+          // Check if this is the target occurrence index
+          if (occurrenceCount === targetIndex) {
+            processedRanges.push({
+              start: currentIndex,
+              end: currentIndex + searchText.length,
+              annotation
             })
-            
-            // Update remaining text
-            remainingText = remainingText.substring(matchIndex + searchText.length)
-            
-            // Update occurrence count
-            textOccurrences[searchText] = currentOccurrence + 1
-            
-            found = true
             break
-          } else {
-            // Increment occurrence count but don't match yet
-            textOccurrences[searchText] = currentOccurrence + 1
           }
+          occurrenceCount++
         }
       }
-      
-      if (!found) {
-        // No annotation found, take the first character and continue
+    }
+
+    // Sort ranges by start position
+    processedRanges.sort((a, b) => a.start - b.start)
+
+    // Build segments from processed ranges
+    let currentPos = 0
+    
+    for (const range of processedRanges) {
+      // Add text before this annotation
+      if (range.start > currentPos) {
         segments.push({
-          text: remainingText.charAt(0),
+          text: text.substring(currentPos, range.start),
           annotation: undefined,
-          index: segments.length
+          index: segmentIndex++
         })
-        remainingText = remainingText.substring(1)
       }
+
+      // Add the annotated text
+      segments.push({
+        text: text.substring(range.start, range.end),
+        annotation: range.annotation,
+        index: segmentIndex++
+      })
+
+      currentPos = range.end
     }
-    
-    // Merge consecutive non-annotated segments
-    const mergedSegments: AnnotatedSegment[] = []
-    for (const segment of segments) {
-      const lastSegment = mergedSegments[mergedSegments.length - 1]
-      if (lastSegment && !lastSegment.annotation && !segment.annotation) {
-        lastSegment.text += segment.text
-      } else {
-        mergedSegments.push({ ...segment, index: mergedSegments.length })
-      }
+
+    // Add any remaining text
+    if (currentPos < text.length) {
+      segments.push({
+        text: text.substring(currentPos),
+        annotation: undefined,
+        index: segmentIndex++
+      })
     }
-    
-    return mergedSegments
+
+    // If no annotations were processed, return the original text
+    if (segments.length === 0) {
+      return [{ text, annotation: undefined, index: 0 }]
+    }
+
+    return segments
   }
 
   const segments = parseText()

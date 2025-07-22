@@ -55,6 +55,20 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 
 	// Collect annotation context from all providers
 	annotationContext := ag.contextCollector.Collect(ctx, baggage)
+	
+	if ag.verbose {
+		fmt.Printf("AnnotationGenerator: Collected %d context items from %d providers\n", 
+			len(annotationContext.Items), len(ag.contextCollector.providers))
+		
+		// Count by type
+		typeCounts := make(map[string]int)
+		for _, item := range annotationContext.Items {
+			typeCounts[item.Type]++
+		}
+		for itemType, count := range typeCounts {
+			fmt.Printf("  %s items: %d\n", itemType, count)
+		}
+	}
 
 	// Add network-specific context for explorer links
 	networkID := explanation.NetworkID
@@ -268,16 +282,38 @@ INSTRUCTIONS:
    - ANY addresses (0x39e5...09c5, 0x1234...5678) - TABLE with: Address (shortened), ENS name (if available), Type (EOA/Contract), Link to explorer
    - ANY protocol names (1inch v6 aggregator, Uniswap, etc.) - TABLE with: Protocol name, Type (DEX/Aggregator/Lending), Function, Website link
    - ANY USD values ($100.00, $0.82) - TABLE with calculation breakdown and source data
-5. EXPLORER LINKS - Always create links to blockchain explorers using the network context:
+5. CRITICAL TOKEN SYMBOL LINKING RULE:
+   - EVERY token symbol (USDT, PEPE, GrowAI, etc.) MUST ALWAYS include a "link" field pointing to the contract address
+   - Contract link format: [NETWORK_EXPLORER]/token/[contract_address] or [NETWORK_EXPLORER]/address/[contract_address]
+   - If contract address is in TOKEN CONTEXT above, use that exact address
+   - If contract address is NOT in context, create a generic explorer link using blockchain explorer format
+   - NEVER create a token symbol annotation without a contract link - this is mandatory
+6. EXPLORER LINKS - Always create links to blockchain explorers using the network context:
    - Token contract addresses → [NETWORK_EXPLORER]/token/[address]
    - Regular addresses → [NETWORK_EXPLORER]/address/[address]
    - Use the explorer URL from NETWORK CONTEXT above (e.g., https://etherscan.io for Ethereum)
-6. PROTOCOL LINKS - Link protocol names to their websites (use context data when available):
-   - "1inch" or "1inch v6 aggregator" → https://1inch.io
-   - "Uniswap" → https://uniswap.org  
-   - "Aave" → https://aave.com
-7. BE COMPREHENSIVE - If there's context data for something, ANNOTATE IT. Don't skip elements.
-8. PRICE INFORMATION - Always include USD prices when available in context data.
+7. PROTOCOL LINKS - Link protocol names to their websites (ONLY use context data when available):
+   - Extract protocol website URLs from PROTOCOL CONTEXT above - DO NOT hardcode any URLs
+   - If no protocol context data available, do not create protocol links
+   - Generic approach: work only with provided context data
+8. BE COMPREHENSIVE - If there's context data for something, ANNOTATE IT. Don't skip elements.
+9. CRITICAL USD PRICE REQUIREMENTS:
+   - If TOKEN CONTEXT contains current USD price data, you MUST include it in tooltips
+   - Price format: "$X.XX per [SYMBOL]" or "Current price: $X.XX"
+   - For token amounts, calculate and show total USD value: "[AMOUNT] × $[PRICE] = $[TOTAL]"
+   - If no price data available, state "Price: Not available" in tooltip
+   - NEVER omit available pricing information from tooltips
+10. TOKEN ANNOTATION REQUIREMENTS:
+    - ONLY use data that is explicitly provided in the TOKEN CONTEXT above
+    - If a token symbol appears but has no context data, create a basic annotation stating "Token information not available"
+    - DO NOT make assumptions about contract addresses, prices, or decimals for tokens not in context
+    - Generic approach: work with whatever data is provided, don't hardcode specific tokens
+11. CRITICAL TOKEN SYMBOL ANNOTATION REQUIREMENTS - NO EXCEPTIONS:
+    - EVERY token symbol annotation MUST include BOTH "link" AND "tooltip" fields - NO EXCEPTIONS
+    - Link must point to contract address on blockchain explorer: [NETWORK_EXPLORER]/token/[contract_address]
+    - If you create a token symbol annotation without a "link" field, you have FAILED the task
+    - Tooltip must include token name, symbol, contract address, and current USD price if available
+    - For unknown tokens, use fallback addresses or create explorer address links
 
 ANNOTATION RULES:
 - text: The exact text to match from the explanation (use index for duplicates: "0@100 USDT")
@@ -302,54 +338,38 @@ Respond with a JSON array of annotation objects. Each object should have:
   "icon": "optional icon URL"
 }
 
-EXAMPLES:
+CRITICAL FINAL VALIDATION:
+Before outputting, verify that EVERY token symbol annotation (USDT, GrowAI, PEPE, etc.) includes:
+✓ "text" field with the token symbol
+✓ "link" field pointing to blockchain explorer 
+✓ "tooltip" field with comprehensive token data
+✓ "icon" field if available
+Any token symbol annotation missing a "link" field is INVALID and must be corrected.
+
+EXAMPLES FORMAT (use ONLY context data, never hardcode):
 [
   {
-    "text": "USDT",
-    "tooltip": "<table><tr><td><strong>Token:</strong></td><td>Tether USD</td></tr><tr><td><strong>Symbol:</strong></td><td>USDT</td></tr><tr><td><strong>Type:</strong></td><td>ERC20 Stablecoin</td></tr><tr><td><strong>Decimals:</strong></td><td>6</td></tr><tr><td><strong>Price:</strong></td><td>$1.00</td></tr><tr><td><strong>Contract:</strong></td><td>0xdAC17...ec7</td></tr></table>",
-    "icon": "https://raw.githubusercontent.com/trustwallet/assets/refs/heads/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png"
+    "text": "[TOKEN_SYMBOL from text]",
+    "link": "[NETWORK_EXPLORER]/token/[contract_address from TOKEN CONTEXT]",
+    "tooltip": "<table><tr><td><strong>Token:</strong></td><td>[Token Name from TOKEN CONTEXT]</td></tr><tr><td><strong>Symbol:</strong></td><td>[SYMBOL from TOKEN CONTEXT]</td></tr><tr><td><strong>Type:</strong></td><td>[Type from TOKEN CONTEXT]</td></tr><tr><td><strong>Decimals:</strong></td><td>[decimals from TOKEN CONTEXT]</td></tr><tr><td><strong>Price:</strong></td><td>[price from TOKEN CONTEXT or 'Not available']</td></tr><tr><td><strong>Contract:</strong></td><td>[shortened contract from TOKEN CONTEXT]</td></tr></table>",
+    "icon": "[icon from TOKEN CONTEXT if available]"
   },
   {
-    "text": "100 USDT",
-    "link": "https://etherscan.io/token/0xdac17f958d2ee523a2206206994597c13d831ec7",
-    "tooltip": "<table><tr><td><strong>Amount:</strong></td><td>100 USDT</td></tr><tr><td><strong>USD Value:</strong></td><td>$100.00</td></tr><tr><td><strong>Token:</strong></td><td>Tether USD</td></tr><tr><td><strong>Price:</strong></td><td>$1.00 per USDT</td></tr><tr><td><strong>Contract:</strong></td><td>0xdAC17...ec7</td></tr></table>",
-    "icon": "https://raw.githubusercontent.com/trustwallet/assets/refs/heads/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png"
+    "text": "[TOKEN_AMOUNT from text]",
+    "link": "[NETWORK_EXPLORER]/token/[contract_address from TOKEN CONTEXT]",
+    "tooltip": "<table><tr><td><strong>Amount:</strong></td><td>[AMOUNT from text]</td></tr><tr><td><strong>USD Value:</strong></td><td>[calculated from TOKEN CONTEXT price]</td></tr><tr><td><strong>Token:</strong></td><td>[Token Name from TOKEN CONTEXT]</td></tr><tr><td><strong>Price:</strong></td><td>[price per token from TOKEN CONTEXT]</td></tr><tr><td><strong>Contract:</strong></td><td>[shortened contract from TOKEN CONTEXT]</td></tr></table>",
+    "icon": "[icon from TOKEN CONTEXT if available]"
   },
   {
-    "text": "$0.85 gas",
-    "tooltip": "<table><tr><td><strong>Gas Fee:</strong></td><td>$0.85</td></tr><tr><td><strong>ETH Value:</strong></td><td>0.000234 ETH</td></tr><tr><td><strong>Gas Used:</strong></td><td>46,613</td></tr><tr><td><strong>Gas Price:</strong></td><td>12.5 Gwei</td></tr></table>"
+    "text": "[PROTOCOL_NAME from text]",
+    "link": "[website URL from PROTOCOL CONTEXT]",
+    "tooltip": "<table><tr><td><strong>Protocol:</strong></td><td>[Protocol name from PROTOCOL CONTEXT]</td></tr><tr><td><strong>Type:</strong></td><td>[Type from PROTOCOL CONTEXT]</td></tr><tr><td><strong>Function:</strong></td><td>[Description from PROTOCOL CONTEXT]</td></tr><tr><td><strong>Website:</strong></td><td>[Link from PROTOCOL CONTEXT]</td></tr></table>",
+    "icon": "[icon from PROTOCOL CONTEXT if available]"
   },
   {
-    "text": "Uniswap V2 Router",
-    "link": "https://uniswap.org",
-    "tooltip": "<table><tr><td><strong>Protocol:</strong></td><td>Uniswap V2</td></tr><tr><td><strong>Type:</strong></td><td>DEX Router</td></tr><tr><td><strong>Function:</strong></td><td>Token Swapping</td></tr><tr><td><strong>Contract:</strong></td><td>0x7a25...88d</td></tr></table>",
-    "icon": "https://raw.githubusercontent.com/trustwallet/assets/refs/heads/master/blockchains/ethereum/assets/0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984/logo.png"
-  },
-  {
-    "text": "USDT",
-    "link": "https://etherscan.io/token/0xdac17f958d2ee523a2206206994597c13d831ec7",
-    "tooltip": "<table><tr><td><strong>Token:</strong></td><td>Tether USD</td></tr><tr><td><strong>Symbol:</strong></td><td>USDT</td></tr><tr><td><strong>Price:</strong></td><td>$1.00</td></tr><tr><td><strong>Contract:</strong></td><td>0xdAC17...ec7</td></tr></table>",
-    "icon": "https://raw.githubusercontent.com/trustwallet/assets/refs/heads/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png"
-  },
-  {
-    "text": "GrowAI",
-    "tooltip": "<table><tr><td><strong>Token:</strong></td><td>GrowAI</td></tr><tr><td><strong>Symbol:</strong></td><td>GrowAI</td></tr><tr><td><strong>Type:</strong></td><td>ERC20</td></tr><tr><td><strong>Contract:</strong></td><td>0x1234...5678</td></tr></table>",
-    "icon": "https://raw.githubusercontent.com/trustwallet/assets/refs/heads/master/blockchains/ethereum/assets/0x1234567890abcdef1234567890abcdef12345678/logo.png"
-  },
-  {
-    "text": "1inch v6 aggregator", 
-    "link": "https://1inch.io",
-    "tooltip": "<table><tr><td><strong>Protocol:</strong></td><td>1inch v6</td></tr><tr><td><strong>Type:</strong></td><td>DEX Aggregator</td></tr><tr><td><strong>Function:</strong></td><td>Optimal swap routing</td></tr><tr><td><strong>Website:</strong></td><td>1inch.io</td></tr></table>",
-    "icon": "https://avatars.githubusercontent.com/u/62861014"
-  },
-  {
-    "text": "0x39e5...09c5",
-    "link": "https://etherscan.io/address/0x39e5c2e44c045e5ba25b55b2d6b3d7234399f09c5",
-    "tooltip": "<table><tr><td><strong>Address:</strong></td><td>0x39e5...09c5</td></tr><tr><td><strong>Type:</strong></td><td>EOA (Wallet)</td></tr></table>"
-  },
-  {
-    "text": "$0.82 gas",
-    "tooltip": "<table><tr><td><strong>Gas Fee:</strong></td><td>$0.82</td></tr><tr><td><strong>ETH Value:</strong></td><td>0.000285 ETH</td></tr><tr><td><strong>Gas Used:</strong></td><td>193,811</td></tr></table>"
+    "text": "[ADDRESS from text]",
+    "link": "[NETWORK_EXPLORER]/address/[address]",
+    "tooltip": "<table><tr><td><strong>Address:</strong></td><td>[shortened address]</td></tr><tr><td><strong>Type:</strong></td><td>[Type from ADDRESS CONTEXT]</td></tr><tr><td><strong>Name:</strong></td><td>[Name from ADDRESS CONTEXT if available]</td></tr></table>"
   }
 ]
 
