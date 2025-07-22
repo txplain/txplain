@@ -405,19 +405,19 @@ TRANSACTION CONTEXT:
 %s
 
 CRITICAL DISTINCTION - TOKEN CONTRACTS vs PROTOCOL CONTRACTS:
-- TOKEN METADATA section shows which addresses are ERC20/ERC721/ERC1155 token contracts
-- If an address appears in TOKEN METADATA, it is a TOKEN CONTRACT, NOT a protocol contract
-- Protocol contracts are routers, pools, aggregators, and other infrastructure contracts
-- NEVER identify a token contract as a protocol contract
+- VERIFIED CONTRACT NAMES are the most authoritative source of information
+- Contract names like "AggregationRouterV6", "UniswapV2Router02", "1inchRouter" indicate PROTOCOL contracts
+- Contract names like "TetherToken", "USD Coin", "Wrapped Ether" indicate TOKEN contracts
+- If a contract has a verified name, use that name for classification, NOT method signatures
+- Method signatures (name, symbol, decimals) are secondary indicators - many protocol contracts implement these for compatibility
 - Approval events happen ON token contracts but are FOR protocol contracts (the spender)
 
-IDENTIFICATION PATTERNS:
-- Contract addresses should match KNOWN protocol contracts, not token contracts
-- Look for TRANSACTION TO field for the actual protocol contract being called
-- Look for spender addresses in Approval events as potential protocol contracts
-- Token symbols and names help identify the ecosystem but not the protocol contracts
-- Event signatures (Swap, Deposit, Withdraw on protocol contracts vs Transfer, Approval on tokens)
-- Transfer patterns (multi-hop swaps, liquidity provision routing)
+IDENTIFICATION PRIORITY (in order):
+1. VERIFIED CONTRACT NAMES - Use Etherscan-verified contract names as primary classification source
+2. TRANSACTION TO field - The actual protocol contract being called
+3. SPENDER addresses in Approval events - Potential protocol contracts being approved
+4. Method signatures and interfaces - Secondary indicators only
+5. Token symbols and transfers - Context about what's being traded, not protocol identification
 
 ANALYSIS CRITERIA:
 - Direct contract matches to KNOWN protocol addresses = HIGH confidence (0.9-1.0)
@@ -428,9 +428,11 @@ ANALYSIS CRITERIA:
 
 CONSERVATIVE APPROACH:
 - It's better to NOT identify a protocol than to incorrectly identify one
-- Don't guess protocol contracts from token approvals alone
-- Require actual evidence of specific protocol contract addresses
-- If you only see token contracts, state that tokens are involved but don't claim specific protocols
+- ALWAYS prioritize verified contract names over method signature patterns
+- Don't classify contracts as tokens just because they implement name(), symbol(), decimals()
+- Router contracts like "AggregationRouterV6" that implement token methods are still ROUTERS, not tokens
+- If you only see method signatures without verified names, be very cautious about classification
+- Require actual evidence of protocol contracts, preferably with verified names
 
 OUTPUT FORMAT:
 Respond with a JSON array of protocol identifications. Each should include:
@@ -447,28 +449,42 @@ Respond with a JSON array of protocol identifications. Each should include:
 
 EXAMPLES OF CORRECT ANALYSIS:
 
-Good Example 1 - Clear Protocol Contract:
+Good Example 1 - Using Verified Contract Name:
+[
+  {
+    "name": "1inch Network",
+    "type": "Aggregator",
+    "version": "v6",
+    "confidence": 0.95,
+    "evidence": ["Contract 0x111111125421ca6dc452d289314280a0f8842a65 has verified name 'AggregationRouterV6'", "Verified contract indicates 1inch aggregator protocol"],
+    "contracts": ["0x111111125421ca6dc452d289314280a0f8842a65"],
+    "website": "https://1inch.io",
+    "category": "DeFi"
+  }
+]
+
+Good Example 2 - Using Transaction TO field:
 [
   {
     "name": "Uniswap",
     "type": "DEX",
     "version": "v2",
     "confidence": 0.9,
-    "evidence": ["Transaction directly calls 0x7a250d5630b4cf539739df2c5dacb4c659f2488d which is the known Uniswap V2 Router", "Swap events on router contract"],
+    "evidence": ["Transaction directly calls 0x7a250d5630b4cf539739df2c5dacb4c659f2488d", "Known Uniswap V2 Router address", "Swap-related transaction pattern"],
     "contracts": ["0x7a250d5630b4cf539739df2c5dacb4c659f2488d"],
     "website": "https://uniswap.org",
     "category": "DeFi"
   }
 ]
 
-Good Example 2 - Conservative Token Approval:
+Good Example 3 - Conservative Unknown Router:
 [
   {
-    "name": "Unknown DEX/Protocol",
-    "type": "DEX",
+    "name": "Unknown DEX/Aggregator",
+    "type": "Aggregator",
     "version": "",
     "confidence": 0.4,
-    "evidence": ["Token approval suggests upcoming DeFi interaction", "No specific protocol contract identified"],
+    "evidence": ["Token approvals suggest DeFi interaction", "No verified contract name available", "Router-like transaction pattern"],
     "contracts": [],
     "website": "",
     "category": "DeFi"
@@ -478,17 +494,17 @@ Good Example 2 - Conservative Token Approval:
 Bad Example - DON'T DO THIS:
 [
   {
-    "name": "Uniswap",
-    "type": "DEX", 
-    "confidence": 0.9,
-    "evidence": ["Contract 0x6982...1933 is identified as Uniswap"],  // ❌ WRONG if this is actually a token contract
-    "contracts": ["0x6982...1933"]  // ❌ WRONG to list token contracts as protocol contracts
+    "name": "1inch Network",
+    "type": "Token", 
+    "confidence": 0.8,
+    "evidence": ["Contract has name() and symbol() methods"],  // ❌ WRONG: Ignoring verified name "AggregationRouterV6"
+    "contracts": ["0x111111125421ca6dc452d289314280a0f8842a65"]  // ❌ WRONG: This is a router, not a token
   }
 ]
 
-Analyze the transaction context and return only protocols you can identify with reasonable confidence (> 0.3). Be extremely conservative about contract identification - distinguish tokens from protocols clearly.
+Analyze the transaction context and return only protocols you can identify with reasonable confidence (> 0.3). 
 
-PRIORITY: If TOKEN METADATA shows an address is a token contract, DO NOT identify it as a protocol contract under any circumstances.`,
+PRIORITY: Use verified contract names as your PRIMARY classification source. If a contract has a verified name like "AggregationRouterV6" or "UniswapV2Router02", that is definitive evidence of the contract's purpose, regardless of what methods it implements. Method signatures like name(), symbol(), decimals() are compatibility features and do not determine contract classification.`,
 		knowledgeContext.String(),
 		contextData)
 
