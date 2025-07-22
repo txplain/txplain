@@ -63,7 +63,7 @@ var (
 func (c *Client) GetContractInfo(ctx context.Context, contractAddress string) (*ContractInfo, error) {
 	info := &ContractInfo{
 		Address:  contractAddress,
-		Type:     "Unknown",
+		Type:     "Contract", // Generic type - let LLM classify
 		Metadata: make(map[string]interface{}),
 	}
 
@@ -73,81 +73,97 @@ func (c *Client) GetContractInfo(ctx context.Context, contractAddress string) (*
 		return info, nil // Not a contract
 	}
 
-	// Try to detect contract type by checking supported interfaces
-	contractType, err := c.detectContractType(ctx, contractAddress)
-	if err == nil {
-		info.Type = contractType
+	// Store available interface information without classifying
+	supportedInterfaces := c.checkSupportedInterfaces(ctx, contractAddress)
+	if len(supportedInterfaces) > 0 {
+		info.Metadata["supported_interfaces"] = supportedInterfaces
 	}
 
-	// Fetch contract metadata based on type
-	switch info.Type {
-	case "ERC20":
-		c.fetchERC20Info(ctx, contractAddress, info)
-	case "ERC721":
-		c.fetchERC721Info(ctx, contractAddress, info)
-	case "ERC1155":
-		c.fetchERC1155Info(ctx, contractAddress, info)
-	default:
-		// Try ERC20 methods even if interface detection failed
-		c.tryFetchERC20Info(ctx, contractAddress, info)
+	// Try to fetch available method information without assuming contract type
+	availableMethods := c.checkAvailableMethods(ctx, contractAddress)
+	if len(availableMethods) > 0 {
+		info.Metadata["available_methods"] = availableMethods
 	}
+
+	// Try to fetch standard token methods if available (but don't classify as token)
+	c.tryFetchTokenLikeInfo(ctx, contractAddress, info)
 
 	return info, nil
 }
 
-// detectContractType determines the contract type by checking supported interfaces
-func (c *Client) detectContractType(ctx context.Context, contractAddress string) (string, error) {
-	// Try ERC165 supportsInterface first
-	if c.supportsInterface(ctx, contractAddress, ERC1155_INTERFACE_ID) {
-		return "ERC1155", nil
+// checkSupportedInterfaces checks which standard interfaces are supported
+func (c *Client) checkSupportedInterfaces(ctx context.Context, contractAddress string) []string {
+	var interfaces []string
+	
+	// Check common interfaces
+	interfaceChecks := map[string]string{
+		"ERC165":  ERC165_INTERFACE_ID,
+		"ERC20":   ERC20_INTERFACE_ID,
+		"ERC721":  ERC721_INTERFACE_ID,
+		"ERC1155": ERC1155_INTERFACE_ID,
 	}
-	if c.supportsInterface(ctx, contractAddress, ERC721_INTERFACE_ID) {
-		return "ERC721", nil
+	
+	for name, id := range interfaceChecks {
+		if c.supportsInterface(ctx, contractAddress, id) {
+			interfaces = append(interfaces, name)
+		}
 	}
-
-	// ERC20 doesn't always implement ERC165, so check by trying methods
-	if c.hasERC20Methods(ctx, contractAddress) {
-		return "ERC20", nil
-	}
-
-	return "Unknown", nil
+	
+	return interfaces
 }
 
-// supportsInterface checks if contract supports a given interface
-func (c *Client) supportsInterface(ctx context.Context, contractAddress, interfaceID string) bool {
-	// Call supportsInterface(bytes4)
-	callData := ERC721_SUPPORTS_INTERFACE + padLeft(interfaceID[2:], 64)
-	result, err := c.ethCall(ctx, contractAddress, callData)
-	if err != nil {
-		return false
+// checkAvailableMethods checks which standard methods are available
+func (c *Client) checkAvailableMethods(ctx context.Context, contractAddress string) []string {
+	var methods []string
+	
+	// Check common ERC20 methods
+	erc20Methods := map[string]string{
+		"name":        ERC20_NAME,
+		"symbol":      ERC20_SYMBOL,
+		"decimals":    ERC20_DECIMALS,
+		"totalSupply": ERC20_TOTAL_SUPPLY,
+		"balanceOf":   ERC20_BALANCE_OF,
 	}
-
-	// Parse boolean result
-	if len(result) >= 64 {
-		return result[len(result)-1:] == "1"
+	
+	for methodName, signature := range erc20Methods {
+		if c.methodExists(ctx, contractAddress, signature) {
+			methods = append(methods, methodName)
+		}
 	}
-	return false
+	
+	// Check common ERC721 methods
+	erc721Methods := map[string]string{
+		"tokenURI": ERC721_TOKEN_URI,
+		"ownerOf":  ERC721_OWNER_OF,
+	}
+	
+	for methodName, signature := range erc721Methods {
+		if c.methodExists(ctx, contractAddress, signature) {
+			methods = append(methods, methodName)
+		}
+	}
+	
+	return methods
 }
 
-// hasERC20Methods checks if contract has basic ERC20 methods
-func (c *Client) hasERC20Methods(ctx context.Context, contractAddress string) bool {
-	// Try calling decimals() - most ERC20 tokens have this
-	_, err := c.ethCall(ctx, contractAddress, ERC20_DECIMALS)
-	if err != nil {
-		return false
+// methodExists checks if a method exists by attempting to call it
+func (c *Client) methodExists(ctx context.Context, contractAddress, methodSig string) bool {
+	// For methods that require parameters, we'll skip them for now
+	// Only check parameter-less methods like name(), symbol(), decimals(), totalSupply()
+	if methodSig == ERC20_BALANCE_OF || methodSig == ERC721_OWNER_OF || methodSig == ERC721_TOKEN_URI {
+		return false // Skip methods that need parameters
 	}
-
-	// Try calling symbol()
-	_, err = c.ethCall(ctx, contractAddress, ERC20_SYMBOL)
+	
+	_, err := c.ethCall(ctx, contractAddress, methodSig)
 	return err == nil
 }
 
-// fetchERC20Info fetches ERC20 token information
-func (c *Client) fetchERC20Info(ctx context.Context, contractAddress string, info *ContractInfo) {
+// tryFetchTokenLikeInfo attempts to fetch token-like information without classification
+func (c *Client) tryFetchTokenLikeInfo(ctx context.Context, contractAddress string, info *ContractInfo) {
 	// Add debug context
 	var debugInfo []string
 	
-	// Fetch name
+	// Try to fetch name
 	if nameResult, err := c.ethCall(ctx, contractAddress, ERC20_NAME); err == nil {
 		if name := c.decodeString(nameResult); name != "" {
 			info.Name = name
@@ -159,7 +175,7 @@ func (c *Client) fetchERC20Info(ctx context.Context, contractAddress string, inf
 		debugInfo = append(debugInfo, fmt.Sprintf("name_error=%v", err))
 	}
 
-	// Fetch symbol
+	// Try to fetch symbol  
 	if symbolResult, err := c.ethCall(ctx, contractAddress, ERC20_SYMBOL); err == nil {
 		if symbol := c.decodeString(symbolResult); symbol != "" {
 			info.Symbol = symbol
@@ -171,7 +187,7 @@ func (c *Client) fetchERC20Info(ctx context.Context, contractAddress string, inf
 		debugInfo = append(debugInfo, fmt.Sprintf("symbol_error=%v", err))
 	}
 
-	// Fetch decimals - FIXED: properly handle 0 decimals
+	// Try to fetch decimals
 	decimalsSet := false
 	if decimalsResult, err := c.ethCall(ctx, contractAddress, ERC20_DECIMALS); err == nil {
 		if decimals := c.decodeUint256(decimalsResult); decimals != nil {
@@ -191,13 +207,13 @@ func (c *Client) fetchERC20Info(ctx context.Context, contractAddress string, inf
 		debugInfo = append(debugInfo, fmt.Sprintf("decimals_error=%v", err))
 	}
 	
-	// Only default to 18 if we couldn't fetch decimals at all
-	if !decimalsSet {
+	// Only default to 18 if we couldn't fetch decimals at all and we have other token-like info
+	if !decimalsSet && (info.Name != "" || info.Symbol != "") {
 		info.Decimals = 18
 		debugInfo = append(debugInfo, "decimals=default_18")
 	}
 
-	// Fetch total supply
+	// Try to fetch total supply
 	if supplyResult, err := c.ethCall(ctx, contractAddress, ERC20_TOTAL_SUPPLY); err == nil {
 		if supply := c.decodeUint256(supplyResult); supply != nil {
 			info.TotalSupply = supply.String()
@@ -210,52 +226,32 @@ func (c *Client) fetchERC20Info(ctx context.Context, contractAddress string, inf
 	}
 	
 	// Store debug info in metadata for troubleshooting
-	info.Metadata["rpc_debug"] = strings.Join(debugInfo, ", ")
-}
-
-// tryFetchERC20Info tries to fetch ERC20 info even if interface detection failed
-func (c *Client) tryFetchERC20Info(ctx context.Context, contractAddress string, info *ContractInfo) {
-	// Try fetching ERC20 info and update type if successful
-	originalType := info.Type
-	c.fetchERC20Info(ctx, contractAddress, info)
-
-	// If we successfully got token info, update the type
-	if info.Symbol != "" || info.Name != "" {
-		info.Type = "ERC20"
-	} else {
-		info.Type = originalType
+	if len(debugInfo) > 0 {
+		info.Metadata["rpc_debug"] = strings.Join(debugInfo, ", ")
 	}
 }
 
-// fetchERC721Info fetches ERC721 NFT information
-func (c *Client) fetchERC721Info(ctx context.Context, contractAddress string, info *ContractInfo) {
-	// Fetch name
-	if nameResult, err := c.ethCall(ctx, contractAddress, ERC721_NAME); err == nil {
-		if name := c.decodeString(nameResult); name != "" {
-			info.Name = name
-		}
+// supportsInterface checks if contract supports a given interface
+func (c *Client) supportsInterface(ctx context.Context, contractAddress, interfaceID string) bool {
+	// Call supportsInterface(bytes4)
+	callData := ERC721_SUPPORTS_INTERFACE + padLeft(interfaceID[2:], 64)
+	result, err := c.ethCall(ctx, contractAddress, callData)
+	if err != nil {
+		return false
 	}
 
-	// Fetch symbol
-	if symbolResult, err := c.ethCall(ctx, contractAddress, ERC721_SYMBOL); err == nil {
-		if symbol := c.decodeString(symbolResult); symbol != "" {
-			info.Symbol = symbol
-		}
+	// Parse boolean result
+	if len(result) >= 64 {
+		return result[len(result)-1:] == "1"
 	}
-
-	// For NFTs, we can't get total supply easily without additional methods
-	info.Metadata["type"] = "NFT"
+	return false
 }
 
-// fetchERC1155Info fetches ERC1155 token information
-func (c *Client) fetchERC1155Info(ctx context.Context, contractAddress string, info *ContractInfo) {
-	info.Metadata["type"] = "Multi-Token"
 
-	// ERC1155 doesn't have standard name/symbol methods
-	// Would need to check for optional extensions or use external APIs
-}
 
-// GetTokenBalance fetches token balance for an address
+// These functions are no longer needed as we provide raw information without classification
+
+// GetTokenBalance fetches token balance for an address (assumes ERC20-like interface)
 func (c *Client) GetTokenBalance(ctx context.Context, contractAddress, walletAddress string) (*TokenBalance, error) {
 	// Get contract info first
 	contractInfo, err := c.GetContractInfo(ctx, contractAddress)
@@ -263,15 +259,11 @@ func (c *Client) GetTokenBalance(ctx context.Context, contractAddress, walletAdd
 		return nil, err
 	}
 
-	if contractInfo.Type != "ERC20" {
-		return nil, fmt.Errorf("contract is not an ERC20 token")
-	}
-
-	// Call balanceOf(address)
+	// Try to call balanceOf(address) regardless of detected type
 	callData := ERC20_BALANCE_OF + padLeft(walletAddress[2:], 64)
 	result, err := c.ethCall(ctx, contractAddress, callData)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("contract does not support balanceOf method: %w", err)
 	}
 
 	balance := c.decodeUint256(result)

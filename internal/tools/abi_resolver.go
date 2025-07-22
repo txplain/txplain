@@ -567,27 +567,76 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	}
 
 	var contextParts []string
-	for _, contract := range resolvedContracts {
+	contextParts = append(contextParts, "### Verified Contract Information:")
+
+	for address, contract := range resolvedContracts {
 		if contract.IsVerified {
-			contractDesc := fmt.Sprintf("- %s", contract.Address)
+			var contractInfo []string
+			
+			// Contract address and name
 			if contract.ContractName != "" {
-				contractDesc += fmt.Sprintf(" (%s)", contract.ContractName)
+				contractInfo = append(contractInfo, fmt.Sprintf("Contract: %s (%s)", address, contract.ContractName))
+			} else {
+				contractInfo = append(contractInfo, fmt.Sprintf("Contract: %s", address))
 			}
-			contractDesc += " - Verified contract"
 
+			// Contract type information
+			contractInfo = append(contractInfo, "Status: Verified on Etherscan")
+			
+			if contract.CompilerVersion != "" {
+				contractInfo = append(contractInfo, fmt.Sprintf("Compiler: %s", contract.CompilerVersion))
+			}
+
+			// Proxy information
 			if contract.IsProxy && contract.Implementation != "" {
-				contractDesc += fmt.Sprintf(" (Proxy -> %s)", contract.Implementation)
+				contractInfo = append(contractInfo, fmt.Sprintf("Type: Proxy Contract"))
+				contractInfo = append(contractInfo, fmt.Sprintf("Implementation: %s", contract.Implementation))
 			}
 
-			contextParts = append(contextParts, contractDesc)
+			// ABI information
+			if len(contract.ParsedABI) > 0 {
+				var functions, events []string
+				for _, method := range contract.ParsedABI {
+					if method.Type == "function" && method.Name != "" {
+						functions = append(functions, method.Name)
+					} else if method.Type == "event" && method.Name != "" {
+						events = append(events, method.Name)
+					}
+				}
+				
+				if len(functions) > 0 {
+					// Show first few functions to avoid overwhelming the prompt
+					displayFunctions := functions
+					if len(functions) > 8 {
+						displayFunctions = functions[:8]
+						displayFunctions = append(displayFunctions, fmt.Sprintf("...and %d more", len(functions)-8))
+					}
+					contractInfo = append(contractInfo, fmt.Sprintf("Functions: %s", strings.Join(displayFunctions, ", ")))
+				}
+				
+				if len(events) > 0 {
+					// Show first few events
+					displayEvents := events
+					if len(events) > 6 {
+						displayEvents = events[:6]
+						displayEvents = append(displayEvents, fmt.Sprintf("...and %d more", len(events)-6))
+					}
+					contractInfo = append(contractInfo, fmt.Sprintf("Events: %s", strings.Join(displayEvents, ", ")))
+				}
+			}
+
+			// Add to context with proper formatting
+			contextParts = append(contextParts, "- "+strings.Join(contractInfo, "\n  "))
 		}
 	}
 
-	if len(contextParts) == 0 {
-		return ""
+	if len(contextParts) == 1 {
+		return "" // No verified contracts
 	}
 
-	return "### Verified Contracts:\n" + strings.Join(contextParts, "\n")
+	contextParts = append(contextParts, "", "Note: Contract names from Etherscan verification are authoritative. Use verified contract names to distinguish between token contracts (e.g., 'USDC', 'DAI') and protocol contracts (e.g., 'AggregationRouterV6', 'UniswapV2Router02').")
+
+	return strings.Join(contextParts, "\n")
 }
 
 // GetResolvedContract is a helper function to get resolved contract from baggage

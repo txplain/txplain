@@ -58,76 +58,122 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		return nil // No contracts to check
 	}
 
-	// Create metadata map for contracts with any token-like data
+	// Get resolved contracts data from ABI resolver for additional context
+	resolvedContracts, _ := baggage["resolved_contracts"].(map[string]*ContractInfo)
+
+	// Create comprehensive contract information map
 	contractMetadata := make(map[string]*TokenMetadata)
-	
-	// Track all discovered contract information
 	allContractInfo := make(map[string]map[string]interface{})
 	var debugInfo []string
 
 	// Test each contract address individually
 	for _, address := range contractAddresses {
 		contractInfo := make(map[string]interface{})
-		hasAnyTokenData := false
+		hasAnyTokenLikeData := false
 
-		// Call GetContractInfo once per contract to get all available data
+		// Get ABI resolver data first (this is the most authoritative)
+		var abiContract *ContractInfo
+		if resolvedContracts != nil {
+			abiContract, _ = resolvedContracts[strings.ToLower(address)]
+		}
+
+		// Add ABI resolver information (contract name from verification, etc.)
+		if abiContract != nil && abiContract.IsVerified {
+			if abiContract.ContractName != "" {
+				contractInfo["verified_name"] = abiContract.ContractName
+				debugInfo = append(debugInfo, fmt.Sprintf("%s: verified_name=%s", address, abiContract.ContractName))
+			}
+			if abiContract.CompilerVersion != "" {
+				contractInfo["compiler_version"] = abiContract.CompilerVersion
+			}
+			if abiContract.IsProxy {
+				contractInfo["is_proxy"] = true
+				if abiContract.Implementation != "" {
+					contractInfo["implementation"] = abiContract.Implementation
+				}
+			}
+			contractInfo["is_verified"] = true
+			contractInfo["source_verified"] = true
+		}
+
+		// Get RPC contract information (method calls, etc.)
 		rpcInfo, err := t.getRPCContractInfo(ctx, address)
 		if err != nil {
-			continue // Skip contracts that can't be queried
-		}
-
-		// Extract individual pieces of information from the single RPC call
-		name := rpcInfo.Name
-		symbol := rpcInfo.Symbol
-		decimals := rpcInfo.Decimals
-		contractType := rpcInfo.Type
-		
-		// 1. Process name
-		if name != "" {
-			contractInfo["name"] = name
-			hasAnyTokenData = true
-			debugInfo = append(debugInfo, fmt.Sprintf("%s: name=%s", address, name))
-		}
-
-		// 2. Process symbol
-		if symbol != "" {
-			contractInfo["symbol"] = symbol
-			hasAnyTokenData = true
-			debugInfo = append(debugInfo, fmt.Sprintf("%s: symbol=%s", address, symbol))
-		}
-
-		// 3. Process decimals (check if it was actually fetched vs defaulted)
-		if decimals >= 0 && (contractType != "ERC20" || decimals != 18) {
-			// Either it's not ERC20, or it's ERC20 but not the default 18
-			contractInfo["decimals"] = decimals
-			hasAnyTokenData = true
-			debugInfo = append(debugInfo, fmt.Sprintf("%s: decimals=%d", address, decimals))
-		}
-
-		// 4. Process contract type/interfaces
-		var interfaces []string
-		if contractType != "" && contractType != "Unknown" {
-			interfaces = append(interfaces, contractType)
-			if contractType == "ERC721" || contractType == "ERC1155" {
-				interfaces = append(interfaces, "ERC165") // These typically support ERC165
+			debugInfo = append(debugInfo, fmt.Sprintf("%s: RPC_ERROR=%v", address, err))
+		} else {
+			// Extract RPC information
+			if rpcInfo.Name != "" {
+				contractInfo["rpc_name"] = rpcInfo.Name
+				hasAnyTokenLikeData = true
+				debugInfo = append(debugInfo, fmt.Sprintf("%s: rpc_name=%s", address, rpcInfo.Name))
 			}
-			contractInfo["interfaces"] = interfaces
-			contractInfo["type"] = contractType
-			hasAnyTokenData = true
-			debugInfo = append(debugInfo, fmt.Sprintf("%s: type=%s interfaces=%v", address, contractType, interfaces))
+
+			if rpcInfo.Symbol != "" {
+				contractInfo["rpc_symbol"] = rpcInfo.Symbol
+				hasAnyTokenLikeData = true
+				debugInfo = append(debugInfo, fmt.Sprintf("%s: rpc_symbol=%s", address, rpcInfo.Symbol))
+			}
+
+			if rpcInfo.Decimals >= 0 {
+				contractInfo["rpc_decimals"] = rpcInfo.Decimals
+				hasAnyTokenLikeData = true
+				debugInfo = append(debugInfo, fmt.Sprintf("%s: rpc_decimals=%d", address, rpcInfo.Decimals))
+			}
+
+			if rpcInfo.TotalSupply != "" && rpcInfo.TotalSupply != "0" {
+				contractInfo["rpc_total_supply"] = rpcInfo.TotalSupply
+				hasAnyTokenLikeData = true
+			}
+
+			// Add supported interfaces from RPC metadata
+			if supportedInterfaces, ok := rpcInfo.Metadata["supported_interfaces"].([]string); ok && len(supportedInterfaces) > 0 {
+				contractInfo["supported_interfaces"] = supportedInterfaces
+				debugInfo = append(debugInfo, fmt.Sprintf("%s: supported_interfaces=%v", address, supportedInterfaces))
+			}
+
+			// Add available methods from RPC metadata
+			if availableMethods, ok := rpcInfo.Metadata["available_methods"].([]string); ok && len(availableMethods) > 0 {
+				contractInfo["available_methods"] = availableMethods
+				debugInfo = append(debugInfo, fmt.Sprintf("%s: available_methods=%v", address, availableMethods))
+			}
+
+			// Add RPC debug info
+			if rpcDebug, ok := rpcInfo.Metadata["rpc_debug"].(string); ok {
+				contractInfo["rpc_debug"] = rpcDebug
+			}
+		}
+
+		// Determine the best name and symbol to use (prioritize verified data)
+		var bestName, bestSymbol string
+		var bestDecimals int = -1
+
+		// Priority: verified ABI name > RPC name
+		if verifiedName, ok := contractInfo["verified_name"].(string); ok && verifiedName != "" {
+			bestName = verifiedName
+		} else if rpcName, ok := contractInfo["rpc_name"].(string); ok && rpcName != "" {
+			bestName = rpcName
+		}
+
+		// For symbol and decimals, use RPC data since verified contracts might not have these in the name
+		if rpcSymbol, ok := contractInfo["rpc_symbol"].(string); ok && rpcSymbol != "" {
+			bestSymbol = rpcSymbol
+		}
+		if rpcDecimals, ok := contractInfo["rpc_decimals"].(int); ok {
+			bestDecimals = rpcDecimals
 		}
 
 		// Store all discovered information
 		allContractInfo[address] = contractInfo
 
-		// If we found any token-like data, create TokenMetadata
-		if hasAnyTokenData {
+		// Create TokenMetadata for contracts that have token-like characteristics
+		// But don't classify the type - let LLM decide
+		if hasAnyTokenLikeData || (abiContract != nil && abiContract.IsVerified) {
 			metadata := &TokenMetadata{
 				Address:  address,
-				Type:     contractType,
-				Name:     name,
-				Symbol:   symbol,
-				Decimals: decimals,
+				Type:     "Contract", // Generic - let LLM classify
+				Name:     bestName,
+				Symbol:   bestSymbol,
+				Decimals: bestDecimals,
 			}
 			contractMetadata[address] = metadata
 		}
@@ -144,10 +190,10 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 	// Add debug information
 	if len(debugInfo) > 0 {
 		if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
-			existingDebug["token_metadata_individual_calls"] = debugInfo
+			existingDebug["token_metadata_enricher"] = debugInfo
 		} else {
 			baggage["debug_info"] = map[string]interface{}{
-				"token_metadata_individual_calls": debugInfo,
+				"token_metadata_enricher": debugInfo,
 			}
 		}
 	}
@@ -248,53 +294,79 @@ func (t *TokenMetadataEnricher) GetAnnotationContext(ctx context.Context, baggag
 func (t *TokenMetadataEnricher) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
 	var contextParts []string
 
-	// Add discovered token metadata
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok && len(tokenMetadata) > 0 {
-		contextParts = append(contextParts, "=== TOKEN CONTRACTS DISCOVERED ===")
-		for address, metadata := range tokenMetadata {
-			line := fmt.Sprintf("- %s: %s (%s)", address, metadata.Name, metadata.Symbol)
-			if metadata.Type != "" {
-				line += fmt.Sprintf(" [%s]", metadata.Type)
+	// Add comprehensive contract information
+	if allContractInfo, ok := baggage["all_contract_info"].(map[string]map[string]interface{}); ok && len(allContractInfo) > 0 {
+		contextParts = append(contextParts, "=== CONTRACT INFORMATION ===")
+		for address, info := range allContractInfo {
+			var contractDesc []string
+			contractDesc = append(contractDesc, fmt.Sprintf("Contract: %s", address))
+
+			// Verified contract information (most authoritative)
+			if verifiedName, ok := info["verified_name"].(string); ok && verifiedName != "" {
+				contractDesc = append(contractDesc, fmt.Sprintf("Verified Name: %s", verifiedName))
 			}
-			if metadata.Decimals > 0 {
+			if isVerified, ok := info["is_verified"].(bool); ok && isVerified {
+				contractDesc = append(contractDesc, "Source: Verified on Etherscan")
+			}
+			if isProxy, ok := info["is_proxy"].(bool); ok && isProxy {
+				contractDesc = append(contractDesc, "Type: Proxy Contract")
+				if impl, ok := info["implementation"].(string); ok && impl != "" {
+					contractDesc = append(contractDesc, fmt.Sprintf("Implementation: %s", impl))
+				}
+			}
+
+			// RPC method call results
+			if rpcName, ok := info["rpc_name"].(string); ok && rpcName != "" {
+				contractDesc = append(contractDesc, fmt.Sprintf("Name() method returns: %s", rpcName))
+			}
+			if rpcSymbol, ok := info["rpc_symbol"].(string); ok && rpcSymbol != "" {
+				contractDesc = append(contractDesc, fmt.Sprintf("Symbol() method returns: %s", rpcSymbol))
+			}
+			if rpcDecimals, ok := info["rpc_decimals"].(int); ok && rpcDecimals >= 0 {
+				contractDesc = append(contractDesc, fmt.Sprintf("Decimals() method returns: %d", rpcDecimals))
+			}
+			if totalSupply, ok := info["rpc_total_supply"].(string); ok && totalSupply != "" {
+				contractDesc = append(contractDesc, fmt.Sprintf("TotalSupply() method returns: %s", totalSupply))
+			}
+
+			// Supported interfaces
+			if interfaces, ok := info["supported_interfaces"].([]string); ok && len(interfaces) > 0 {
+				contractDesc = append(contractDesc, fmt.Sprintf("Supported Interfaces: %v", interfaces))
+			}
+
+			// Available methods
+			if methods, ok := info["available_methods"].([]string); ok && len(methods) > 0 {
+				contractDesc = append(contractDesc, fmt.Sprintf("Available Methods: %v", methods))
+			}
+
+			// Compiler info for verified contracts
+			if compiler, ok := info["compiler_version"].(string); ok && compiler != "" {
+				contractDesc = append(contractDesc, fmt.Sprintf("Compiler: %s", compiler))
+			}
+
+			// Add to context
+			contextParts = append(contextParts, "- "+strings.Join(contractDesc, "\n  "))
+		}
+	}
+
+	// Add simplified token metadata summary (if any contracts have token-like characteristics)
+	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok && len(tokenMetadata) > 0 {
+		contextParts = append(contextParts, "", "=== CONTRACTS WITH TOKEN-LIKE METHODS ===")
+		for address, metadata := range tokenMetadata {
+			line := fmt.Sprintf("- %s", address)
+			if metadata.Name != "" {
+				line += fmt.Sprintf(": %s", metadata.Name)
+			}
+			if metadata.Symbol != "" {
+				line += fmt.Sprintf(" (%s)", metadata.Symbol)
+			}
+			if metadata.Decimals >= 0 {
 				line += fmt.Sprintf(" - %d decimals", metadata.Decimals)
 			}
 			contextParts = append(contextParts, line)
 		}
-	}
-
-	// Add all contract information for partial data
-	if allContractInfo, ok := baggage["all_contract_info"].(map[string]map[string]interface{}); ok && len(allContractInfo) > 0 {
-		hasPartialInfo := false
-		var partialInfoLines []string
-
-		for address, info := range allContractInfo {
-			// Skip if already covered in token metadata
-			if _, covered := baggage["token_metadata"].(map[string]*TokenMetadata)[address]; covered {
-				continue
-			}
-
-			var infoParts []string
-			if name := getStringValue(info, "name"); name != "" {
-				infoParts = append(infoParts, fmt.Sprintf("name=%s", name))
-			}
-			if symbol := getStringValue(info, "symbol"); symbol != "" {
-				infoParts = append(infoParts, fmt.Sprintf("symbol=%s", symbol))
-			}
-			if interfaces, ok := info["interfaces"].([]string); ok && len(interfaces) > 0 {
-				infoParts = append(infoParts, fmt.Sprintf("interfaces=%v", interfaces))
-			}
-
-			if len(infoParts) > 0 {
-				hasPartialInfo = true
-				partialInfoLines = append(partialInfoLines, fmt.Sprintf("- %s: %s", address, strings.Join(infoParts, ", ")))
-			}
-		}
-
-		if hasPartialInfo {
-			contextParts = append(contextParts, "", "=== CONTRACTS WITH PARTIAL INFO ===")
-			contextParts = append(contextParts, partialInfoLines...)
-		}
+		
+		contextParts = append(contextParts, "", "Note: These contracts respond to token-like methods (name, symbol, decimals) but may not be actual tokens. Router contracts, aggregators, and other DeFi contracts often implement these methods for compatibility.")
 	}
 
 	return strings.Join(contextParts, "\n")
