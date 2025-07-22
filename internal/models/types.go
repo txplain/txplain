@@ -223,13 +223,83 @@ type TokenTransfer struct {
 	AmountUSD       string `json:"amount_usd,omitempty"`       // USD value (e.g. "1.45")
 }
 
-// WalletEffect represents the effect on a specific wallet
-type WalletEffect struct {
-	Address   string          `json:"address"`
-	NetChange string          `json:"net_change"` // Overall ETH change
-	Transfers []TokenTransfer `json:"transfers"`  // All token transfers
-	GasSpent  string          `json:"gas_spent"`  // Gas spent (for tx sender)
-	NewNonce  uint64          `json:"new_nonce"`  // New nonce (for tx sender)
+// Annotation represents an interactive element in the explanation text
+type Annotation struct {
+	Text    string `json:"text"`    // Text to match (e.g. "0@100 USDT" for first occurrence)
+	Link    string `json:"link,omitempty"`    // Optional URL to link to
+	Tooltip string `json:"tooltip,omitempty"` // Optional HTML tooltip content
+	Icon    string `json:"icon,omitempty"`    // Optional icon URL or path
+}
+
+// AnnotationContextItem represents a piece of context that can be used for annotations
+type AnnotationContextItem struct {
+	Type        string `json:"type"`        // token, address, protocol, amount, etc.
+	Value       string `json:"value"`       // The actual value (address, token symbol, etc.)
+	Name        string `json:"name,omitempty"`        // Human-readable name
+	Icon        string `json:"icon,omitempty"`        // Icon URL or path
+	Link        string `json:"link,omitempty"`        // Link URL
+	Description string `json:"description,omitempty"` // Description for tooltip
+	Metadata    map[string]interface{} `json:"metadata,omitempty"` // Additional metadata
+}
+
+// AnnotationContext holds all context data that tools contribute for annotations
+type AnnotationContext struct {
+	Items []AnnotationContextItem `json:"items"`
+}
+
+// Add method to append context items
+func (ac *AnnotationContext) AddItem(item AnnotationContextItem) {
+	ac.Items = append(ac.Items, item)
+}
+
+// Add method to add token context
+func (ac *AnnotationContext) AddToken(address, symbol, name, icon, description string, metadata map[string]interface{}) {
+	ac.AddItem(AnnotationContextItem{
+		Type:        "token",
+		Value:       address,
+		Name:        fmt.Sprintf("%s (%s)", name, symbol),
+		Icon:        icon,
+		Description: description,
+		Metadata:    metadata,
+	})
+}
+
+// Add method to add address context
+func (ac *AnnotationContext) AddAddress(address, name, link, description string) {
+	ac.AddItem(AnnotationContextItem{
+		Type:        "address",
+		Value:       address,
+		Name:        name,
+		Link:        link,
+		Description: description,
+	})
+}
+
+// Add method to add protocol context
+func (ac *AnnotationContext) AddProtocol(name, icon, link, description string, metadata map[string]interface{}) {
+	ac.AddItem(AnnotationContextItem{
+		Type:        "protocol",
+		Value:       name,
+		Name:        name,
+		Icon:        icon,
+		Link:        link,
+		Description: description,
+		Metadata:    metadata,
+	})
+}
+
+// Add method to add amount context
+func (ac *AnnotationContext) AddAmount(amount, symbol, usdValue, description string) {
+	ac.AddItem(AnnotationContextItem{
+		Type:        "amount",
+		Value:       fmt.Sprintf("%s %s", amount, symbol),
+		Description: description,
+		Metadata: map[string]interface{}{
+			"amount":    amount,
+			"symbol":    symbol,
+			"usd_value": usdValue,
+		},
+	})
 }
 
 // ExplanationResult holds the final narrative and metadata
@@ -237,7 +307,6 @@ type ExplanationResult struct {
 	TxHash      string                 `json:"tx_hash"`
 	NetworkID   int64                  `json:"network_id"`
 	Summary     string                 `json:"summary"`   // Human-readable description
-	Effects     []WalletEffect         `json:"effects"`   // Effects on each wallet
 	Transfers   []TokenTransfer        `json:"transfers"` // All transfers in the transaction
 	GasUsed     uint64                 `json:"gas_used"`
 	GasPrice    string                 `json:"gas_price"`
@@ -249,6 +318,7 @@ type ExplanationResult struct {
 	Risks       []string               `json:"risks,omitempty"` // Potential risks or warnings
 	Tags        []string               `json:"tags,omitempty"`  // Transaction categorization tags
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	Annotations []Annotation           `json:"annotations,omitempty"` // Interactive annotations for the UI
 }
 
 // DecodedData contains the processed transaction data

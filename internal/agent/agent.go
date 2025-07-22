@@ -105,7 +105,13 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	pipeline := txtools.NewBaggagePipeline()
 	var contextProviders []txtools.ContextProvider
 
-	// Add ABI resolver (runs first - fetches contract ABIs from Etherscan)
+	// Add static context provider first (loads CSV data - tokens, protocols, addresses)
+	staticContextProvider := txtools.NewStaticContextProvider()
+	if err := pipeline.AddProcessor(staticContextProvider); err != nil {
+		return nil, fmt.Errorf("failed to add static context provider: %w", err)
+	}
+
+	// Add ABI resolver (runs early - fetches contract ABIs from Etherscan)
 	abiResolver := txtools.NewABIResolver()
 	if err := pipeline.AddProcessor(abiResolver); err != nil {
 		return nil, fmt.Errorf("failed to add ABI resolver: %w", err)
@@ -141,9 +147,16 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, tokenMetadata)
 
+	// Add icon resolver (discovers token icons from TrustWallet GitHub)
+	iconResolver := txtools.NewIconResolver(staticContextProvider)
+	if err := pipeline.AddProcessor(iconResolver); err != nil {
+		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
+	}
+
 	// Add price lookup if API key is available
+	var priceLookup *txtools.ERC20PriceLookup
 	if a.coinMarketCapAPIKey != "" {
-		priceLookup := txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey)
+		priceLookup = txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey)
 		if err := pipeline.AddProcessor(priceLookup); err != nil {
 			return nil, fmt.Errorf("failed to add price lookup: %w", err)
 		}
@@ -165,8 +178,9 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, ensResolver)
 
-	// Add protocol resolver (detects DEX protocols and aggregators)
-	protocolResolver := txtools.NewProtocolResolver()
+	// Add protocol resolver (probabilistic protocol detection with RAG)
+	protocolResolver := txtools.NewProtocolResolver(a.llm)
+	protocolResolver.SetConfidenceThreshold(0.6) // 60% minimum confidence
 	if err := pipeline.AddProcessor(protocolResolver); err != nil {
 		return nil, fmt.Errorf("failed to add protocol resolver: %w", err)
 	}
@@ -175,9 +189,28 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	// Add context providers to baggage for transaction explainer
 	baggage["context_providers"] = contextProviders
 
-	// Add transaction explainer (final step)
+	// Add transaction explainer 
 	if err := pipeline.AddProcessor(a.explainer); err != nil {
 		return nil, fmt.Errorf("failed to add transaction explainer: %w", err)
+	}
+
+	// Add annotation generator (runs after explanation is generated)
+	annotationGenerator := txtools.NewAnnotationGenerator(a.llm)
+	// Set verbose mode to match explainer
+	if a.explainer != nil {
+		// We can't directly access explainer's verbose state, but we can enable it for debugging
+		annotationGenerator.SetVerbose(false) // Disable verbose mode in production
+	}
+	// Add all annotation context providers to the generator
+	annotationGenerator.AddContextProvider(staticContextProvider)
+	annotationGenerator.AddContextProvider(tokenMetadata)
+	annotationGenerator.AddContextProvider(iconResolver)
+	annotationGenerator.AddContextProvider(protocolResolver)
+	if priceLookup != nil {
+		annotationGenerator.AddContextProvider(priceLookup)
+	}
+	if err := pipeline.AddProcessor(annotationGenerator); err != nil {
+		return nil, fmt.Errorf("failed to add annotation generator: %w", err)
 	}
 
 	// Step 4: Execute the pipeline
@@ -243,20 +276,7 @@ func (a *TxplainAgent) enhanceExplanationWithRPC(ctx context.Context, client *rp
 		}
 	}
 
-	// Enhance wallet effects with token balances (if needed)
-	for i, effect := range explanation.Effects {
-		// Could fetch current balances for context, but might be expensive
-		// For now, just enhance existing transfer data
-		for j, transfer := range effect.Transfers {
-			if transfer.Contract != "" && transfer.Symbol == "" {
-				if contractInfo, err := client.GetContractInfo(ctx, transfer.Contract); err == nil {
-					explanation.Effects[i].Transfers[j].Symbol = contractInfo.Symbol
-					explanation.Effects[i].Transfers[j].Name = contractInfo.Name
-					explanation.Effects[i].Transfers[j].Decimals = contractInfo.Decimals
-				}
-			}
-		}
-	}
+
 
 	// Add metadata about contracts involved
 	if explanation.Metadata == nil {

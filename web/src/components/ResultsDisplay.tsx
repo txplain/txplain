@@ -1,4 +1,5 @@
 import type { ExplanationResult } from '../types'
+import AnnotatedText from './AnnotatedText'
 
 interface ResultsDisplayProps {
   result: ExplanationResult
@@ -6,11 +7,35 @@ interface ResultsDisplayProps {
 
 const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
   const formatAddress = (address: string) => {
+    if (!address || address.length < 10) {
+      return '...'
+    }
     return `${address.slice(0, 6)}...${address.slice(-4)}`
   }
 
   const formatAmount = (amount: string, symbol?: string) => {
-    if (!amount) return '0'
+    if (!amount || amount === '0x' || amount === '0x0') return '0'
+    
+    // Handle hex amounts
+    if (amount.startsWith('0x')) {
+      try {
+        const hexValue = amount.slice(2)
+        // Check if it's all zeros
+        if (hexValue.replace(/0/g, '') === '') return '0'
+        
+        // Convert hex to decimal
+        const num = parseInt(hexValue, 16)
+        if (num === 0) return '0'
+        
+        // For display, just show the decimal value
+        if (symbol) {
+          return `${num} ${symbol}`
+        }
+        return num.toString()
+      } catch {
+        return '0'
+      }
+    }
     
     // Convert from wei if needed (simple approach)
     try {
@@ -22,7 +47,7 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
       }
       return amount
     } catch {
-      return amount
+      return amount || '0'
     }
   }
 
@@ -50,7 +75,12 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
         </div>
         
         <div className="prose max-w-none">
-          <p className="text-lg text-gray-700 leading-relaxed">{result.summary}</p>
+          <p className="text-lg text-gray-700 leading-relaxed">
+            <AnnotatedText 
+              text={result.summary} 
+              annotations={result.annotations || []} 
+            />
+          </p>
         </div>
 
         {/* Transaction Details */}
@@ -75,7 +105,24 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
         <div className="bg-white rounded-lg shadow-lg p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Token Transfers</h3>
           <div className="space-y-3">
-            {result.transfers.map((transfer, index) => (
+            {result.transfers
+              .filter(transfer => {
+                // Filter out transfers with no meaningful data
+                if (!transfer.from || !transfer.to || transfer.from === '...' || transfer.to === '...') {
+                  return false
+                }
+                
+                // Filter out zero amounts (but keep NFTs)
+                if (transfer.type === 'ERC20' && (!transfer.formatted_amount || transfer.formatted_amount === '0')) {
+                  const rawAmount = formatAmount(transfer.amount, transfer.symbol)
+                  if (!rawAmount || rawAmount === '0') {
+                    return false
+                  }
+                }
+                
+                return true
+              })
+              .map((transfer, index) => (
               <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div className="flex-1">
                   <div className="flex items-center space-x-2">
@@ -85,6 +132,9 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
                         {transfer.symbol}
                       </span>
                     )}
+                    {transfer.name && transfer.name !== transfer.symbol && (
+                      <span className="text-xs text-gray-600">({transfer.name})</span>
+                    )}
                   </div>
                   <div className="mt-1 text-sm text-gray-500">
                     From {formatAddress(transfer.from)} → To {formatAddress(transfer.to)}
@@ -92,7 +142,10 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-medium text-gray-900">
-                    {transfer.formatted_amount || formatAmount(transfer.amount, transfer.symbol)}
+                    {transfer.formatted_amount ? 
+                      `${transfer.formatted_amount} ${transfer.symbol || ''}` : 
+                      formatAmount(transfer.amount, transfer.symbol)
+                    }
                   </div>
                   {transfer.amount_usd && (
                     <div className="text-xs text-gray-500">${transfer.amount_usd}</div>
@@ -101,52 +154,26 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
               </div>
             ))}
           </div>
+          {result.transfers.filter(transfer => {
+            if (!transfer.from || !transfer.to || transfer.from === '...' || transfer.to === '...') {
+              return false
+            }
+            if (transfer.type === 'ERC20' && (!transfer.formatted_amount || transfer.formatted_amount === '0')) {
+              const rawAmount = formatAmount(transfer.amount, transfer.symbol)
+              if (!rawAmount || rawAmount === '0') {
+                return false
+              }
+            }
+            return true
+          }).length === 0 && (
+            <div className="text-center text-gray-500 py-4">
+              No significant token transfers to display
+            </div>
+          )}
         </div>
       )}
 
-      {/* Wallet Effects */}
-      {result.effects && result.effects.length > 0 && (
-        <div className="bg-white rounded-lg shadow-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Wallet Effects</h3>
-          <div className="space-y-4">
-            {result.effects.map((effect, index) => (
-              <div key={index} className="border border-gray-200 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-medium text-gray-900">
-                    Wallet {formatAddress(effect.address)}
-                  </h4>
-                  {effect.net_change !== '0' && (
-                    <span className={`text-sm font-medium ${
-                      effect.net_change.startsWith('-') 
-                        ? 'text-red-600' 
-                        : 'text-green-600'
-                    }`}>
-                      {effect.net_change} ETH
-                    </span>
-                  )}
-                </div>
-                
-                {effect.transfers && effect.transfers.length > 0 && (
-                  <div className="space-y-2">
-                    {effect.transfers.map((transfer, transferIndex) => (
-                      <div key={transferIndex} className="text-sm text-gray-600">
-                        {transfer.type}: {transfer.formatted_amount || formatAmount(transfer.amount, transfer.symbol)}
-                        {transfer.amount_usd && ` ($${transfer.amount_usd})`}
-                      </div>
-                    ))}
-                  </div>
-                )}
 
-                {effect.gas_spent !== '0' && (
-                  <div className="mt-2 text-sm text-gray-500">
-                    Gas spent: {effect.gas_spent} ETH
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Risks & Warnings */}
       {result.risks && result.risks.length > 0 && (

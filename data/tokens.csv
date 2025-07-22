@@ -1,0 +1,15 @@
+address,symbol,name,decimals,icon_url,description
+0xdac17f958d2ee523a2206206994597c13d831ec7,USDT,Tether USD,6,,A stablecoin pegged to the US Dollar
+0xa0b86a33e6b86d1a1b986b82b6bfdd8b4e93a4f6,USDC,USD Coin,6,,A fully backed stablecoin issued by Centre
+0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2,WETH,Wrapped Ether,18,,An ERC-20 compatible version of Ether
+0x6b175474e89094c44da98b954eedeac495271d0f,DAI,Dai Stablecoin,18,,A decentralized stablecoin backed by crypto assets
+0x1f9840a85d5af5bf1d1762f925bdaddc4201f984,UNI,Uniswap,18,,Governance token of the Uniswap protocol
+0x2260fac5e5542a773aa44fbcfedf7c193bc2c599,WBTC,Wrapped Bitcoin,8,,An ERC-20 token backed by Bitcoin
+0xba100000625a3754423978a60c9317c58a424e3d,BAL,Balancer,18,,Governance token for the Balancer protocol
+0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0,MATIC,Polygon,18,,Native token of the Polygon network
+0xc00e94cb662c3520282e6f5717214004a7f26888,COMP,Compound,18,,Governance token for the Compound protocol
+0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2,MKR,Maker,18,,Governance token of the MakerDAO protocol
+0x514910771af9ca656af840dff83e8264ecf986ca,LINK,Chainlink,18,,Decentralized oracle network token
+0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9,AAVE,Aave,18,,Governance token for the Aave protocol
+0xa0bed124a09ac2bd941b10349d8d224fe3c955eb,DEPAY,DePay,18,,DeFi payment protocol token
+0xfca59cd816ab1ead66534d82bc21e7515ce441cf,RARB,Rarible,18,,NFT marketplace governance token 

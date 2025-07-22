@@ -133,7 +133,7 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 	}
 
 	log.Printf("ExplainTransaction succeeded, explanation summary length: %d chars", len(explanation.Summary))
-	log.Printf("Explanation has %d transfers, %d effects", len(explanation.Transfers), len(explanation.Effects))
+	log.Printf("Explanation has %d transfers", len(explanation.Transfers))
 
 	// Return the explanation
 	w.Header().Set("Content-Type", "application/json")

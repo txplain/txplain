@@ -1,0 +1,14 @@
+address,name,type,description,explorer_url
+0x0000000000000000000000000000000000000000,Null Address,system,The zero address used for token burning and minting,
+0x000000000000000000000000000000000000dead,Dead Address,system,Common address for token burning,
+0x7a250d5630b4cf539739df2c5dacb4c659f2488d,Uniswap V2 Router,dex,Main router contract for Uniswap V2,https://etherscan.io/address/0x7a250d5630b4cf539739df2c5dacb4c659f2488d
+0xe592427a0aece92de3edee1f18e0157c05861564,Uniswap V3 Router,dex,Main router contract for Uniswap V3,https://etherscan.io/address/0xe592427a0aece92de3edee1f18e0157c05861564
+0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45,Uniswap V3 Router 2,dex,Updated router contract for Uniswap V3,https://etherscan.io/address/0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45
+0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f,SushiSwap Router,dex,Main router contract for SushiSwap,https://etherscan.io/address/0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f
+0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad,Uniswap V3 Universal Router,dex,Universal router for Uniswap protocol,https://etherscan.io/address/0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad
+0x1111111254fb6c44bac0bed2854e76f90643097d,1inch Router v4,aggregator,Aggregator router for 1inch v4,https://etherscan.io/address/0x1111111254fb6c44bac0bed2854e76f90643097d
+0x1111111254eeb25477b68fb85ed929f73a960582,1inch Router v5,aggregator,Aggregator router for 1inch v5,https://etherscan.io/address/0x1111111254eeb25477b68fb85ed929f73a960582
+0x111111125434b319222cdbf8c261674adb56f3ae,1inch Router v6,aggregator,Aggregator router for 1inch v6,https://etherscan.io/address/0x111111125434b319222cdbf8c261674adb56f3ae
+0x5aa3393e361c2eb342408559309b3e873cd876d6,Binance Hot Wallet,cex,Binance exchange hot wallet,https://etherscan.io/address/0x5aa3393e361c2eb342408559309b3e873cd876d6
+0xdfd5293d8e347dfe59e90efd55b2956a1343963d,Binance Cold Wallet,cex,Binance exchange cold storage,https://etherscan.io/address/0xdfd5293d8e347dfe59e90efd55b2956a1343963d
+0x8eb8a3b98659cce290402893d0123abb75e3ab28,Ethereum Name Service,service,ENS registry contract,https://etherscan.io/address/0x8eb8a3b98659cce290402893d0123abb75e3ab28 
