@@ -164,7 +164,7 @@ function App() {
           />
 
           {/* Progress Display */}
-          {(loading || components.length > 0) && (
+          {(loading || components.length > 0 || result !== null) && (
             <ProgressDisplay 
               components={components} 
               isComplete={!loading && result !== null}

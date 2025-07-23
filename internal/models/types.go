@@ -491,7 +491,7 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 		// This is the first time we see this component, record start time
 		pt.startTimes[id] = now
 		startTime = &now
-		duration = 0 // No duration yet for new components
+		duration = 0 // Start with 0 duration for new components
 	} else {
 		// Component already exists, use existing start time
 		existingStart := pt.startTimes[id]
@@ -499,12 +499,13 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 
 		// Calculate duration for all components based on elapsed time
 		duration = now.Sub(existingStart).Milliseconds()
+	}
 
-		// Ensure minimum duration of 1ms for any component that has been running
-		// to avoid displaying "Starting..." for components that have actually started
-		if duration == 0 && (status == ComponentStatusRunning || status == ComponentStatusFinished || status == ComponentStatusError) {
-			duration = 1
-		}
+	// Ensure minimum duration of 1ms for ANY component that has been running
+	// to avoid displaying "Starting..." for components that have actually started
+	// This applies to both new and existing components with active status
+	if duration == 0 && (status == ComponentStatusRunning || status == ComponentStatusFinished || status == ComponentStatusError) {
+		duration = 1
 	}
 
 	component := &ComponentUpdate{

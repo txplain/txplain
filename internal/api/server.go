@@ -225,46 +225,6 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	fmt.Fprintf(w, ": ready-for-events-%d %s\n\n", time.Now().UnixNano(), largePadding)
 	forceFlushWithPadding()
 
-	// Send immediate feedback to user with large data payload
-	requestStartTime := time.Now()
-	immediateEvent := models.ProgressEvent{
-		Type:      "component_update",
-		Timestamp: requestStartTime,
-		Component: &models.ComponentUpdate{
-			ID:          "request_received",
-			Group:       models.ComponentGroupData,
-			Title:       "Request Received",
-			Status:      models.ComponentStatusRunning,
-			Description: fmt.Sprintf("Processing transaction %s...", request.TxHash[:10]+"..."),
-			StartTime:   &requestStartTime,
-			Timestamp:   requestStartTime,
-		},
-	}
-
-	eventData, _ := json.Marshal(immediateEvent)
-	fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", eventData)
-	forceFlushWithPadding()
-
-	// Send pipeline initialization update immediately with padding
-	pipelineStartTime := time.Now()
-	pipelineStartEvent := models.ProgressEvent{
-		Type:      "component_update",
-		Timestamp: pipelineStartTime,
-		Component: &models.ComponentUpdate{
-			ID:          "pipeline_setup",
-			Group:       models.ComponentGroupData,
-			Title:       "Setting up processing pipeline",
-			Status:      models.ComponentStatusRunning,
-			Description: "Initializing analysis tools...",
-			StartTime:   &pipelineStartTime,
-			Timestamp:   pipelineStartTime,
-		},
-	}
-
-	pipelineData, _ := json.Marshal(pipelineStartEvent)
-	fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", pipelineData)
-	forceFlushWithPadding()
-
 	// Create unbuffered progress channel
 	progressChan := make(chan models.ProgressEvent)
 
@@ -311,8 +271,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		}
 	}()
 
-	// Stream progress updates with immediate flushing and server-side logging
-	firstRealUpdate := true
+	// Stream progress updates with immediate flushing
 	eventCount := 0
 
 	for event := range progressChan {
@@ -321,58 +280,6 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 
 		// Log server-side timing for debugging
 		// log.Printf("[SSE-DEBUG] Sending event %d at %v: %s", eventCount, serverTime, event.Type)
-
-		// Mark request_received and pipeline_setup as complete on first real component update
-		if firstRealUpdate && event.Type == "component_update" && event.Component != nil &&
-			event.Component.ID != "request_received" && event.Component.ID != "pipeline_setup" {
-
-			// Calculate durations
-			currentTime := time.Now()
-			requestDuration := currentTime.Sub(requestStartTime)
-			pipelineDuration := currentTime.Sub(pipelineStartTime)
-
-			// Send completion for request_received with immediate flush
-			requestCompleteEvent := models.ProgressEvent{
-				Type:      "component_update",
-				Timestamp: currentTime,
-				Component: &models.ComponentUpdate{
-					ID:          "request_received",
-					Group:       models.ComponentGroupData,
-					Title:       "Request Received",
-					Status:      models.ComponentStatusFinished,
-					Description: "Transaction processing started",
-					StartTime:   &requestStartTime,
-					Timestamp:   currentTime,
-					Duration:    int64(requestDuration.Nanoseconds() / 1000000), // Convert to milliseconds
-				},
-			}
-
-			requestCompleteData, _ := json.Marshal(requestCompleteEvent)
-			fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", requestCompleteData)
-			forceFlushWithPadding()
-
-			// Complete pipeline setup with immediate flush
-			pipelineCompleteEvent := models.ProgressEvent{
-				Type:      "component_update",
-				Timestamp: currentTime,
-				Component: &models.ComponentUpdate{
-					ID:          "pipeline_setup",
-					Group:       models.ComponentGroupData,
-					Title:       "Setting up processing pipeline",
-					Status:      models.ComponentStatusFinished,
-					Description: "Processing pipeline ready",
-					StartTime:   &pipelineStartTime,
-					Timestamp:   currentTime,
-					Duration:    int64(pipelineDuration.Nanoseconds() / 1000000) + 1, // Convert to milliseconds
-				},
-			}
-
-			pipelineCompleteData, _ := json.Marshal(pipelineCompleteEvent)
-			fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", pipelineCompleteData)
-			forceFlushWithPadding()
-
-			firstRealUpdate = false
-		}
 
 		eventData, err := json.Marshal(event)
 		if err != nil {

@@ -70,6 +70,37 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 		return fmt.Errorf("missing raw_data in baggage")
 	}
 
+	// Get network ID and transaction hash for caching processed results
+	networkID := int64(1) // Default to Ethereum
+	if nid, ok := rawData["network_id"].(float64); ok {
+		networkID = int64(nid)
+	}
+	
+	txHash, ok := rawData["tx_hash"].(string)
+	if !ok {
+		return fmt.Errorf("missing transaction hash in raw_data")
+	}
+
+	// Check cache for processed trace decoding results
+	if t.cache != nil {
+		cacheKey := fmt.Sprintf(TraceDecodingKeyPattern, networkID, strings.ToLower(txHash))
+		if t.verbose {
+			fmt.Printf("🔍 Checking cache for decoded trace with key: %s\n", cacheKey)
+		}
+
+		var cachedCalls []models.Call
+		if err := t.cache.GetJSON(ctx, cacheKey, &cachedCalls); err == nil {
+			if t.verbose {
+				fmt.Printf("✅ Found cached decoded trace: %d calls\n", len(cachedCalls))
+				fmt.Println(strings.Repeat("🔍", 60) + "\n")
+			}
+			baggage["calls"] = cachedCalls
+			return nil
+		} else if t.verbose {
+			fmt.Printf("Cache miss for decoded trace %s: %v\n", txHash, err)
+		}
+	}
+
 	traceData, ok := rawData["trace"].(map[string]interface{})
 	if !ok || traceData == nil {
 		if t.verbose {
@@ -77,20 +108,21 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 			fmt.Println(strings.Repeat("🔍", 60) + "\n")
 		}
 		// No trace data available, set empty calls in baggage
-		baggage["calls"] = []models.Call{}
+		emptyCalls := []models.Call{}
+		baggage["calls"] = emptyCalls
+		
+		// Cache empty result to avoid repeated processing
+		if t.cache != nil {
+			cacheKey := fmt.Sprintf(TraceDecodingKeyPattern, networkID, strings.ToLower(txHash))
+			if err := t.cache.SetJSON(ctx, cacheKey, emptyCalls, &TraceDecodingTTLDuration); err != nil && t.verbose {
+				fmt.Printf("⚠️ Failed to cache empty trace result: %v\n", err)
+			}
+		}
 		return nil
 	}
 
 	if t.verbose {
 		fmt.Println("📊 Found trace data to decode")
-	}
-
-	networkID := int64(1) // Default to Ethereum
-	if nid, ok := rawData["network_id"].(float64); ok {
-		networkID = int64(nid)
-	}
-
-	if t.verbose {
 		fmt.Printf("🌐 Network ID: %d\n", networkID)
 	}
 
@@ -156,6 +188,15 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 
 	// Store calls in baggage for transaction explainer
 	baggage["calls"] = calls
+
+	// Cache the processed trace calls
+	if t.cache != nil {
+		cacheKey := fmt.Sprintf(TraceDecodingKeyPattern, networkID, strings.ToLower(txHash))
+		if err := t.cache.SetJSON(ctx, cacheKey, calls, &TraceDecodingTTLDuration); err != nil && t.verbose {
+			fmt.Printf("⚠️ Failed to cache decoded trace result: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
