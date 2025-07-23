@@ -73,6 +73,37 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		return fmt.Errorf("missing raw_data in baggage")
 	}
 
+	// Get network ID and transaction hash for caching processed results
+	networkID := int64(1) // Default to Ethereum
+	if nid, ok := rawData["network_id"].(float64); ok {
+		networkID = int64(nid)
+	}
+	
+	txHash, ok := rawData["tx_hash"].(string)
+	if !ok {
+		return fmt.Errorf("missing transaction hash in raw_data")
+	}
+
+	// Check cache for processed log decoding results
+	if l.cache != nil {
+		cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
+		if l.verbose {
+			fmt.Printf("🔍 Checking cache for decoded logs with key: %s\n", cacheKey)
+		}
+
+		var cachedEvents []models.Event
+		if err := l.cache.GetJSON(ctx, cacheKey, &cachedEvents); err == nil {
+			if l.verbose {
+				fmt.Printf("✅ Found cached decoded logs: %d events\n", len(cachedEvents))
+				fmt.Println(strings.Repeat("📜", 60) + "\n")
+			}
+			baggage["events"] = cachedEvents
+			return nil
+		} else if l.verbose {
+			fmt.Printf("Cache miss for decoded logs %s: %v\n", txHash, err)
+		}
+	}
+
 	logsData, ok := rawData["logs"].([]interface{})
 	if !ok || logsData == nil {
 		if l.verbose {
@@ -80,20 +111,21 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 			fmt.Println(strings.Repeat("📜", 60) + "\n")
 		}
 		// No logs, add empty events to baggage
-		baggage["events"] = []models.Event{}
+		emptyEvents := []models.Event{}
+		baggage["events"] = emptyEvents
+		
+		// Cache empty result to avoid repeated processing
+		if l.cache != nil {
+			cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
+			if err := l.cache.SetJSON(ctx, cacheKey, emptyEvents, &LogDecodingTTLDuration); err != nil && l.verbose {
+				fmt.Printf("⚠️ Failed to cache empty decoded logs: %v\n", err)
+			}
+		}
 		return nil
 	}
 
 	if l.verbose {
 		fmt.Printf("📊 Found %d logs to decode\n", len(logsData))
-	}
-
-	networkID := int64(1) // Default to Ethereum
-	if nid, ok := rawData["network_id"].(float64); ok {
-		networkID = int64(nid)
-	}
-
-	if l.verbose {
 		fmt.Printf("🌐 Network ID: %d\n", networkID)
 	}
 
@@ -155,6 +187,15 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 
 	// Add decoded events to baggage
 	baggage["events"] = events
+
+	// Cache the processed results
+	if l.cache != nil {
+		cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
+		if err := l.cache.SetJSON(ctx, cacheKey, events, &LogDecodingTTLDuration); err != nil && l.verbose {
+			fmt.Printf("⚠️ Failed to cache decoded logs: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
