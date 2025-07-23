@@ -275,18 +275,19 @@ func (t *TraceDecoder) decodeArbitrumTrace(ctx context.Context, trace map[string
 	return nil
 }
 
-// parseArgumentsBasic provides basic argument parsing for common methods
+// parseArgumentsBasic provides generic argument parsing 
 func (t *TraceDecoder) parseArgumentsBasic(methodName, argData string, args map[string]interface{}) {
-	switch methodName {
-	case "transfer":
-		if len(argData) >= 128 {
-			args["to"] = "0x" + argData[24:64]
-			args["amount"] = "0x" + argData[64:128]
-		}
-	case "approve":
-		if len(argData) >= 128 {
-			args["spender"] = "0x" + argData[24:64]
-			args["amount"] = "0x" + argData[64:128]
+	// Generic parsing - extract standard 32-byte parameters
+	if len(argData) >= 64 {
+		// Most methods have address/amount patterns - parse generically
+		paramCount := len(argData) / 64
+		for i := 0; i < paramCount && i < 4; i++ { // Limit to first 4 params to avoid noise
+			start := i * 64
+			end := start + 64
+			if end <= len(argData) {
+				paramHex := "0x" + argData[start:end]
+				args[fmt.Sprintf("param_%d", i)] = paramHex
+			}
 		}
 	}
 }

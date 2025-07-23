@@ -120,22 +120,13 @@ func (n *NFTDecoder) extractNFTTransfers(ctx context.Context, events []models.Ev
 	var transfers []NFTTransfer
 
 	for _, event := range events {
-		switch event.Name {
-		case "Transfer":
-			// Handle ERC721 Transfer events
-			if transfer := n.parseERC721Transfer(event); transfer != nil {
-				transfers = append(transfers, *transfer)
-			}
-		case "TransferSingle":
-			// Handle ERC1155 single transfer events
-			if transfer := n.parseERC1155TransferSingle(event); transfer != nil {
-				transfers = append(transfers, *transfer)
-			}
-		case "TransferBatch":
-			// Handle ERC1155 batch transfer events
-			if batchTransfers := n.parseERC1155TransferBatch(event); len(batchTransfers) > 0 {
-				transfers = append(transfers, batchTransfers...)
-			}
+		// Try to parse as different NFT transfer types based on parameters, not hardcoded names
+		if transfer := n.parseERC721Transfer(event); transfer != nil {
+			transfers = append(transfers, *transfer)
+		} else if transfer := n.parseERC1155TransferSingle(event); transfer != nil {
+			transfers = append(transfers, *transfer)
+		} else if batchTransfers := n.parseERC1155TransferBatch(event); len(batchTransfers) > 0 {
+			transfers = append(transfers, batchTransfers...)
 		}
 	}
 
@@ -148,6 +139,12 @@ func (n *NFTDecoder) parseERC721Transfer(event models.Event) *NFTTransfer {
 		return nil
 	}
 
+	// ENHANCED VALIDATION: Check event name and signature first
+	// Only process events that are clearly NFT transfers
+	if !n.isValidNFTTransferEvent(event, "ERC721") {
+		return nil
+	}
+
 	// Check if this is an NFT transfer (has tokenId parameter)
 	tokenID, hasTokenID := event.Parameters["tokenId"].(string)
 	if !hasTokenID {
@@ -157,9 +154,19 @@ func (n *NFTDecoder) parseERC721Transfer(event models.Event) *NFTTransfer {
 	from, _ := event.Parameters["from"].(string)
 	to, _ := event.Parameters["to"].(string)
 
+	// Additional validation: ensure we have proper from/to addresses
+	if from == "" || to == "" {
+		return nil
+	}
+
 	// Clean addresses (remove padding)
 	from = n.cleanAddress(from)
 	to = n.cleanAddress(to)
+
+	// Final validation: ensure cleaned addresses are valid
+	if !n.isValidAddress(from) || !n.isValidAddress(to) {
+		return nil
+	}
 
 	return &NFTTransfer{
 		Type:     "ERC721",
@@ -177,16 +184,31 @@ func (n *NFTDecoder) parseERC1155TransferSingle(event models.Event) *NFTTransfer
 		return nil
 	}
 
+	// ENHANCED VALIDATION: Check event name and signature first
+	if !n.isValidNFTTransferEvent(event, "ERC1155") {
+		return nil
+	}
+
 	from, _ := event.Parameters["from"].(string)
 	to, _ := event.Parameters["to"].(string)
 	tokenID, _ := event.Parameters["id"].(string)
 	amount, _ := event.Parameters["value"].(string)
+
+	// Additional validation: ensure we have all required parameters
+	if from == "" || to == "" || tokenID == "" || amount == "" {
+		return nil
+	}
 
 	// Clean addresses and token data
 	from = n.cleanAddress(from)
 	to = n.cleanAddress(to)
 	tokenID = n.cleanTokenID(tokenID)
 	amount = n.formatAmount(amount)
+
+	// Final validation: ensure cleaned addresses are valid
+	if !n.isValidAddress(from) || !n.isValidAddress(to) {
+		return nil
+	}
 
 	return &NFTTransfer{
 		Type:     "ERC1155",
@@ -204,12 +226,27 @@ func (n *NFTDecoder) parseERC1155TransferBatch(event models.Event) []NFTTransfer
 		return nil
 	}
 
+	// ENHANCED VALIDATION: Check event name and signature first
+	if !n.isValidNFTTransferEvent(event, "ERC1155_BATCH") {
+		return nil
+	}
+
 	from, _ := event.Parameters["from"].(string)
 	to, _ := event.Parameters["to"].(string)
+	
+	// Additional validation: ensure we have required parameters
+	if from == "" || to == "" {
+		return nil
+	}
 	
 	// Clean addresses
 	from = n.cleanAddress(from)
 	to = n.cleanAddress(to)
+
+	// Final validation: ensure cleaned addresses are valid
+	if !n.isValidAddress(from) || !n.isValidAddress(to) {
+		return nil
+	}
 
 	// For batch transfers, we'd need to parse arrays of IDs and values
 	// This is complex and would require proper ABI decoding
@@ -224,6 +261,85 @@ func (n *NFTDecoder) parseERC1155TransferBatch(event models.Event) []NFTTransfer
 			Amount:   "multiple",
 		},
 	}
+}
+
+// isValidNFTTransferEvent validates that an event is actually an NFT transfer
+func (n *NFTDecoder) isValidNFTTransferEvent(event models.Event, expectedType string) bool {
+	// Known NFT transfer event signatures
+	knownNFTSignatures := map[string]string{
+		// ERC721/ERC20 Transfer: Transfer(address indexed from, address indexed to, uint256 value/tokenId)
+		"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef": "Transfer",
+		
+		// ERC1155 TransferSingle: TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)
+		"0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62": "TransferSingle",
+		
+		// ERC1155 TransferBatch: TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)
+		"0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb": "TransferBatch",
+	}
+
+	// Check if event name matches expected NFT transfer events
+	eventName := event.Name
+	if eventName == "" {
+		return false
+	}
+
+	// For events resolved by name (from ABI), check name directly
+	switch expectedType {
+	case "ERC721":
+		if eventName != "Transfer" {
+			return false
+		}
+		// For ERC721 Transfer, we need tokenId parameter to distinguish from ERC20
+		if _, hasTokenID := event.Parameters["tokenId"]; !hasTokenID {
+			return false
+		}
+	case "ERC1155":
+		if eventName != "TransferSingle" {
+			return false
+		}
+		// For ERC1155, we need id and value parameters
+		if _, hasID := event.Parameters["id"]; !hasID {
+			return false
+		}
+		if _, hasValue := event.Parameters["value"]; !hasValue {
+			return false
+		}
+	case "ERC1155_BATCH":
+		if eventName != "TransferBatch" {
+			return false
+		}
+	}
+
+	// For events resolved by signature hash, check against known signatures
+	if strings.HasPrefix(eventName, "0x") {
+		// This is a signature hash, check if it's a known NFT transfer signature
+		if _, isKnownNFT := knownNFTSignatures[eventName]; !isKnownNFT {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isValidAddress validates that a string is a valid Ethereum address
+func (n *NFTDecoder) isValidAddress(address string) bool {
+	if address == "" {
+		return false
+	}
+	
+	// Must start with 0x and be exactly 42 characters (0x + 40 hex chars)
+	if !strings.HasPrefix(address, "0x") || len(address) != 42 {
+		return false
+	}
+	
+	// Check if the remaining characters are valid hex
+	for _, char := range address[2:] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	
+	return true
 }
 
 // cleanAddress removes leading zeros from address padding
