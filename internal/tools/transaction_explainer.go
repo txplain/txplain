@@ -522,11 +522,22 @@ Event #%d:
 
 	// Add raw transaction context if available
 	if rawData != nil {
+		prompt += `
+
+### Transaction Context:`
+		
 		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			// Always include transaction sender prominently
+			if from, ok := receipt["from"].(string); ok {
+				prompt += fmt.Sprintf(`
+- TRANSACTION SENDER: %s (the address that initiated this transaction)`, from)
+			}
+			if to, ok := receipt["to"].(string); ok {
+				prompt += fmt.Sprintf(`
+- Contract Called: %s`, to)
+			}
 			if gasUsed, ok := receipt["gasUsed"].(string); ok {
 				prompt += fmt.Sprintf(`
-
-### Transaction Context:
 - Total Gas Used: %s`, gasUsed)
 			}
 			if status, ok := receipt["status"].(string); ok {
@@ -548,7 +559,9 @@ Event #%d:
 
 ## Instructions:
 
-Write a single, short sentence (under 30 words) describing the main action. 
+Write a single, short sentence (under 30 words) describing the main action.
+
+🔥 MANDATORY ENS REQUIREMENT: If ANY address in the transaction has an ENS name (shown in "ENS Names Resolved" or "Address Formatting Guide" sections), you MUST include it in the format "0x1234...5678 (ens-name.eth)" in your explanation. This is non-negotiable. 
 
 CRITICAL SPECIFICITY REQUIREMENTS:
 - NEVER use vague terms like "multiple", "several", "various", "some", "many" 
@@ -648,6 +661,21 @@ IMPORTANT:
 - CRITICAL: Always include gas fees and transaction fees from the "Fee Summary" section
 - Gas fees should be shown in USD format: "$0.85 gas", "$12.50 gas"
 
+EVENT PARAMETER USAGE:
+- Use the "Event Parameter Details" section to understand what each event parameter represents
+- When events have meaningful parameter names (user, role, enabled, etc.), use them to provide specific details
+- Always prioritize the transaction sender when describing WHO initiated the action
+- For management/governance events, clearly identify both the initiator and the affected party
+- Examples: "Admin 0x1234...5678 enabled permissions for user 0x9876...4321", "0x1234...5678 (dao.eth) updated settings"
+
+CRITICAL ENS NAME REQUIREMENTS:
+- MANDATORY: Always include ENS names in the final explanation text when available
+- Use the format: "0x1234...5678 (ens-name.eth)" for addresses with ENS names
+- Check the "ENS Names Resolved" and "Address Formatting Guide" sections for available ENS names
+- NEVER use just the shortened address if an ENS name exists - always include both
+- Examples: "0x7e97...63c7 (cocytus.eth) updated role for user 0x1234...5678 (alice.eth)"
+- This applies to ALL addresses in the explanation: transaction sender, event parameters, contract addresses
+
 PROTOCOL USAGE:
 - Always include specific protocol/aggregator names when available from the "Protocol Detection" section
 - Use specific protocol names like "1inch v6", "Uniswap v3", "Curve", etc. instead of generic terms
@@ -674,23 +702,18 @@ EXPLICIT RECIPIENT REQUIREMENTS:
 - Format: "5 BoredApes NFTs to 0x1111...2222, 3 to 0x3333...4444, and 2 to 0x5555...6666"
 - Use the "Recipient Summary" section to get exact recipient addresses and amounts
 
-Examples:
-- "Minted 3,226x PAYKEN tokens (ID 3226) to 0x6686...1f28 and 3,226x to 0xd53c...eb47 for 30.32 USDC (3.55 USDC fees to 3 recipients + $0.18 gas)"
-- "Minted 6,452x PAYKEN tokens for 30.32 USDC: 3,226x to 0x6686...1f28 and 3,226x to 0xd53c...eb47 (fees to 0x0705...64e0 + $0.25 gas)"
-- "Purchased 2x NFT #3226 from PAYKEN collection for 30.32 USDC + $2.15 gas to 0x1234...5678"
-- "Minted 5 BoredApes NFTs to 0x1111...2222 for 0.5 ETH + $45.80 gas"
-- "Transferred 43.94 ATH ($1.45 USD) + $0.02 gas from one wallet to another"
-- "Swapped 1 ETH for 2,485.75 USDT ($2,485.75 USD) on Uniswap v3 + $15.20 gas"  
-- "Swapped 100 USDT for 57,071 GrowAI tokens via 1inch v6 aggregator + $3.45 gas"
-- "Swapped 500 USDC for 0.15 WBTC via Paraswap aggregator + $8.20 gas"
-- "Swapped 50 DAI for 1,250 USDT on Uniswap v3 + $4.60 gas"
-- "Approved Uniswap v2 Router to spend unlimited DAI + $8.90 gas"
-- "Transferred NFT #1234 from CryptoPunks collection + $12.50 gas"
-- "Received 2 ERC-1155 tokens (ID 3226) from Tappers Kingdom + $1.25 gas"
-- "Transferred 100 USDC from 0x1234...5678 (alice.eth) to 0x9876...4321 (bob.eth) + $0.85 gas"
-- "Swapped 0.5 ETH for 1,250 USDC on Curve (0.1 ETH fees to 0x1234...5678) + $25.50 gas"
-- "Transferred 1,000 USDT paying 5 USDT fees to 0x9876...4321 via Paraswap + $2.30 gas"
-- "Added liquidity to Uniswap v3 ETH/USDC pool + $18.75 gas"
+Examples (NOTICE: Always include ENS names when available):
+- "0x7e97...63c7 (cocytus.eth) updated role 7 to enabled for user 0x1234...5678 (alice.eth) + $0.85 gas"
+- "0x1234...5678 (admin.eth) granted admin permissions to 0x9876...4321 (user.eth) + $1.20 gas"
+- "0x5678...1234 (dao.eth) revoked role 3 from user 0x9876...4321 (manager.eth) + $2.10 gas"
+- "Minted 3,226x PAYKEN tokens to 0x6686...1f28 (collector.eth) and 3,226x to 0xd53c...eb47 for 30.32 USDC + $0.18 gas"
+- "0x1234...5678 (alice.eth) transferred 100 USDC to 0x9876...4321 (bob.eth) + $0.85 gas"
+- "0x2468...1357 (trader.eth) swapped 1 ETH for 2,485.75 USDT on Uniswap v3 + $15.20 gas"
+- "0x9876...4321 (defi-user.eth) approved Uniswap Router to spend unlimited DAI + $8.90 gas"
+- "Transferred NFT #1234 from 0x1111...2222 (seller.eth) to 0x3333...4444 (buyer.eth) + $12.50 gas"
+- "0x5555...6666 (liquidity-provider.eth) added liquidity to Uniswap ETH/USDC pool + $18.75 gas"
+
+CRITICAL: In ALL examples above, notice how ENS names are ALWAYS included when addresses appear. This is MANDATORY - never omit ENS names from the final explanation.
 
 Be specific about amounts, tokens, protocols, and main action. No explanations or warnings.`
 

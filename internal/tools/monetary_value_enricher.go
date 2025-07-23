@@ -548,13 +548,14 @@ func (m *MonetaryValueEnricher) hexToUint64(hexStr string) uint64 {
 func (m *MonetaryValueEnricher) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
 	// Get transfers from baggage
 	transfers, ok := baggage["transfers"].([]models.TokenTransfer)
-	if !ok || len(transfers) == 0 {
-		return ""
-	}
-
-	// Build enriched transfers context
+	
+	// Build context parts (gas fees should always be included if available)
 	var contextParts []string
-	contextParts = append(contextParts, "### Enriched Token Transfers:")
+	
+	// Only add transfer context if transfers exist
+	if ok && len(transfers) > 0 {
+		// Build enriched transfers context
+		contextParts = append(contextParts, "### Enriched Token Transfers:")
 
 	for i, transfer := range transfers {
 		transferInfo := fmt.Sprintf("\n\nTransfer #%d:", i+1)
@@ -743,11 +744,21 @@ func (m *MonetaryValueEnricher) GetPromptContext(ctx context.Context, baggage ma
 			contextParts = append(contextParts, "\n- Pattern suggests a SWAP transaction (user exchanges one token for another)")
 		}
 	}
+	
+	} // End of transfer context block
 
-	// Add transaction fees if available
+	// Add transaction fees if available (regardless of whether transfers exist)
 	if gasFeeUSD := m.getGasFeeInUSD(baggage); gasFeeUSD != "" {
 		contextParts = append(contextParts, "\n\n### Transaction Fees:")
 		contextParts = append(contextParts, fmt.Sprintf("\n- Gas Fee: $%s USD", gasFeeUSD))
+		
+		// Add fee summary for LLM when only gas fees are present
+		if len(transfers) == 0 || !ok {
+			contextParts = append(contextParts, "\n\n### Fee Summary for Final Explanation:")
+			contextParts = append(contextParts, "\n- CRITICAL: Always include gas fees in the final explanation")
+			contextParts = append(contextParts, fmt.Sprintf("\n- Gas fees: $%s USD", gasFeeUSD))
+			contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"[action] + $%s gas\"", gasFeeUSD))
+		}
 	}
 
 	return strings.Join(contextParts, "")
@@ -1020,6 +1031,11 @@ func (m *MonetaryValueEnricher) calculateGasFeeUSD(baggage map[string]interface{
 	receipt, ok := rawData["receipt"].(map[string]interface{})
 	if !ok {
 		return ""
+	}
+	
+	// First check if gas_fee_usd is already calculated (from enrichRawData)
+	if gasFeeUSD, ok := receipt["gas_fee_usd"].(string); ok && gasFeeUSD != "" {
+		return gasFeeUSD
 	}
 	
 	gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
@@ -1350,6 +1366,59 @@ func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggag
 				})
 			}
 		}
+	}
+
+	// Add gas fee annotation context if available
+	if gasFeeUSD := m.getGasFeeInUSD(baggage); gasFeeUSD != "" {
+		// Get raw transaction data to build detailed gas fee tooltip
+		var gasFeeTooltip string
+		if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+			if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+				tooltipRows := []string{
+					fmt.Sprintf("<tr><td><strong>Gas Fee:</strong></td><td>$%s USD</td></tr>", gasFeeUSD),
+				}
+				
+				// Add native gas amount if available
+				if gasFeeNative, ok := receipt["gas_fee_native"].(string); ok {
+					networkID := int64(1) // Default fallback
+					if nid, ok := rawData["network_id"].(float64); ok {
+						networkID = int64(nid)
+					}
+					nativeSymbol := m.getNativeTokenSymbol(networkID)
+					if nativeSymbol != "" {
+						tooltipRows = append(tooltipRows, fmt.Sprintf("<tr><td><strong>Native Amount:</strong></td><td>%s %s</td></tr>", gasFeeNative, nativeSymbol))
+					}
+				}
+				
+				// Add gas used and price if available
+				if gasUsed, ok := receipt["gasUsed"].(string); ok {
+					if gasUsedInt := m.hexToUint64(gasUsed); gasUsedInt > 0 {
+						tooltipRows = append(tooltipRows, fmt.Sprintf("<tr><td><strong>Gas Used:</strong></td><td>%s</td></tr>", formatNumber(gasUsedInt)))
+					}
+				}
+				
+				if effectiveGasPrice, ok := receipt["effectiveGasPrice"].(string); ok {
+					if gasPriceInt := m.hexToUint64(effectiveGasPrice); gasPriceInt > 0 {
+						gasPriceGwei := float64(gasPriceInt) / 1e9
+						tooltipRows = append(tooltipRows, fmt.Sprintf("<tr><td><strong>Gas Price:</strong></td><td>%.2f Gwei</td></tr>", gasPriceGwei))
+					}
+				}
+				
+				gasFeeTooltip = fmt.Sprintf("<table>%s</table>", strings.Join(tooltipRows, ""))
+			}
+		}
+		
+		// Add gas fee annotation context item
+		annotationContext.AddItem(models.AnnotationContextItem{
+			Type:        "gas_fee",
+			Value:       fmt.Sprintf("$%s", gasFeeUSD),
+			Name:        "Transaction Gas Fee",
+			Description: fmt.Sprintf("Gas fee for this transaction: $%s USD", gasFeeUSD),
+			Metadata: map[string]interface{}{
+				"gas_fee_usd": gasFeeUSD,
+				"tooltip":     gasFeeTooltip,
+			},
+		})
 	}
 
 	return annotationContext

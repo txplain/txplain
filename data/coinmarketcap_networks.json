@@ -1,0 +1,13 @@
+{
+  "networks": {
+    "1": "ethereum",
+    "1285": "moonriver",
+    "137": "polygon",
+    "25": "cronos",
+    "250": "fantom",
+    "42220": "celo",
+    "43114": "avalanche",
+    "56": "binance-smart-chain"
+  },
+  "timestamp": "2025-07-23T12:37:20+02:00"
+}
