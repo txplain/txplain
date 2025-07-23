@@ -1,0 +1,23 @@
+[build]
+# Use Dockerfile for build
+builder = "dockerfile"
+
+# Set build timeout for single-stage optimized build  
+timeout = 1800
+
+[deploy]
+# Health check configuration
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+startCommand = "./main -http"
+
+# Restart policy
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[env]
+# Railway will automatically set PORT, which our app will read
+ENV = "production"
+
+# Runtime optimizations for Railway
+GOMAXPROCS = "2" 

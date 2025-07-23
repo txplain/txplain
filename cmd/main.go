@@ -36,7 +36,7 @@ func main() {
 
 	// Command line flags
 	var (
-		httpAddr      = flag.String("http-addr", ":8080", "HTTP server address")
+		httpAddr      = flag.String("http-addr", "", "HTTP server address (defaults to :8080, or :$PORT if PORT env var is set)")
 		mcpAddr       = flag.String("mcp-addr", ":8081", "MCP server address")
 		openaiKey     = flag.String("openai-key", "", "OpenAI API key (can also be set via OPENAI_API_KEY env var)")
 		coinMarketKey = flag.String("cmc-key", "", "CoinMarketCap API key (can also be set via COINMARKETCAP_API_KEY env var)")
@@ -49,6 +49,15 @@ func main() {
 		networkID     = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
 	)
 	flag.Parse()
+
+	// Handle Railway's PORT environment variable
+	if *httpAddr == "" {
+		if port := os.Getenv("PORT"); port != "" {
+			*httpAddr = ":" + port
+		} else {
+			*httpAddr = ":8080"
+		}
+	}
 
 	// Show version and exit if requested
 	if *showVersion {

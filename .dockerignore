@@ -15,6 +15,8 @@ node_modules/
 # Test files
 *_test.go
 integration_test.go
+**/*_test.go
+testdata/
 
 # Build artifacts
 *.exe
@@ -22,6 +24,8 @@ integration_test.go
 *.so
 *.dylib
 main
+dist/
+build/
 
 # IDE files
 .vscode/
@@ -36,10 +40,24 @@ Thumbs.db
 # Docker files
 Dockerfile
 .dockerignore
+docker-compose.yml
 
 # Logs
 *.log
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
+
+# Coverage files
+*.out
+coverage.txt
+
+# Go build cache
+.cache/
+vendor/
+
+# Web build artifacts (handled by multistage)
+web/dist/
+web/.next/
+web/node_modules/ 
