@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import type { ComponentUpdate, ComponentGroup } from '../types'
 
 interface ProgressDisplayProps {
@@ -9,6 +9,28 @@ interface ProgressDisplayProps {
 const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplete }) => {
   const [isExpanded, setIsExpanded] = useState(true)
   const [liveTimers, setLiveTimers] = useState<Record<string, number>>({})
+  const latestItemRef = useRef<HTMLDivElement>(null)
+  const previousComponentsLengthRef = useRef(0)
+
+  // Auto-scroll to new items when they appear
+  useEffect(() => {
+    const currentLength = components.length
+    const previousLength = previousComponentsLengthRef.current
+
+    // If we have new components and the component is expanded
+    if (currentLength > previousLength && isExpanded && latestItemRef.current) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        latestItemRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'nearest'
+        })
+      }, 100)
+    }
+
+    previousComponentsLengthRef.current = currentLength
+  }, [components.length, isExpanded])
 
   // Auto-collapse when analysis is complete, but keep component visible for exploration
   useEffect(() => {
@@ -264,11 +286,15 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
                       {/* Show running/initiated components first */}
                       {runningComponents
                         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-                        .map((component) => {
+                        .map((component, index) => {
                           const status = statusConfig[component.status]
                           
                           return (
-                            <div key={component.id} className="flex items-center justify-between p-2 bg-white bg-opacity-50 rounded border-l-2 border-blue-400">
+                            <div 
+                              key={component.id} 
+                              ref={index === 0 ? latestItemRef : null} // Add ref to the most recent item
+                              className="flex items-center justify-between p-2 bg-white bg-opacity-50 rounded border-l-2 border-blue-400"
+                            >
                               <div className="flex items-center space-x-3 flex-1 min-w-0">
                                 <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-sm ${status.bgColor}`}>
                                   {status.showSpinner ? (

@@ -163,15 +163,15 @@ func (ag *AnnotationGenerator) generateAnnotationsFromText(ctx context.Context, 
 		fmt.Println()
 	}
 
-	// Call LLM
-	response, err := ag.llm.GenerateContent(ctx, []llms.MessageContent{
+	// Call LLM with retry logic for robustness
+	response, err := CallLLMWithRetry(ctx, ag.llm, []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(prompt),
 			},
 		},
-	})
+	}, ag.verbose)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}

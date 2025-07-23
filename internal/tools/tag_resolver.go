@@ -252,15 +252,15 @@ func (t *TagResolver) identifyTagsWithAI(ctx context.Context, contextData string
 		fmt.Println()
 	}
 
-	// Call LLM
-	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
+	// Call LLM with retry logic for robustness
+	response, err := CallLLMWithRetry(ctx, t.llm, []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(prompt),
 			},
 		},
-	})
+	}, t.verbose)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}

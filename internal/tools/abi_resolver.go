@@ -367,7 +367,7 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 						contractInfo.ParsedABI = parsedABI
 					}
 				}
-				
+
 				// Cache successful result if cache is available
 				if a.cache != nil && contractInfo.ABI != "" {
 					cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
@@ -382,7 +382,7 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 					// Also cache individual function and event signatures for faster lookup
 					a.cacheIndividualSignatures(ctx, contractInfo, networkID)
 				}
-				
+
 				return contractInfo, nil
 			} else {
 				if a.verbose || os.Getenv("DEBUG") == "true" {
@@ -401,7 +401,7 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 						contractInfo.ParsedABI = parsedABI
 					}
 				}
-				
+
 				// Cache successful result if cache is available
 				if a.cache != nil && contractInfo.IsVerified {
 					cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
@@ -416,7 +416,7 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 					// Also cache individual function and event signatures for faster lookup
 					a.cacheIndividualSignatures(ctx, contractInfo, networkID)
 				}
-				
+
 				return contractInfo, nil
 			} else {
 				if a.verbose || os.Getenv("DEBUG") == "true" {
