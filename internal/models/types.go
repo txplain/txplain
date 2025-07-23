@@ -18,6 +18,22 @@ type Network struct {
 	Explorer string `json:"explorer"`
 }
 
+// PublicNetwork represents network info safe for public API responses (excludes RPC URLs)
+type PublicNetwork struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Explorer string `json:"explorer"`
+}
+
+// ToPublic converts a Network to PublicNetwork, removing sensitive RPC URL
+func (n Network) ToPublic() PublicNetwork {
+	return PublicNetwork{
+		ID:       n.ID,
+		Name:     n.Name,
+		Explorer: n.Explorer,
+	}
+}
+
 // SupportedNetworks will be populated from environment variables or defaults
 var SupportedNetworks map[int64]Network
 

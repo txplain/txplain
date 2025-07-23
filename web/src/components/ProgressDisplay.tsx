@@ -107,8 +107,47 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
     }
   }
 
+  // Show initial loading state if no components yet
   if (components.length === 0) {
-    return null
+    return (
+      <div className="bg-white rounded-lg shadow-lg mb-6">
+        <div className="flex items-center justify-between p-4">
+          <div className="flex items-center space-x-3">
+            <h3 className="text-lg font-semibold text-gray-900">Analysis Progress</h3>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mr-1"></div>
+              Starting...
+            </span>
+          </div>
+        </div>
+        <div className="px-4 pb-4 border-t border-gray-100">
+          <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg p-4">
+            <div className="flex items-center mb-2">
+              <div className="w-3 h-3 rounded-full mr-2 bg-blue-500"></div>
+              <h4 className="font-medium text-sm">Initializing Analysis</h4>
+            </div>
+            <div className="flex items-center justify-between p-2 bg-white bg-opacity-50 rounded border-l-2 border-blue-400">
+              <div className="flex items-center space-x-3 flex-1 min-w-0">
+                <div className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-sm bg-blue-100">
+                  <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900">
+                    Preparing to analyze transaction...
+                  </p>
+                  <p className="text-xs text-gray-600">
+                    Setting up processing pipeline
+                  </p>
+                </div>
+              </div>
+              <div className="flex-shrink-0 text-xs text-gray-500">
+                Starting...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   // Calculate summary statistics

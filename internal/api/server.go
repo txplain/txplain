@@ -186,6 +186,28 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Send immediate feedback to user - this shows up instantly!
+	now := time.Now()
+	immediateEvent := models.ProgressEvent{
+		Type:      "component_update",
+		Timestamp: now,
+		Component: &models.ComponentUpdate{
+			ID:          "request_received",
+			Group:       models.ComponentGroupData,
+			Title:       "Request Received",
+			Status:      models.ComponentStatusRunning,
+			Description: fmt.Sprintf("Processing transaction %s...", request.TxHash[:10]+"..."),
+			StartTime:   &now,
+			Timestamp:   now,
+		},
+	}
+
+	eventData, _ := json.Marshal(immediateEvent)
+	fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", eventData)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
 	// Create progress channel
 	progressChan := make(chan models.ProgressEvent, 50)
 
@@ -208,7 +230,34 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	}()
 
 	// Stream progress updates
+	firstRealUpdate := true
 	for event := range progressChan {
+		// Mark request_received as complete on first real component update
+		if firstRealUpdate && event.Type == "component_update" && event.Component != nil && event.Component.ID != "request_received" {
+			// Send completion for request_received
+			requestCompleteEvent := models.ProgressEvent{
+				Type:      "component_update",
+				Timestamp: time.Now(),
+				Component: &models.ComponentUpdate{
+					ID:          "request_received",
+					Group:       models.ComponentGroupData,
+					Title:       "Request Received",
+					Status:      models.ComponentStatusFinished,
+					Description: "Transaction processing started",
+					StartTime:   &now,
+					Timestamp:   time.Now(),
+				},
+			}
+
+			requestCompleteData, _ := json.Marshal(requestCompleteEvent)
+			fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", requestCompleteData)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+
+			firstRealUpdate = false
+		}
+
 		eventData, err := json.Marshal(event)
 		if err != nil {
 			continue // Skip malformed events
@@ -238,7 +287,25 @@ func (s *Server) writeSSEError(w http.ResponseWriter, message string, err error)
 	}
 
 	if err != nil {
-		errorEvent.Error = fmt.Sprintf("%s: %v", message, err)
+		// Log the full error details for debugging (logs are private)
+		log.Printf("SSE Error: %s - %v", message, err)
+
+		// For security, do NOT expose full error details in public SSE responses
+		// Only include sanitized error information
+		var sanitizedError string
+		switch {
+		case strings.Contains(err.Error(), "RPC"):
+			sanitizedError = fmt.Sprintf("%s: Network connectivity issue", message)
+		case strings.Contains(err.Error(), "API"):
+			sanitizedError = fmt.Sprintf("%s: External service error", message)
+		case strings.Contains(err.Error(), "failed to initialize"):
+			sanitizedError = fmt.Sprintf("%s: Service initialization error", message)
+		case strings.Contains(err.Error(), "context"):
+			sanitizedError = fmt.Sprintf("%s: Request timeout", message)
+		default:
+			sanitizedError = fmt.Sprintf("%s: Internal processing error", message)
+		}
+		errorEvent.Error = sanitizedError
 	}
 
 	eventData, _ := json.Marshal(errorEvent)
@@ -253,10 +320,10 @@ func (s *Server) writeSSEError(w http.ResponseWriter, message string, err error)
 func (s *Server) handleGetNetworks(w http.ResponseWriter, r *http.Request) {
 	networks := s.agent.GetSupportedNetworks()
 
-	// Convert to array for better API response
-	var networkList []models.Network
+	// Convert to public network list (excludes sensitive RPC URLs)
+	var networkList []models.PublicNetwork
 	for _, network := range networks {
-		networkList = append(networkList, network)
+		networkList = append(networkList, network.ToPublic())
 	}
 
 	response := map[string]interface{}{
@@ -324,8 +391,24 @@ func (s *Server) writeErrorResponse(w http.ResponseWriter, statusCode int, messa
 	}
 
 	if err != nil {
-		response["details"] = err.Error()
+		// Log the full error details for debugging (logs are private)
 		log.Printf("API Error: %s - %v", message, err)
+
+		// For security, do NOT expose full error details in public API responses
+		// Only include sanitized error information that doesn't leak sensitive data
+		switch {
+		case strings.Contains(err.Error(), "RPC"):
+			response["details"] = "Network connectivity issue"
+		case strings.Contains(err.Error(), "API"):
+			response["details"] = "External service error"
+		case strings.Contains(err.Error(), "failed to initialize"):
+			response["details"] = "Service initialization error"
+		case strings.Contains(err.Error(), "context"):
+			response["details"] = "Request timeout"
+		default:
+			// Generic error message that doesn't leak internal details
+			response["details"] = "Internal processing error"
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

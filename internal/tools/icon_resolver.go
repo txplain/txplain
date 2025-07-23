@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/txplain/txplain/internal/models"
 )
 
 // IconResolver discovers token icons from TrustWallet's GitHub repository
@@ -59,6 +61,9 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 		return nil
 	}
 
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
 	// Clear previous discoveries
 	ir.discoveredIcons = make(map[string]string)
 
@@ -66,8 +71,14 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 		fmt.Printf("IconResolver: Processing %d contract addresses\n", len(contractAddresses))
 	}
 
-	// Process each contract address
-	for _, address := range contractAddresses {
+	// Process each contract address with granular progress updates
+	for i, address := range contractAddresses {
+		// Send progress update for each address being checked
+		if hasProgress {
+			progress := fmt.Sprintf("Checking icon %d of %d: %s", i+1, len(contractAddresses), address[:10]+"...")
+			progressTracker.UpdateComponent("icon_resolver", models.ComponentGroupEnrichment, "Loading Token Icons", models.ComponentStatusRunning, progress)
+		}
+
 		if ir.hasIconInCSV(address) {
 			if ir.verbose {
 				fmt.Printf("IconResolver: %s already has icon in CSV, skipping\n", address)
@@ -88,6 +99,11 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 				if ir.verbose {
 					fmt.Printf("IconResolver: Found icon for %s at %s\n", address, iconURL)
 				}
+				// Send progress update when we find an icon
+				if hasProgress {
+					progress := fmt.Sprintf("Found icon: %s", address[:10]+"...")
+					progressTracker.UpdateComponent("icon_resolver", models.ComponentGroupEnrichment, "Loading Token Icons", models.ComponentStatusRunning, progress)
+				}
 				iconFound = true
 				break
 			}
@@ -99,6 +115,17 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 
 		// Add small delay to be respectful to GitHub
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Send final progress update with results summary
+	if hasProgress {
+		if len(ir.discoveredIcons) > 0 {
+			progress := fmt.Sprintf("Completed: Found %d icons out of %d addresses", len(ir.discoveredIcons), len(contractAddresses))
+			progressTracker.UpdateComponent("icon_resolver", models.ComponentGroupEnrichment, "Loading Token Icons", models.ComponentStatusFinished, progress)
+		} else {
+			progress := fmt.Sprintf("Completed: No new icons found for %d addresses", len(contractAddresses))
+			progressTracker.UpdateComponent("icon_resolver", models.ComponentGroupEnrichment, "Loading Token Icons", models.ComponentStatusFinished, progress)
+		}
 	}
 
 	// Add discovered icons to baggage

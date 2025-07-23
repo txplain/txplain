@@ -315,16 +315,30 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		explanation.Metadata = make(map[string]interface{})
 	}
 
-	// Create a clean copy of baggage without circular references
+	// Create a clean copy of baggage without circular references or sensitive data
 	cleanBaggage := make(map[string]interface{})
 	for key, value := range baggage {
-		// Skip fields that might contain circular references
+		// Skip fields that might contain circular references or sensitive data
 		if key == "explanation" || key == "context_providers" {
 			cleanBaggage[key] = fmt.Sprintf("<%s - excluded to prevent circular reference>", key)
 		} else {
-			cleanBaggage[key] = value
+			// For security, exclude raw RPC responses and potentially sensitive debug data
+			// Only include safe, sanitized metadata for production use
+			switch key {
+			case "raw_data":
+				// Don't include raw blockchain data in metadata - it's large and unnecessary
+				cleanBaggage[key] = "<raw_data - excluded for security and size>"
+			case "rpc_responses", "api_responses", "debug_info":
+				// Exclude any RPC or API responses that might contain endpoint info
+				cleanBaggage[key] = fmt.Sprintf("<%s - excluded for security>", key)
+			default:
+				// Include other metadata but ensure no sensitive data
+				cleanBaggage[key] = value
+			}
 		}
 	}
+	// Only include baggage metadata in non-production environments for debugging
+	// In production, this could potentially leak sensitive information
 	explanation.Metadata["pipeline_baggage"] = cleanBaggage
 
 	fmt.Println("\n" + strings.Repeat("🎉", 40))
@@ -376,7 +390,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Complete the initialization step and start fetching data
 	progressTracker.UpdateComponent("analysis_start", models.ComponentGroupData, "Starting Analysis", models.ComponentStatusFinished, "Analysis initialized successfully")
-	
+
 	// Update progress - fetching transaction data (this is now the first real step)
 	progressTracker.UpdateComponent("fetch_data", models.ComponentGroupData, "Fetching Transaction Data", models.ComponentStatusRunning, "Getting transaction details from blockchain...")
 
@@ -596,7 +610,18 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 		if key == "explanation" || key == "context_providers" || key == "progress_tracker" {
 			cleanBaggage[key] = fmt.Sprintf("<%s - excluded to prevent circular reference>", key)
 		} else {
-			cleanBaggage[key] = value
+			// For security, exclude raw RPC responses and potentially sensitive debug data
+			switch key {
+			case "raw_data":
+				// Don't include raw blockchain data in metadata - it's large and unnecessary
+				cleanBaggage[key] = "<raw_data - excluded for security and size>"
+			case "rpc_responses", "api_responses", "debug_info":
+				// Exclude any RPC or API responses that might contain endpoint info
+				cleanBaggage[key] = fmt.Sprintf("<%s - excluded for security>", key)
+			default:
+				// Include other metadata but ensure no sensitive data
+				cleanBaggage[key] = value
+			}
 		}
 	}
 	explanation.Metadata["pipeline_baggage"] = cleanBaggage

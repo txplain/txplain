@@ -350,29 +350,14 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 
 	// Extract basic transaction info from raw data if available
 	if rawData != nil {
-		if t.verbose {
-			fmt.Printf("🔍 DEBUG: rawData available. Keys: ")
-			for key := range rawData {
-				fmt.Printf("%s ", key)
-			}
-			fmt.Printf("\n")
-		}
-		
 		// Try to get the actual raw transaction data (it might be nested)
 		var actualRawData map[string]interface{}
 		if nestedRawData, ok := rawData["raw_data"].(map[string]interface{}); ok {
 			actualRawData = nestedRawData
-			if t.verbose {
-				fmt.Printf("🔍 DEBUG: Found nested raw_data. Keys: ")
-				for key := range actualRawData {
-					fmt.Printf("%s ", key)
-				}
-				fmt.Printf("\n")
-			}
 		} else {
 			actualRawData = rawData
 		}
-		
+
 		if networkID, ok := actualRawData["network_id"].(float64); ok {
 			result.NetworkID = int64(networkID)
 		}
@@ -382,58 +367,21 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 
 		// Extract transaction details from receipt
 		if receipt, ok := actualRawData["receipt"].(map[string]interface{}); ok {
-			if t.verbose {
-				fmt.Printf("🔍 DEBUG: receipt found as map. Keys: ")
-				for key := range receipt {
-					fmt.Printf("%s ", key)
-				}
-				fmt.Printf("\n")
-			}
 			if gasUsed, ok := receipt["gasUsed"].(string); ok {
-				if t.verbose {
-					fmt.Printf("🔍 DEBUG: Found gasUsed in receipt: %s\n", gasUsed)
-				}
 				if gas, err := strconv.ParseUint(gasUsed[2:], 16, 64); err == nil {
 					result.GasUsed = gas
-					if t.verbose {
-						fmt.Printf("🔍 DEBUG: Parsed gasUsed successfully: %d\n", gas)
-					}
-				} else {
-					if t.verbose {
-						fmt.Printf("🔍 DEBUG: Failed to parse gasUsed: %v\n", err)
-					}
-				}
-			} else {
-				if t.verbose {
-					fmt.Printf("🔍 DEBUG: gasUsed not found in receipt or not a string\n")
 				}
 			}
 			if status, ok := receipt["status"].(string); ok {
 				result.Status = t.formatStatus(status)
 			}
 			if blockNumber, ok := receipt["blockNumber"].(string); ok {
-				if t.verbose {
-					fmt.Printf("🔍 DEBUG: Found blockNumber in receipt: %s\n", blockNumber)
-				}
 				if bn, err := strconv.ParseUint(blockNumber[2:], 16, 64); err == nil {
 					result.BlockNumber = bn
-					if t.verbose {
-						fmt.Printf("🔍 DEBUG: Parsed blockNumber successfully: %d\n", bn)
-					}
-				} else {
-					if t.verbose {
-						fmt.Printf("🔍 DEBUG: Failed to parse blockNumber: %v\n", err)
-					}
-				}
-			} else {
-				if t.verbose {
-					fmt.Printf("🔍 DEBUG: blockNumber not found in receipt or not a string\n")
 				}
 			}
-		} else {
-			if t.verbose {
-				fmt.Printf("🔍 DEBUG: receipt not found in rawData or not a map\n")
-			}
+
+			// Gas fee information is provided by MonetaryValueEnricher in context - no duplication needed
 		}
 	}
 

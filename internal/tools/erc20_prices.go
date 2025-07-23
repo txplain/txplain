@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/txplain/txplain/internal/models"
 )
 
 // ERC20PriceLookup fetches token prices from CoinMarketCap API
@@ -252,6 +254,9 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 		return nil // No token metadata, nothing to price
 	}
 
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
 	if t.verbose {
 		fmt.Printf("📊 Found %d tokens to price\n", len(tokenMetadata))
 
@@ -269,12 +274,32 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	// Look up prices for each token
 	tokenPrices := make(map[string]*TokenPrice)
 	successCount := 0
+	totalToProcess := 0
 
-	// First, check if we need to fetch native token price for gas fees
+	// Count total tokens to process for progress updates
 	needsNativeTokenPrice := t.checkForNativeTokenNeeds(baggage, networkID)
 	if needsNativeTokenPrice {
+		totalToProcess++
+	}
+	for _, metadata := range tokenMetadata {
+		if metadata.Type == "ERC20" || (metadata.Type == "Contract" && metadata.Decimals > 0) {
+			totalToProcess++
+		}
+	}
+
+	currentIndex := 0
+
+	// First, check if we need to fetch native token price for gas fees
+	if needsNativeTokenPrice {
+		currentIndex++
 		nativeSymbol := t.networkMapper.GetNativeTokenSymbol(networkID)
 		if nativeSymbol != "" {
+			// Send progress update for native token pricing
+			if hasProgress {
+				progress := fmt.Sprintf("Fetching native token price (%d/%d): %s", currentIndex, totalToProcess, nativeSymbol)
+				progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
+			}
+
 			if t.verbose {
 				fmt.Printf("   Native %s (gas fees)...", nativeSymbol)
 			}
@@ -306,6 +331,14 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	// Then process regular ERC20 tokens
 	for address, metadata := range tokenMetadata {
 		if metadata.Type == "ERC20" {
+			currentIndex++
+
+			// Send progress update for each ERC20 token
+			if hasProgress {
+				progress := fmt.Sprintf("Fetching ERC20 price (%d/%d): %s", currentIndex, totalToProcess, metadata.Symbol)
+				progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
+			}
+
 			if t.verbose {
 				fmt.Printf("   ERC20 %s (%s)...", metadata.Symbol, address[:10]+"...")
 			}
@@ -335,6 +368,14 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 				fmt.Printf(" ❌ %v\n", err)
 			}
 		} else if metadata.Type == "Contract" && metadata.Decimals > 0 {
+			currentIndex++
+
+			// Send progress update for contract tokens
+			if hasProgress {
+				progress := fmt.Sprintf("Fetching contract price (%d/%d): %s", currentIndex, totalToProcess, address[:10]+"...")
+				progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
+			}
+
 			if t.verbose {
 				fmt.Printf("   Contract %s (has decimals)...", address[:10]+"...")
 			}
@@ -361,6 +402,17 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 			} else if t.verbose {
 				fmt.Printf(" ❌ %v\n", err)
 			}
+		}
+	}
+
+	// Send final progress update with results summary
+	if hasProgress {
+		if successCount > 0 {
+			progress := fmt.Sprintf("Completed: Found prices for %d out of %d tokens", successCount, totalToProcess)
+			progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusFinished, progress)
+		} else {
+			progress := fmt.Sprintf("Completed: No prices found for %d tokens", totalToProcess)
+			progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusFinished, progress)
 		}
 	}
 
