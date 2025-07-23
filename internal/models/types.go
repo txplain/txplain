@@ -410,8 +410,8 @@ type ComponentUpdate struct {
 	Status      ComponentStatus `json:"status"`      // Current status
 	Description string          `json:"description"` // Optional detailed description
 	Timestamp   time.Time       `json:"timestamp"`   // When this update occurred
-	StartTime   *time.Time      `json:"start_time,omitempty"` // When this component started
-	Duration    *int64          `json:"duration_ms,omitempty"` // Duration in milliseconds (only for finished/error)
+	StartTime   *time.Time      `json:"start_time"`  // When this component started (always included)
+	Duration    int64           `json:"duration_ms"` // Duration in milliseconds (0 for running components)
 	Metadata    interface{}     `json:"metadata,omitempty"` // Optional tool-specific data
 }
 
@@ -469,22 +469,20 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 	
 	// Track start time for new components
 	var startTime *time.Time
-	var duration *int64
+	var duration int64
 	
 	if _, exists := pt.startTimes[id]; !exists {
 		// This is the first time we see this component, record start time
 		pt.startTimes[id] = now
 		startTime = &now
+		duration = 0 // No duration yet for new components
 	} else {
 		// Component already exists, use existing start time
 		existingStart := pt.startTimes[id]
 		startTime = &existingStart
 		
-		// Calculate duration for finished/error components
-		if status == ComponentStatusFinished || status == ComponentStatusError {
-			durationMs := now.Sub(existingStart).Milliseconds()
-			duration = &durationMs
-		}
+		// Calculate duration for all components based on elapsed time
+		duration = now.Sub(existingStart).Milliseconds()
 	}
 	
 	component := &ComponentUpdate{

@@ -75,8 +75,8 @@ export interface ComponentUpdate {
   status: ComponentStatus
   description: string
   timestamp: string
-  start_time?: string
-  duration_ms?: number
+  start_time: string | null
+  duration_ms: number
   metadata?: any
 }
 

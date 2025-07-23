@@ -41,7 +41,9 @@ function App() {
         title: 'Starting Analysis', 
         status: 'running',
         description: 'Initializing transaction analysis...',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        start_time: new Date().toISOString(),
+        duration_ms: 0
       }
     ])
 
