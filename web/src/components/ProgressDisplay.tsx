@@ -108,27 +108,14 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
 
   // Helper function to format component duration display using server-calculated durations
   const formatComponentDuration = (component: ComponentUpdate) => {
-    if (component.status === 'running' || component.status === 'initiated') {
-      // For running components, calculate elapsed time from start_time if available
-      if (component.start_time) {
-        const elapsed = Date.now() - new Date(component.start_time).getTime()
-        if (elapsed < 1000) return 'Starting...'
-        return `${(elapsed / 1000).toFixed(1)}s`
-      }
+    // Use server-calculated duration for all components
+    if (component.duration_ms === 0) {
       return 'Starting...'
-    } else if (component.status === 'finished' || component.status === 'error') {
-      // For finished/error components, use server-calculated duration
-      if (component.duration_ms !== undefined) {
-        if (component.duration_ms < 1000) {
-          return `${component.duration_ms}ms`
-        } else {
-          return `${(component.duration_ms / 1000).toFixed(1)}s`
-        }
-      }
-      return 'Done'
+    } else if (component.duration_ms < 1000) {
+      return `${component.duration_ms}ms`
+    } else {
+      return `${(component.duration_ms / 1000).toFixed(1)}s`
     }
-    
-    return ''
   }
 
   return (

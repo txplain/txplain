@@ -1,0 +1,45 @@
+# Git files
+.git
+.gitignore
+
+# Environment files (users should mount their own)
+.env
+
+# Development files
+*.md
+README.md
+
+# Node modules (will be installed during build)
+node_modules/
+
+# Test files
+*_test.go
+integration_test.go
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+main
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp 
