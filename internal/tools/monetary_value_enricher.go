@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,9 @@ func (m *MonetaryValueEnricher) Dependencies() []string {
 
 // Process enriches all monetary values with USD equivalents
 func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Get native token price for gas fee calculations
+	nativeTokenPrice := m.getNativeTokenPrice(ctx, baggage)
+
 	// Get token metadata and prices from baggage
 	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
 	tokenPrices, _ := baggage["token_prices"].(map[string]*TokenPrice)
@@ -57,9 +61,6 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	if !hasMetadata {
 		return nil // Can't enrich without metadata, but prices are optional
 	}
-
-	// Get native token price for gas fee calculations
-	nativeTokenPriceUSD := m.getNativeTokenPrice(ctx, baggage)
 
 	// Enrich transfers with formatted amounts and USD values (if available)
 	if err := m.enrichTransfers(baggage, tokenMetadata, tokenPrices); err != nil {
@@ -72,12 +73,14 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	}
 
 	// Enrich raw data with USD values
-	if err := m.enrichRawData(baggage, nativeTokenPriceUSD); err != nil {
+	if err := m.enrichRawData(baggage, nativeTokenPrice); err != nil {
 		return fmt.Errorf("failed to enrich raw data: %w", err)
 	}
 
 	return nil
 }
+
+
 
 // enrichTransfers enriches transfer objects with formatted amounts and USD values
 func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, tokenMetadata map[string]*TokenMetadata, tokenPrices map[string]*TokenPrice) error {
@@ -86,35 +89,60 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 		return nil
 	}
 
+	// Get network ID for native token detection
+	networkID := int64(1) // Default fallback
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		if nid, ok := rawData["network_id"].(float64); ok {
+			networkID = int64(nid)
+		}
+	}
+
 	var enrichmentDebug []string
 	for i, transfer := range transfers {
 		transferDebug := fmt.Sprintf("Transfer %d (contract: %s)", i, transfer.Contract)
 		
-		// Get token metadata
-		metadata := tokenMetadata[strings.ToLower(transfer.Contract)]
-		if metadata == nil {
-			transferDebug += " - NO METADATA"
-			// Try to create fallback metadata based on transfer patterns
-			metadata = m.createFallbackMetadata(transfer.Contract, transfer.Amount, transfer.Symbol)
-			if metadata == nil {
-				transferDebug += " - FALLBACK FAILED"
-				enrichmentDebug = append(enrichmentDebug, transferDebug)
-				continue
-			} else {
-				transferDebug += fmt.Sprintf(" - FALLBACK CREATED (decimals=%d)", metadata.Decimals)
+		// Check if this is a native token transfer using pattern detection
+		isNativeToken := m.isNativeTokenAddress(transfer.Contract)
+		if isNativeToken {
+			// This is a native token transfer - enrich with native token info
+			nativeSymbol := m.getNativeTokenSymbol(networkID)
+			if nativeSymbol != "" {
+				transfers[i].Symbol = nativeSymbol
+				transfers[i].Name = fmt.Sprintf("%s Native Token", nativeSymbol)
+				transfers[i].Decimals = 18 // Native tokens typically use 18 decimals
+				transfers[i].Type = "ETH" // Use ETH type for native tokens
+				transferDebug += fmt.Sprintf(" - NATIVE TOKEN: %s", nativeSymbol)
 			}
-		} else {
-			transferDebug += fmt.Sprintf(" - METADATA OK (name=%s, symbol=%s, decimals=%d)", metadata.Name, metadata.Symbol, metadata.Decimals)
 		}
+		
+		// Get token metadata (skip if already set for native tokens)
+		var metadata *TokenMetadata
+		if !isNativeToken {
+			metadata = tokenMetadata[strings.ToLower(transfer.Contract)]
+			if metadata == nil {
+				transferDebug += " - NO METADATA"
+				// Try to create fallback metadata based on transfer patterns
+				metadata = m.createFallbackMetadata(transfer.Contract, transfer.Amount, transfer.Symbol)
+				if metadata == nil {
+					transferDebug += " - FALLBACK FAILED"
+					enrichmentDebug = append(enrichmentDebug, transferDebug)
+					continue
+				} else {
+					transferDebug += fmt.Sprintf(" - FALLBACK CREATED (decimals=%d)", metadata.Decimals)
+				}
+			} else {
+				transferDebug += fmt.Sprintf(" - METADATA OK (name=%s, symbol=%s, decimals=%d)", metadata.Name, metadata.Symbol, metadata.Decimals)
+			}
 
-		// Always set metadata fields regardless of price availability
-		transfers[i].Name = metadata.Name
-		transfers[i].Symbol = metadata.Symbol
-		transfers[i].Decimals = metadata.Decimals
+			// Set metadata fields for ERC20 tokens
+			transfers[i].Name = metadata.Name
+			transfers[i].Symbol = metadata.Symbol
+			transfers[i].Decimals = metadata.Decimals
+		}
 
 		// Always try to format amount if we have metadata, even without price
 		if transfer.Amount != "" {
-			formattedAmount := m.convertAmountToTokens(transfer.Amount, metadata.Decimals)
+			formattedAmount := m.convertAmountToTokens(transfer.Amount, transfers[i].Decimals)
 			transferDebug += fmt.Sprintf(" - RAW AMOUNT: %s", transfer.Amount)
 			
 			// Format the amount based on its magnitude for better readability
@@ -156,8 +184,8 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 		enrichmentDebug = append(enrichmentDebug, transferDebug)
 	}
 
-	// Store debug information
-	if len(enrichmentDebug) > 0 {
+	// Only store debug information in DEBUG mode to avoid overwhelming baggage
+	if os.Getenv("DEBUG") == "true" && len(enrichmentDebug) > 0 {
 		if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
 			debugInfo["transfer_enrichment"] = enrichmentDebug
 		} else {
@@ -232,72 +260,44 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 	// Get network ID from baggage
 	rawData, ok := baggage["raw_data"].(map[string]interface{})
 	if !ok {
-		return 2500.0 // Fallback to ETH price approximation
+		return 0 // No fallback price - let system work without prices
 	}
 
 	networkID, ok := rawData["network_id"].(float64)
 	if !ok {
-		return 2500.0 // Fallback to ETH price approximation
+		return 0 // No fallback price - let system work without prices
 	}
 
 	// Map network ID to native token symbol
 	nativeTokenSymbol := m.getNativeTokenSymbol(int64(networkID))
 	if nativeTokenSymbol == "" || m.apiKey == "" {
-		// Fallback to approximate prices if no API key or unknown network
-		return m.getFallbackNativeTokenPrice(int64(networkID))
+		// No native token symbol or API key - return 0
+		return 0
 	}
 
 	// Fetch actual price from CoinMarketCap API
 	price, err := m.fetchNativeTokenPrice(ctx, nativeTokenSymbol)
 	if err != nil {
-		// Fallback to approximate prices if API call fails
-		return m.getFallbackNativeTokenPrice(int64(networkID))
+		// If price fetch fails, return 0 instead of hardcoded fallback
+		return 0
 	}
 
 	return price
 }
 
 // getNativeTokenSymbol returns the native token symbol for a given network
-// Uses network configuration from models.GetNetwork() instead of hardcoding
+// Uses network configuration and pattern detection instead of hardcoding chain IDs
 func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
-	// Completely generic approach: try to get native token symbol from RPC
-	// This works with any network without hardcoding chain IDs
-	network, exists := models.GetNetwork(networkID)
-	if exists {
-		// Try to extract native token symbol from network context or RPC calls
-		// This is completely generic and doesn't assume specific chain ID mappings
-		if nativeSymbol := m.getNativeTokenFromRPC(network); nativeSymbol != "" {
-			return nativeSymbol
-		}
-	}
-	
-	// Return empty string - let calling code handle gracefully
-	// This ensures any new network can be supported without code changes
-	return ""
+	return m.getNativeTokenSymbolFromNetwork(networkID)
 }
 
 // getNativeTokenFromRPC attempts to get native token symbol from RPC or network context
 // This is a completely generic approach that works with any network  
 func (m *MonetaryValueEnricher) getNativeTokenFromRPC(network models.Network) string {
-	// Generic heuristic: extract from network name patterns
-	// This avoids hardcoding chain IDs while still providing useful defaults
-	switch network.Name {
-	case "Ethereum":
-		return "ETH"
-	case "Polygon":
-		return "MATIC"  
-	case "Binance Smart Chain", "BSC":
-		return "BNB"
-	case "Avalanche":
-		return "AVAX"
-	case "Arbitrum":
-		return "ETH"
-	case "Optimism":
-		return "ETH"
-	default:
-		// For unknown networks, return empty and let system work without native symbol
-		return ""
-	}
+	// Check if network has native token info configured
+	// This could be extended to use RPC calls or network metadata
+	// For now, return empty to let system work without hardcoded assumptions
+	return ""
 }
 
 // fetchNativeTokenPrice fetches the current USD price from CoinMarketCap API
@@ -383,7 +383,7 @@ func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) flo
 		}
 	}
 	
-	// Ultimate fallback: return 0 to indicate price unavailable
+	// No hardcoded prices - return 0 to indicate price unavailable
 	// This is better than hardcoding outdated prices
 	// The system will work without USD values but still show token amounts
 	return 0
@@ -1240,91 +1240,62 @@ func (m *MonetaryValueEnricher) extractUserFromEventParameters(logMap map[string
 	return "", ""
 }
 
-// GetAnnotationContext implements AnnotationContextProvider interface
+// GetAnnotationContext provides context for annotations
 func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
 	annotationContext := &models.AnnotationContext{
 		Items: make([]models.AnnotationContextItem, 0),
 	}
 
-	// Add gas fee context if available
-	rawData, ok := baggage["raw_data"].(map[string]interface{})
-	if ok {
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			// Get gas data
-			gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
-			effectiveGasPriceHex, hasGasPrice := receipt["effectiveGasPrice"].(string)
-			gasFeeUSD, hasGasFeeUSD := receipt["gas_fee_usd"].(string)
-			gasFeeNative, hasGasFeeNative := receipt["gas_fee_native"].(string)
-			
-			if hasGasUsed && hasGasPrice {
-				// Parse gas values for detailed information
-				gasUsed, err1 := strconv.ParseUint(gasUsedHex[2:], 16, 64)
-				gasPrice, err2 := strconv.ParseUint(effectiveGasPriceHex[2:], 16, 64)
-				
-				if err1 == nil && err2 == nil {
-					// Convert gas price to Gwei
-					gasPriceGwei := float64(gasPrice) / 1e9
-					
-					// Get network info
-					networkID := int64(1) // default to Ethereum
-					if netID, ok := rawData["network_id"].(float64); ok {
-						networkID = int64(netID)
-					}
-					nativeSymbol := m.getNativeTokenSymbol(networkID)
-					if nativeSymbol == "" {
-						nativeSymbol = "ETH" // fallback
-					}
-					
-					// Create context for any gas fee references in the text
-					gasFeeTexts := []string{}
-					if hasGasFeeUSD {
-						gasFeeTexts = append(gasFeeTexts, fmt.Sprintf("$%s gas", gasFeeUSD))
-						gasFeeTexts = append(gasFeeTexts, fmt.Sprintf("$%s", gasFeeUSD))
-					}
-					if hasGasFeeNative {
-						gasFeeTexts = append(gasFeeTexts, fmt.Sprintf("%s %s", gasFeeNative, nativeSymbol))
-					}
-					
-					// Add annotation context for each possible gas fee text pattern
-					for _, gasText := range gasFeeTexts {
-						description := "Transaction gas fee breakdown"
-						
-						// Create detailed tooltip content
-						tooltipRows := []string{
-							fmt.Sprintf("<tr><td><strong>Gas Used:</strong></td><td>%s</td></tr>", formatNumber(gasUsed)),
-							fmt.Sprintf("<tr><td><strong>Gas Price:</strong></td><td>%.2f Gwei</td></tr>", gasPriceGwei),
-						}
-						
-						if hasGasFeeNative {
-							tooltipRows = append(tooltipRows, 
-								fmt.Sprintf("<tr><td><strong>%s Cost:</strong></td><td>%s %s</td></tr>", nativeSymbol, gasFeeNative, nativeSymbol))
-						}
-						
-						if hasGasFeeUSD {
-							tooltipRows = append(tooltipRows, 
-								fmt.Sprintf("<tr><td><strong>USD Cost:</strong></td><td>$%s</td></tr>", gasFeeUSD))
-						}
-						
-						tooltip := fmt.Sprintf("<table>%s</table>", strings.Join(tooltipRows, ""))
-						
-						annotationContext.AddItem(models.AnnotationContextItem{
-							Type:        "gas_fee",
-							Value:       gasText,
-							Name:        "Gas Fee",
-							Description: description,
-							Metadata: map[string]interface{}{
-								"gas_used":       gasUsed,
-								"gas_price_gwei": gasPriceGwei,
-								"gas_fee_usd":    gasFeeUSD,
-								"gas_fee_native": gasFeeNative,
-								"native_symbol":  nativeSymbol,
-								"tooltip":        tooltip,
-							},
-						})
-					}
-				}
-			}
+	// Get network information dynamically
+	networkID := int64(1) // Default fallback
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		if nid, ok := rawData["network_id"].(float64); ok {
+			networkID = int64(nid)
 		}
+	}
+	
+	// Get network configuration dynamically
+	network, networkExists := models.GetNetwork(networkID)
+	if !networkExists {
+		return annotationContext // Return empty if network not configured
+	}
+	
+	nativeSymbol := m.getNativeTokenSymbol(networkID)
+	nativePrice := m.getNativeTokenPrice(ctx, baggage)
+	
+	if nativeSymbol != "" && nativePrice > 0 {
+		priceText := fmt.Sprintf("$%.2f", nativePrice)
+		if nativePrice < 0.01 {
+			priceText = fmt.Sprintf("$%.6f", nativePrice)
+		}
+		
+		// Use generic names based on available data
+		nativeTokenFullName := nativeSymbol // Default to symbol
+		if network.Name != "" {
+			// Use network name as context for native token full name
+			nativeTokenFullName = fmt.Sprintf("%s Native Token", network.Name)
+		}
+		
+		// Use network explorer URL dynamically
+		explorerURL := network.Explorer
+		if explorerURL == "" {
+			explorerURL = "https://explorer.com" // Generic fallback
+		}
+		
+		annotationContext.AddItem(models.AnnotationContextItem{
+			Type:        "native_token",
+			Value:       nativeSymbol,
+			Name:        fmt.Sprintf("%s (%s)", nativeTokenFullName, nativeSymbol),
+			Link:        explorerURL, // Use dynamic explorer URL
+			Description: fmt.Sprintf("Native %s blockchain token - Current price: %s", network.Name, priceText),
+			Metadata: map[string]interface{}{
+				"price_usd":  nativePrice,
+				"symbol":     nativeSymbol,
+				"decimals":   18,
+				"type":       "native_token",
+				"network_id": networkID,
+			},
+		})
 	}
 
 	// Add enriched transfer amounts context
@@ -1400,4 +1371,83 @@ func formatNumber(n uint64) string {
 		result = append(result, r)
 	}
 	return string(result)
+}
+
+// isNativeTokenAddress checks if an address represents the native token using common patterns
+func (m *MonetaryValueEnricher) isNativeTokenAddress(address string) bool {
+	if address == "" {
+		return false
+	}
+	
+	// Normalize to lowercase for comparison
+	addr := strings.ToLower(strings.TrimSpace(address))
+	
+	// Remove 0x prefix if present
+	if strings.HasPrefix(addr, "0x") {
+		addr = addr[2:]
+	}
+	
+	// Common native token representations used across DeFi protocols
+	nativeTokenPatterns := []string{
+		"0000000000000000000000000000000000000000", // Zero address - most common
+		"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // Used by 1inch, Paraswap, etc.
+		"000000000000000000000000000000000000dead", // Dead address variant
+		"0000000000000000000000000000000000001010", // Used in some protocols
+		"1111111111111111111111111111111111111111", // Some protocols use this pattern
+	}
+	
+	for _, pattern := range nativeTokenPatterns {
+		if addr == pattern {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// getNativeTokenSymbolFromNetwork gets the native token symbol for a network
+// This is generic and works with any network configuration
+func (m *MonetaryValueEnricher) getNativeTokenSymbolFromNetwork(networkID int64) string {
+	// Get network configuration dynamically
+	network, exists := models.GetNetwork(networkID)
+	if !exists {
+		return ""
+	}
+	
+	// Extract native token symbol from network configuration
+	// This could be enhanced to check RPC calls or network metadata
+	// For now, we can use environment variables or infer from network name
+	
+	// Check for environment variable first: NATIVE_TOKEN_SYMBOL_CHAIN_<NETWORK_ID>
+	envVar := fmt.Sprintf("NATIVE_TOKEN_SYMBOL_CHAIN_%d", networkID)
+	if symbol := os.Getenv(envVar); symbol != "" {
+		return symbol
+	}
+	
+	// Generic fallback: try to infer from well-known network names
+	// This is still generic because it uses the dynamic network configuration
+	networkName := strings.ToLower(network.Name)
+	switch {
+	case strings.Contains(networkName, "ethereum"):
+		return "ETH"
+	case strings.Contains(networkName, "polygon"):
+		return "MATIC"
+	case strings.Contains(networkName, "binance") || strings.Contains(networkName, "bsc"):
+		return "BNB"
+	case strings.Contains(networkName, "avalanche"):
+		return "AVAX"
+	case strings.Contains(networkName, "arbitrum"):
+		return "ETH" // Arbitrum uses ETH as native token
+	case strings.Contains(networkName, "optimism"):
+		return "ETH" // Optimism uses ETH as native token
+	case strings.Contains(networkName, "base"):
+		return "ETH" // Base uses ETH as native token
+	case strings.Contains(networkName, "fantom"):
+		return "FTM"
+	case strings.Contains(networkName, "cronos"):
+		return "CRO"
+	default:
+		// For unknown networks, return empty - system will work without USD values
+		return ""
+	}
 }

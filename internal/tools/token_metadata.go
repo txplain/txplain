@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/txplain/txplain/internal/models"
@@ -162,15 +163,25 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 			bestDecimals = rpcDecimals
 		}
 
+		// Determine token type based on available methods and responses
+		tokenType := "Contract"
+		if bestName != "" || bestSymbol != "" {
+			if bestDecimals > 0 {
+				tokenType = "ERC20" // Has name/symbol and decimals - this is an ERC20 token
+			} else {
+				tokenType = "ERC721" // Has name/symbol but no decimals - likely ERC721
+			}
+		}
+
 		// Store all discovered information
 		allContractInfo[address] = contractInfo
 
 		// Create TokenMetadata for contracts that have token-like characteristics
-		// But don't classify the type - let LLM decide
+		// Use proper token type classification based on available data
 		if hasAnyTokenLikeData || (abiContract != nil && abiContract.IsVerified) {
 			metadata := &TokenMetadata{
 				Address:  address,
-				Type:     "Contract", // Generic - let LLM classify
+				Type:     tokenType, // Use determined token type instead of generic "Contract"
 				Name:     bestName,
 				Symbol:   bestSymbol,
 				Decimals: bestDecimals,
@@ -184,16 +195,21 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		baggage["token_metadata"] = contractMetadata
 	}
 
-	// Add all contract information to baggage for other tools to use
-	baggage["all_contract_info"] = allContractInfo
+	// Only store debug information in DEBUG mode to avoid overwhelming baggage
+	if os.Getenv("DEBUG") == "true" {
+		// Add all contract information to baggage for debug purposes only
+		if len(allContractInfo) > 0 {
+			baggage["all_contract_info"] = allContractInfo
+		}
 
-	// Add debug information
-	if len(debugInfo) > 0 {
-		if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
-			existingDebug["token_metadata_enricher"] = debugInfo
-		} else {
-			baggage["debug_info"] = map[string]interface{}{
-				"token_metadata_enricher": debugInfo,
+		// Add debug information only in DEBUG mode
+		if len(debugInfo) > 0 {
+			if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
+				existingDebug["token_metadata_enricher"] = debugInfo
+			} else {
+				baggage["debug_info"] = map[string]interface{}{
+					"token_metadata_enricher": debugInfo,
+				}
 			}
 		}
 	}

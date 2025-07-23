@@ -41,14 +41,23 @@ func (t *TransactionExplainer) Dependencies() []string {
 
 // Process generates explanation using all information from baggage
 func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Clean up baggage first - remove unnecessary data before processing
+	t.cleanupBaggage(baggage)
+
 	// Add decoded data and raw data to baggage for generateExplanationWithBaggage
+	decodedData := &models.DecodedData{}
+
+	// Include events from log decoder
 	if events, ok := baggage["events"].([]models.Event); ok {
-		decodedData := &models.DecodedData{
-			Events: events,
-			// Calls would come from trace decoder if implemented
-		}
-		baggage["decoded_data"] = decodedData
+		decodedData.Events = events
 	}
+
+	// Include calls from trace decoder - THIS IS CRITICAL FOR NATIVE ETH TRANSFERS
+	if calls, ok := baggage["calls"].([]models.Call); ok {
+		decodedData.Calls = calls
+	}
+
+	baggage["decoded_data"] = decodedData
 
 	// Collect context from all context providers in the baggage
 	var additionalContext []string
@@ -58,6 +67,8 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 				additionalContext = append(additionalContext, context)
 			}
 		}
+		// Remove context providers after use - they're no longer needed
+		delete(baggage, "context_providers")
 	}
 
 	// Generate explanation with context from other tools
@@ -68,7 +79,133 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 
 	// Add explanation to baggage
 	baggage["explanation"] = explanation
+	
+	// Final cleanup after processing
+	t.finalCleanup(baggage)
+	
 	return nil
+}
+
+// cleanupBaggage removes unnecessary data to reduce context size
+func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
+	// Remove debug info unless in DEBUG mode
+	if os.Getenv("DEBUG") != "true" {
+		delete(baggage, "debug_info")
+	}
+	
+	// Remove unused keys that take up space
+	delete(baggage, "resolved_contracts")    // Full ABI data not needed
+	delete(baggage, "all_contract_info")     // Comprehensive metadata not needed
+	
+	// Clean up raw data - only keep essential transaction info
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		cleanedRawData := make(map[string]interface{})
+		
+		// Keep only essential transaction info
+		if networkID, exists := rawData["network_id"]; exists {
+			cleanedRawData["network_id"] = networkID
+		}
+		if txHash, exists := rawData["tx_hash"]; exists {
+			cleanedRawData["tx_hash"] = txHash
+		}
+		
+		// Keep only essential receipt data
+		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			cleanedReceipt := make(map[string]interface{})
+			
+			// Only keep fields actually used by transaction explainer
+			essentialReceiptFields := []string{"gasUsed", "status", "blockNumber", "from", "to", "gas_fee_usd", "gas_fee_native", "effectiveGasPrice"}
+			for _, field := range essentialReceiptFields {
+				if value, exists := receipt[field]; exists {
+					cleanedReceipt[field] = value
+				}
+			}
+			
+			cleanedRawData["receipt"] = cleanedReceipt
+		}
+		
+		baggage["raw_data"] = cleanedRawData
+	}
+	
+	// Clean up events - remove excessive parameters
+	if events, ok := baggage["events"].([]models.Event); ok {
+		for i, event := range events {
+			if event.Parameters != nil {
+				cleanedParams := make(map[string]interface{})
+				
+				// Only keep human-readable parameters, skip raw hex data
+				for key, value := range event.Parameters {
+					// Skip raw data and technical fields
+					if key == "raw_data" || key == "signature" || 
+					   strings.HasPrefix(key, "topic_") || 
+					   strings.HasPrefix(key, "contract_") {
+						continue
+					}
+					
+					// Keep essential parameters
+					if key == "from" || key == "to" || key == "value" || key == "spender" || key == "owner" ||
+					   key == "value_formatted" || key == "value_usd" {
+						cleanedParams[key] = value
+					}
+				}
+				
+				events[i].Parameters = cleanedParams
+			}
+			// Remove raw topics and data to reduce size
+			events[i].Topics = nil
+			events[i].Data = ""
+		}
+		baggage["events"] = events
+	}
+	
+	// Clean up calls - only keep meaningful ones
+	if calls, ok := baggage["calls"].([]models.Call); ok {
+		var meaningfulCalls []models.Call
+		for _, call := range calls {
+			// Only keep calls that are meaningful for explanation
+			if call.Contract != "" || call.Method != "" || (call.Value != "" && call.Value != "0" && call.Value != "0x0") {
+				// Clean up arguments - remove raw data
+				if call.Arguments != nil {
+					cleanedArgs := make(map[string]interface{})
+					for key, value := range call.Arguments {
+						// Only keep essential human-readable arguments
+						if key == "contract_name" || key == "contract_symbol" || key == "contract_type" {
+							if str, ok := value.(string); ok && str != "" {
+								cleanedArgs[key] = str
+							}
+						}
+					}
+					call.Arguments = cleanedArgs
+				}
+				meaningfulCalls = append(meaningfulCalls, call)
+			}
+		}
+		baggage["calls"] = meaningfulCalls
+	}
+	
+	// Clean up contract addresses - remove duplicates
+	if contractAddresses, ok := baggage["contract_addresses"].([]string); ok {
+		// Deduplicate and only keep unique addresses
+		addressMap := make(map[string]bool)
+		var uniqueAddresses []string
+		for _, addr := range contractAddresses {
+			if !addressMap[strings.ToLower(addr)] {
+				addressMap[strings.ToLower(addr)] = true
+				uniqueAddresses = append(uniqueAddresses, addr)
+			}
+		}
+		baggage["contract_addresses"] = uniqueAddresses
+	}
+}
+
+// finalCleanup removes temporary data after explanation is generated
+func (t *TransactionExplainer) finalCleanup(baggage map[string]interface{}) {
+	// Remove temporary data that's no longer needed
+	delete(baggage, "decoded_data")        // Temporary structure for LLM
+	delete(baggage, "contract_addresses")  // List not needed in final result
+	
+	// Keep only essential data for frontend
+	// Keep: explanation, transfers, protocols, token_metadata, tags, address_roles, ens_names
 }
 
 // Name returns the tool name
@@ -277,31 +414,66 @@ Focus ONLY on the main action. Don't explain blockchain basics or add warnings.
 
 ### Function Calls:`
 
-	// Add calls information
+	// Add calls information - CLEANED UP VERSION
 	for i, call := range decodedData.Calls {
-		prompt += fmt.Sprintf(`
-
-Call #%d:
-- Contract: %s
-- Method: %s
-- Call Type: %s
-- Value: %s ETH
-- Gas Used: %d
-- Success: %t`,
-			i+1, call.Contract, call.Method, call.CallType,
-			t.weiToEther(call.Value), call.GasUsed, call.Success)
-
-		if call.ErrorReason != "" {
-			prompt += fmt.Sprintf(`
-- Error: %s`, call.ErrorReason)
+		// Only include calls that are meaningful for explanation
+		if call.Contract == "" && call.Method == "" && call.Value == "" {
+			continue // Skip empty/meaningless calls
 		}
 
-		if len(call.Arguments) > 0 {
-			prompt += `
-- Arguments:`
-			for key, value := range call.Arguments {
+		prompt += fmt.Sprintf(`
+
+Call #%d:`,
+			i+1)
+		
+		if call.Contract != "" {
+			prompt += fmt.Sprintf(`
+- Contract: %s`, call.Contract)
+		}
+		
+		if call.Method != "" {
+			prompt += fmt.Sprintf(`
+- Method: %s`, call.Method)
+		}
+		
+		if call.CallType != "" {
+			prompt += fmt.Sprintf(`
+- Type: %s`, call.CallType)
+		}
+		
+		// Only show ETH value if significant (> 0)
+		if call.Value != "" && call.Value != "0" && call.Value != "0x" && call.Value != "0x0" {
+			ethValue := t.weiToEther(call.Value)
+			if ethValue != "0" {
 				prompt += fmt.Sprintf(`
+- ETH Value: %s`, ethValue)
+			}
+		}
+		
+		if !call.Success {
+			prompt += fmt.Sprintf(`
+- Failed: %s`, call.ErrorReason)
+		}
+
+		// Only include essential arguments, skip raw hex data
+		if len(call.Arguments) > 0 {
+			essentialArgs := make(map[string]interface{})
+			for key, value := range call.Arguments {
+				// Only include human-readable arguments, skip raw data
+				if key == "contract_name" || key == "contract_symbol" || key == "contract_type" {
+					if str, ok := value.(string); ok && str != "" {
+						essentialArgs[key] = str
+					}
+				}
+			}
+			
+			if len(essentialArgs) > 0 {
+				prompt += `
+- Info:`
+				for key, value := range essentialArgs {
+					prompt += fmt.Sprintf(`
   - %s: %v`, key, value)
+				}
 			}
 		}
 	}
@@ -310,22 +482,38 @@ Call #%d:
 
 ### Events Emitted:`
 
-	// Add events information
+	// Add events information - CLEANED UP VERSION
 	for i, event := range decodedData.Events {
 		prompt += fmt.Sprintf(`
 
 Event #%d:
 - Contract: %s
-- Event: %s
-- Topics: %v`,
-			i+1, event.Contract, event.Name, event.Topics)
+- Event: %s`,
+			i+1, event.Contract, event.Name)
 
+		// Only include essential parameters, skip raw data and topics
 		if len(event.Parameters) > 0 {
-			prompt += `
-- Parameters:`
+			essentialParams := make(map[string]interface{})
 			for key, value := range event.Parameters {
-				prompt += fmt.Sprintf(`
+				// Skip raw hex data, signatures, and internal fields
+				if key == "raw_data" || key == "signature" || key == "topic_0" || 
+				   strings.HasPrefix(key, "topic_") || strings.HasPrefix(key, "contract_") {
+					continue
+				}
+				
+				// Include human-readable parameters
+				if str, ok := value.(string); ok && str != "" && !strings.HasPrefix(str, "0x") {
+					essentialParams[key] = str
+				}
+			}
+			
+			if len(essentialParams) > 0 {
+				prompt += `
+- Parameters:`
+				for key, value := range essentialParams {
+					prompt += fmt.Sprintf(`
   - %s: %v`, key, value)
+				}
 			}
 		}
 	}
@@ -361,6 +549,14 @@ Event #%d:
 ## Instructions:
 
 Write a single, short sentence (under 30 words) describing the main action. 
+
+CRITICAL SPECIFICITY REQUIREMENTS:
+- NEVER use vague terms like "multiple", "several", "various", "some", "many" 
+- ALWAYS use EXACT numbers: "unlocked 8 orders", "transferred 5 tokens", "swapped 2,485.75 USDT"
+- If you see specific quantities in the transaction data, USE THEM EXPLICITLY
+- Examples: ❌"multiple tokens" → ✅"8 tokens", ❌"several NFTs" → ✅"3 NFTs", ❌"various transfers" → ✅"5 transfers"
+- Count events, calls, transfers, and show the exact numbers
+- Be precise about amounts, quantities, and counts in ALL cases
 
 CRITICAL FORMATTING RULE - AVOID REDUNDANCY:
 - NEVER repeat token amounts or token names in the same sentence

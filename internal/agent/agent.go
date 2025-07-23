@@ -119,6 +119,12 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, abiResolver)
 
+	// Add trace decoder (processes trace data to extract calls with ETH transfers)
+	traceDecoder := txtools.NewTraceDecoderWithRPC(client)
+	if err := pipeline.AddProcessor(traceDecoder); err != nil {
+		return nil, fmt.Errorf("failed to add trace decoder: %w", err)
+	}
+
 	// Add log decoder (processes events using resolved ABIs)
 	logDecoder := txtools.NewLogDecoderWithRPC(client)
 	if err := pipeline.AddProcessor(logDecoder); err != nil {
