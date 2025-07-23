@@ -483,6 +483,12 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 		
 		// Calculate duration for all components based on elapsed time
 		duration = now.Sub(existingStart).Milliseconds()
+		
+		// Ensure minimum duration of 1ms for any component that has been running
+		// to avoid displaying "Starting..." for components that have actually started
+		if duration == 0 && (status == ComponentStatusRunning || status == ComponentStatusFinished || status == ComponentStatusError) {
+			duration = 1
+		}
 	}
 	
 	component := &ComponentUpdate{
