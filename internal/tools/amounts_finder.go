@@ -273,21 +273,95 @@ func (a *AmountsFinder) identifyAmountsWithLLM(ctx context.Context, contextData 
 		fmt.Println(strings.Repeat("=", 80) + "\n")
 	}
 
-	// Extract JSON from response (handle potential markdown formatting)
-	jsonStart := strings.Index(responseText, "[")
-	jsonEnd := strings.LastIndex(responseText, "]")
-
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
-		return nil, fmt.Errorf("invalid JSON response format")
+	// Extract JSON from response (handle potential markdown formatting and extra text)
+	jsonStr, err := a.extractJSONArray(responseText)
+	if err != nil {
+		if a.verbose {
+			fmt.Printf("❌ Failed to extract JSON from response: %v\n", err)
+			fmt.Printf("Raw response was: %s\n", responseText)
+		}
+		return nil, fmt.Errorf("failed to extract JSON from response: %w", err)
 	}
 
-	jsonStr := responseText[jsonStart : jsonEnd+1]
-
 	if err := json.Unmarshal([]byte(jsonStr), &amounts); err != nil {
+		if a.verbose {
+			fmt.Printf("❌ Failed to parse extracted JSON: %v\n", err)
+			fmt.Printf("Extracted JSON was: %s\n", jsonStr)
+		}
 		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 
 	return amounts, nil
+}
+
+// extractJSONArray extracts a JSON array from the LLM response, handling markdown code blocks and extra text
+func (a *AmountsFinder) extractJSONArray(responseText string) (string, error) {
+	// Remove any markdown code block formatting
+	responseText = strings.ReplaceAll(responseText, "```json", "")
+	responseText = strings.ReplaceAll(responseText, "```", "")
+	
+	// Find the start of the JSON array
+	jsonStart := strings.Index(responseText, "[")
+	if jsonStart == -1 {
+		return "", fmt.Errorf("no JSON array found in response")
+	}
+	
+	// Find the matching closing bracket for the array
+	// We need to properly balance brackets to avoid including extra text after the JSON
+	bracketCount := 0
+	jsonEnd := -1
+	inString := false
+	escapeNext := false
+	
+	for i := jsonStart; i < len(responseText); i++ {
+		char := responseText[i]
+		
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		
+		if char == '\\' {
+			escapeNext = true
+			continue
+		}
+		
+		if char == '"' {
+			inString = !inString
+			continue
+		}
+		
+		if !inString {
+			switch char {
+			case '[':
+				bracketCount++
+			case ']':
+				bracketCount--
+				if bracketCount == 0 {
+					jsonEnd = i
+					break
+				}
+			}
+		}
+		
+		if jsonEnd != -1 {
+			break
+		}
+	}
+	
+	if jsonEnd == -1 {
+		return "", fmt.Errorf("incomplete JSON array - no matching closing bracket found")
+	}
+	
+	jsonStr := responseText[jsonStart : jsonEnd+1]
+	
+	// Validate that it's actually valid JSON by attempting to parse it as interface{}
+	var testParse interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &testParse); err != nil {
+		return "", fmt.Errorf("extracted text is not valid JSON: %w", err)
+	}
+	
+	return jsonStr, nil
 }
 
 // buildAmountAnalysisPrompt creates the prompt for LLM amount analysis
@@ -431,7 +505,24 @@ Good Example - DEX Swap:
   }
 ]
 
-Be thorough but precise. Only include amounts where you can confidently identify the associated token contract and the amount represents actual value flow. ALWAYS include gas fees when gas data is available.`, contextData)
+Be thorough but precise. Only include amounts where you can confidently identify the associated token contract and the amount represents actual value flow. ALWAYS include gas fees when gas data is available.
+
+*** CRITICAL RESPONSE FORMAT REQUIREMENT ***
+
+Your response MUST contain ONLY raw JSON - no explanations, no markdown formatting, no code blocks, no additional text before or after the JSON array.
+
+BAD - Do NOT include any of these:
+- "Here's the analysis:"
+- "` + "```json" + `"
+- "` + "```" + `"
+- "The detected amounts are:"
+- Any explanatory text
+- Any comments outside the JSON
+
+GOOD - Your entire response should look exactly like this:
+[{"amount":"0x1bc16d674ec80000","token_contract":"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48","token_symbol":"USDC","amount_type":"transfer","context":"Transfer event - value parameter","confidence":0.95,"from_address":"0x55fe002aeff02f77364de339a1292923a15844b8","to_address":"0x0000000000000000000000000000000000000000","event_contract":"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48","is_valid_token":false}]
+
+RESPOND WITH RAW JSON ARRAY ONLY!`, contextData)
 }
 
 // validateTokenContracts validates that detected token contracts are real ERC20 tokens
