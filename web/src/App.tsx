@@ -117,20 +117,9 @@ function App() {
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-3">
               <h2 className="text-lg font-semibold text-gray-800">Txplain</h2>
-              <span className="text-sm text-gray-500">Open source AI-powered blockchain transaction analysis</span>
+              <span className="text-sm text-gray-500">Open-source AI-powered blockchain transaction analysis</span>
             </div>
             <div className="flex items-center space-x-4">
-              {/* GitHub Stars Widget */}
-              <a 
-                className="github-button" 
-                href="https://github.com/txplain/txplain" 
-                data-icon="octicon-star" 
-                data-size="large" 
-                data-show-count="true" 
-                aria-label="Star txplain/txplain on GitHub"
-              >
-                Star
-              </a>
               {/* GitHub Link */}
               <a 
                 href="https://github.com/txplain/txplain"

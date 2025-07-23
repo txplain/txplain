@@ -207,6 +207,27 @@ func (nm *NetworkMapper) GetNativeTokenSymbol(networkID int64) string {
 		return symbol
 	}
 
+	// Simple fallback mapping for common networks
+	fallbackSymbols := map[int64]string{
+		1:     "ETH",     // Ethereum
+		137:   "MATIC",   // Polygon
+		56:    "BNB",     // BSC
+		43114: "AVAX",    // Avalanche
+		250:   "FTM",     // Fantom
+		42161: "ETH",     // Arbitrum
+		10:    "ETH",     // Optimism
+		25:    "CRO",     // Cronos
+		42220: "CELO",    // Celo
+		1285:  "MOVR",    // Moonriver
+	}
+	
+	// Check fallback mapping first
+	if symbol, exists := fallbackSymbols[networkID]; exists {
+		// Cache the result
+		nm.nativeTokenCache[networkID] = symbol
+		return symbol
+	}
+
 	// Get network slug
 	slug, err := nm.GetNetworkSlug(networkID)
 	if err != nil {
