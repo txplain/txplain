@@ -43,7 +43,7 @@ func (t *TransactionExplainer) Dependencies() []string {
 	return []string{
 		"abi_resolver", "log_decoder", "trace_decoder", "ens_resolver",
 		"token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher",
-		"protocol_resolver", "tag_resolver", "static_context_provider",
+		"address_role_resolver", "protocol_resolver", "tag_resolver", "static_context_provider",
 	}
 }
 
@@ -371,29 +371,31 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 	// Generate AI-enhanced links with meaningful labels
 	result.Links = t.generateIntelligentLinks(ctx, result.TxHash, result.NetworkID, baggage)
 
-	// Add address categories to metadata for frontend legend grouping
-	if addressRoles, ok := baggage["address_roles"].(map[string]map[string]string); ok && len(addressRoles) > 0 {
+	// Extract participants from address_role_resolver
+	if participants, ok := baggage["address_participants"].([]models.AddressParticipant); ok {
+		result.Participants = participants
+	} else {
+		result.Participants = []models.AddressParticipant{} // Empty if no participants found
+	}
+
+	// Add address categories to metadata for frontend legend grouping (backward compatibility)
+	if len(result.Participants) > 0 {
 		// Create categories map for frontend
 		categories := make(map[string][]map[string]string)
 
-		// Group addresses by category
-		for address, roleData := range addressRoles {
-			if roleData != nil {
-				role := roleData["role"]
-				category := roleData["category"]
-
-				if role != "" && category != "" {
-					// Initialize category array if not exists
-					if categories[category] == nil {
-						categories[category] = make([]map[string]string, 0)
-					}
-
-					// Add address to category
-					categories[category] = append(categories[category], map[string]string{
-						"address": address,
-						"role":    role,
-					})
+		// Group participants by category
+		for _, participant := range result.Participants {
+			if participant.Role != "" && participant.Category != "" {
+				// Initialize category array if not exists
+				if categories[participant.Category] == nil {
+					categories[participant.Category] = make([]map[string]string, 0)
 				}
+
+				// Add participant to category
+				categories[participant.Category] = append(categories[participant.Category], map[string]string{
+					"address": participant.Address,
+					"role":    participant.Role,
+				})
 			}
 		}
 
@@ -410,7 +412,7 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 	return result
 }
 
-// generateIntelligentLinks creates explorer links with AI-inferred meaningful labels
+// generateIntelligentLinks creates explorer links using participant data from address_role_resolver
 func (t *TransactionExplainer) generateIntelligentLinks(ctx context.Context, txHash string, networkID int64, baggage map[string]interface{}) map[string]string {
 	links := make(map[string]string)
 
@@ -426,301 +428,21 @@ func (t *TransactionExplainer) generateIntelligentLinks(ctx context.Context, txH
 	// Always add the main transaction link first
 	links["Main Transaction"] = fmt.Sprintf("%s/tx/%s", network.Explorer, txHash)
 
-	// Get all relevant addresses and contracts from the transaction context
-	addressRoles, err := t.inferAddressRoles(ctx, baggage, networkID)
-	if err != nil {
-		// Fallback to simple contract links if AI inference fails
+	// Get participants from address_role_resolver
+	participants, ok := baggage["address_participants"].([]models.AddressParticipant)
+	if !ok || len(participants) == 0 {
+		// Fallback to simple contract links if no participants found
 		return t.generateFallbackLinks(txHash, networkID, baggage)
 	}
 
-	// Store address roles in baggage for reuse in parseExplanationResponse
-	baggage["address_roles"] = addressRoles
-
-	// Create links with meaningful role-based labels using ALL addresses from role inference
-	// This ensures router addresses and other important contracts are included even if
-	// they're not in the contract_addresses baggage due to pipeline timing issues
-	for address, roleData := range addressRoles {
-		if address != "" && roleData != nil {
-			role := roleData["role"]
-			category := roleData["category"]
-			if role != "" && category != "" {
-				links[role] = fmt.Sprintf("%s/address/%s", network.Explorer, address)
-			}
+	// Create links with meaningful role-based labels using participant data
+	for _, participant := range participants {
+		if participant.Address != "" && participant.Role != "" {
+			links[participant.Role] = fmt.Sprintf("%s/address/%s", network.Explorer, participant.Address)
 		}
 	}
 
 	return links
-}
-
-// inferAddressRoles uses AI to infer meaningful roles for addresses and contracts
-func (t *TransactionExplainer) inferAddressRoles(ctx context.Context, baggage map[string]interface{}, networkID int64) (map[string]map[string]string, error) {
-	// Build context for AI analysis
-	prompt := t.buildAddressRolePrompt(baggage, networkID)
-
-	if t.verbose {
-		fmt.Println("=== ADDRESS ROLE INFERENCE: PROMPT ===")
-		fmt.Println(prompt)
-		fmt.Println("=== END PROMPT ===")
-		fmt.Println()
-	}
-
-	// Call LLM
-	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
-		{
-			Role: llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{
-				llms.TextPart(prompt),
-			},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	responseText := ""
-	if response != nil && len(response.Choices) > 0 {
-		responseText = response.Choices[0].Content
-	}
-
-	if t.verbose {
-		fmt.Println("=== ADDRESS ROLE INFERENCE: LLM RESPONSE ===")
-		fmt.Println(responseText)
-		fmt.Println("=== END RESPONSE ===")
-		fmt.Println()
-	}
-
-	// Parse the response
-	return t.parseAddressRoleResponse(responseText)
-}
-
-// buildAddressRolePrompt creates the prompt for AI address role inference
-func (t *TransactionExplainer) buildAddressRolePrompt(baggage map[string]interface{}, networkID int64) string {
-	prompt := `You are a blockchain transaction analyst. Analyze this transaction and identify the role of each address/contract involved, AND categorize them into groups. Provide meaningful labels that help users understand what each address represents in the context of this specific transaction.
-
-TRANSACTION CONTEXT:`
-
-	// Add token metadata context FIRST - this is critical for distinguishing tokens from protocols
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok && len(tokenMetadata) > 0 {
-		prompt += "\n\nTOKEN CONTRACTS (these addresses are ERC20/ERC721/ERC1155 tokens, NOT protocol contracts):"
-		for addr, metadata := range tokenMetadata {
-			prompt += fmt.Sprintf("\n- %s: %s (%s) [%s token]", addr, metadata.Name, metadata.Symbol, metadata.Type)
-		}
-	}
-
-	// Add protocol context
-	if protocols, ok := baggage["protocols"].([]ProbabilisticProtocol); ok && len(protocols) > 0 {
-		prompt += "\n\nDETECTED PROTOCOLS:"
-		for _, protocol := range protocols {
-			prompt += fmt.Sprintf("\n- %s (%s %s)", protocol.Name, protocol.Type, protocol.Version)
-		}
-	}
-
-	// Add transfers context
-	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok && len(transfers) > 0 {
-		prompt += "\n\nTOKEN TRANSFERS:"
-		for i, transfer := range transfers {
-			prompt += fmt.Sprintf("\n- Transfer #%d: %s → %s", i+1, transfer.From, transfer.To)
-			if transfer.Symbol != "" && transfer.FormattedAmount != "" {
-				prompt += fmt.Sprintf(" (%s %s)", transfer.FormattedAmount, transfer.Symbol)
-			}
-			prompt += fmt.Sprintf(" [Contract: %s]", transfer.Contract)
-		}
-	}
-
-	// Add contract addresses context
-	if contractAddresses, ok := baggage["contract_addresses"].([]string); ok && len(contractAddresses) > 0 {
-		prompt += "\n\nCONTRACT ADDRESSES:"
-		for _, addr := range contractAddresses {
-			prompt += fmt.Sprintf("\n- %s", addr)
-		}
-	}
-
-	// Add events context with spender extraction
-	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
-		prompt += "\n\nEVENTS:"
-		for _, event := range events {
-			eventInfo := fmt.Sprintf("%s event on %s", event.Name, event.Contract)
-
-			// Include ALL event parameters generically - no special event handling
-			if event.Parameters != nil {
-				var paramStrings []string
-				for paramName, paramValue := range event.Parameters {
-					paramStrings = append(paramStrings, fmt.Sprintf("%s: %v", paramName, paramValue))
-				}
-				if len(paramStrings) > 0 {
-					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramStrings, ", "))
-				}
-			}
-
-			prompt += fmt.Sprintf("\n- %s", eventInfo)
-		}
-	}
-
-	// Add raw transaction context
-	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			if from, ok := receipt["from"].(string); ok {
-				prompt += fmt.Sprintf("\n\nTRANSACTION FROM: %s", from)
-			}
-			if to, ok := receipt["to"].(string); ok {
-				prompt += fmt.Sprintf("\nTRANSACTION TO: %s", to)
-			}
-		}
-	}
-
-	// Add network context
-	if network, exists := models.GetNetwork(networkID); exists {
-		prompt += fmt.Sprintf("\n\nNETWORK: %s", network.Name)
-	}
-
-	prompt += `
-
-CRITICAL RULE - TOKEN CONTRACTS vs PROTOCOL CONTRACTS:
-- If an address appears in the "TOKEN CONTRACTS" section above, it MUST be labeled as "Token Contract ([SYMBOL])" with category "token"
-- NEVER identify a token contract address as a protocol router, aggregator, or other protocol contract
-- Protocol contracts are routers, pools, aggregators - NOT the tokens themselves
-- Use spender addresses from Approval events as potential protocol contracts, NOT the token contract
-
-ROLE IDENTIFICATION AND CATEGORIZATION:
-Based on the transaction context, identify the role AND category for each address:
-
-CATEGORY GUIDELINES (be creative and context-appropriate):
-- Use intuitive, descriptive categories that make sense for this specific transaction
-- Common categories include: "user", "trader", "protocol", "token", "nft", "defi", "exchange", "bridge", etc.
-- But feel free to create more specific categories like "lending", "staking", "gaming", "dao", "marketplace" if they better describe the context
-- Group similar addresses together with consistent category names
-- Prioritize clarity and user understanding over strict adherence to predefined lists
-
-ROLE EXAMPLES BY COMMON CATEGORIES:
-
-USER-TYPE CATEGORIES:
-- "Token Holder" - address holding/managing tokens
-- "Transaction Initiator" - address that started the transaction
-- "Recipient" - address receiving tokens/NFTs
-- "Investor" - address making investment decisions
-
-TRADER-TYPE CATEGORIES:
-- "Token Trader" - address performing token swaps
-- "NFT Trader" - address trading NFTs
-- "Arbitrageur" - address performing arbitrage
-- "Liquidity Provider" - address providing/managing liquidity
-
-PROTOCOL-TYPE CATEGORIES:
-- "DEX Router" - router contracts for decentralized exchanges
-- "Lending Pool" - lending protocol contracts
-- "Liquidity Pool" - AMM pool contracts
-- "Aggregator" - DEX aggregator contracts
-- "NFT Marketplace" - NFT trading platforms
-- "Bridge" - cross-chain bridge contracts
-
-TOKEN-TYPE CATEGORIES:
-- "Token Contract" - ERC20/ERC721/ERC1155 contracts
-- "Governance Token" - tokens used for DAO governance
-- "Utility Token" - tokens with specific utility functions
-
-SPECIALIZED CATEGORIES (use when contextually appropriate):
-- "defi" - for DeFi protocol addresses
-- "gaming" - for gaming-related contracts
-- "dao" - for DAO governance addresses  
-- "staking" - for staking-related contracts
-- "bridge" - for cross-chain bridge contracts
-- "oracle" - for price feed and oracle contracts
-
-PRIORITIZATION:
-1. Focus on the PRIMARY transaction purpose (swap, lend, NFT purchase, etc.)
-2. Identify the MAIN USER (the address initiating the transaction) 
-3. Identify TOKEN CONTRACTS first using the "TOKEN CONTRACTS" section
-4. Identify PROTOCOL CONTRACTS (routers, pools, marketplaces) separately
-5. Include significant addresses only (limit to 6-8 most relevant)
-
-OUTPUT FORMAT:
-Respond with a JSON object mapping addresses to their role and category:
-{
-  "0x1234...5678": {
-    "role": "Token Trader",
-    "category": "trader"
-  },
-  "0xabcd...ef01": {
-    "role": "DEX Router", 
-    "category": "protocol"
-  },
-  "0x9876...4321": {
-    "role": "Token Contract (USDT)",
-    "category": "token"
-  }
-}
-
-CORRECT EXAMPLE - Token Approval Transaction:
-{
-  "[user_address_from_transaction]": {
-    "role": "Token Holder",
-    "category": "user"
-  },
-  "[token_contract_from_token_metadata]": {
-    "role": "Token Contract ([token_symbol_from_metadata])",
-    "category": "token"
-  },
-  "[spender_address_from_approval_event]": {
-    "role": "DEX Router",
-    "category": "protocol"
-  }
-}
-
-Analyze the transaction context and identify the most meaningful roles and categories for up to 6-8 key addresses:
-`
-
-	return prompt
-}
-
-// parseAddressRoleResponse parses the LLM response into address-role mappings with categories
-func (t *TransactionExplainer) parseAddressRoleResponse(response string) (map[string]map[string]string, error) {
-	response = strings.TrimSpace(response)
-
-	// Look for JSON object
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
-
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
-		return nil, fmt.Errorf("no valid JSON object found in response")
-	}
-
-	jsonStr := response[jsonStart : jsonEnd+1]
-
-	// Parse JSON with the new format: address -> {role, category}
-	var addressRoles map[string]map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &addressRoles); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	// Convert to string-string map and validate
-	cleaned := make(map[string]map[string]string)
-	for address, roleData := range addressRoles {
-		address = strings.TrimSpace(address)
-		if address == "" {
-			continue
-		}
-
-		role := ""
-		category := ""
-
-		// Extract role and category from the nested object
-		if roleStr, ok := roleData["role"].(string); ok {
-			role = strings.TrimSpace(roleStr)
-		}
-		if categoryStr, ok := roleData["category"].(string); ok {
-			category = strings.TrimSpace(categoryStr)
-		}
-
-		// Ensure both role and category are present
-		if role != "" && category != "" {
-			cleaned[address] = map[string]string{
-				"role":     role,
-				"category": category,
-			}
-		}
-	}
-
-	return cleaned, nil
 }
 
 // generateFallbackLinks creates basic contract links when AI inference fails

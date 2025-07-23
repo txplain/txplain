@@ -248,6 +248,16 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, ensResolver)
 
+	// Add address role resolver (runs after basic data gathering, before analysis tools)
+	fmt.Println("      • Address Role Resolver (AI-powered)")
+	addressRoleResolver := txtools.NewAddressRoleResolver(a.llm)
+	addressRoleResolver.SetRPCClient(client)
+	addressRoleResolver.SetVerbose(true) // Enable verbose for debugging
+	if err := pipeline.AddProcessor(addressRoleResolver); err != nil {
+		return nil, fmt.Errorf("failed to add address role resolver: %w", err)
+	}
+	contextProviders = append(contextProviders, addressRoleResolver)
+
 	// Add protocol resolver (probabilistic protocol detection with RAG)
 	fmt.Println("      • Protocol Resolver (AI-powered)")
 	protocolResolver := txtools.NewProtocolResolver(a.llm)

@@ -32,10 +32,24 @@ export interface Annotation {
   icon?: string
 }
 
+export interface AddressParticipant {
+  address: string
+  role: string
+  category: string
+  type: string
+  ens_name?: string
+  name?: string
+  icon?: string
+  link?: string
+  description?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface ExplanationResult {
   tx_hash: string
   network_id: number
   summary: string
+  participants: AddressParticipant[]
   transfers: TokenTransfer[]
   gas_used: number
   gas_price: string

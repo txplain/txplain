@@ -260,6 +260,225 @@ func TestMyToolDataFlow(t *testing.T) {
 
 **This architecture enables the entire system to be generic, maintainable, and extensible.** 🎯
 
+## Processing Pipeline Tools
+
+Txplain uses a sophisticated pipeline of 19 specialized tools that work together to analyze blockchain transactions. Each tool is completely isolated and communicates through well-defined interfaces. The tools are executed in dependency order as determined by the pipeline's topological sort algorithm.
+
+### 🔄 Tool Execution Order
+
+The tools are executed in the following dependency-based order:
+
+#### **Level 0 - Foundation Tools** (No dependencies)
+1. **static_context_provider** - Loads CSV knowledge base
+2. **transaction_context_provider** - Extracts basic transaction metadata  
+3. **abi_resolver** - Fetches contract ABIs from Etherscan
+4. **trace_decoder** - Decodes transaction traces into function calls
+
+#### **Level 1 - Data Extraction** 
+5. **log_decoder** - Decodes events using resolved ABIs
+6. **token_metadata_enricher** - Fetches token metadata via RPC calls
+7. **icon_resolver** - Discovers token icons from TrustWallet
+
+#### **Level 2 - Structural Analysis**
+8. **token_transfer_extractor** - Extracts token transfers from events
+9. **nft_decoder** - Specialized NFT transfer analysis
+10. **signature_resolver** - Resolves unknown signatures via 4byte.directory
+11. **amounts_finder** - AI-powered detection of all monetary amounts
+12. **erc20_price_lookup** - Fetches token prices via CoinMarketCap API
+
+#### **Level 3 - Value Enhancement**
+13. **protocol_resolver** - AI-powered protocol identification 
+14. **monetary_value_enricher** - Converts amounts to USD values
+
+#### **Level 4 - Identity Resolution**
+15. **ens_resolver** - Resolves ENS names for addresses
+16. **tag_resolver** - AI-powered transaction categorization
+
+#### **Level 5 - Role Analysis**
+17. **address_role_resolver** - Determines address roles and types (EOA/Contract)
+
+#### **Level 6 - Final Analysis**
+18. **transaction_explainer** - Generates human-readable explanations with RAG
+19. **annotation_generator** - Creates interactive UI annotations
+
+### 📋 Tool Details
+
+#### **Foundation Tools**
+
+##### **static_context_provider**
+- **Purpose**: Loads curated knowledge base from CSV files (tokens, protocols, addresses)
+- **Dependencies**: None
+- **Output**: Static knowledge for RAG system and protocol detection
+- **Key Features**: Provides fallback data when RPC calls fail
+
+##### **transaction_context_provider** 
+- **Purpose**: Extracts basic transaction metadata (sender, recipient, gas, status)
+- **Dependencies**: None
+- **Output**: Core transaction context for other tools
+- **Key Features**: Processes raw blockchain receipt data
+
+##### **abi_resolver**
+- **Purpose**: Fetches contract ABIs and source code from Etherscan API
+- **Dependencies**: None  
+- **Output**: Contract interfaces for accurate decoding
+- **Key Features**: Multi-network support, fallback to Sourcify
+
+##### **trace_decoder**
+- **Purpose**: Decodes transaction traces into structured function calls
+- **Dependencies**: None
+- **Output**: All contract interactions including ETH transfers
+- **Key Features**: RPC introspection, signature resolution
+
+#### **Data Extraction Tools**
+
+##### **log_decoder** 
+- **Purpose**: Decodes transaction events using resolved ABIs
+- **Dependencies**: `abi_resolver`
+- **Output**: Structured event data with parameter names
+- **Key Features**: Automatic type conversion, UTF-8 decoding
+
+##### **token_metadata_enricher**
+- **Purpose**: Fetches token metadata (name, symbol, decimals) via RPC calls
+- **Dependencies**: `abi_resolver`
+- **Output**: Complete token information for all detected contracts
+- **Key Features**: ERC20/ERC721/ERC1155 detection, contract introspection
+
+##### **icon_resolver**
+- **Purpose**: Discovers token icons from TrustWallet's GitHub repository
+- **Dependencies**: `abi_resolver`, `static_context_provider`
+- **Output**: Icon URLs for frontend display
+- **Key Features**: Automatic icon discovery, caching
+
+#### **Structural Analysis Tools**
+
+##### **token_transfer_extractor**
+- **Purpose**: Extracts ERC20/ERC721 token transfers from decoded events
+- **Dependencies**: `log_decoder`
+- **Output**: Structured transfer data with proper address formatting
+- **Key Features**: Multi-token type support, duplicate filtering
+
+##### **nft_decoder**
+- **Purpose**: Specialized analysis and enrichment of NFT transfers
+- **Dependencies**: `log_decoder`
+- **Output**: NFT transfer data with collection metadata
+- **Key Features**: ERC721/ERC1155 support, batch transfer handling
+
+##### **signature_resolver**
+- **Purpose**: Resolves unknown function/event signatures via 4byte.directory
+- **Dependencies**: `abi_resolver`, `log_decoder`, `trace_decoder`
+- **Output**: Human-readable names for unknown signatures
+- **Key Features**: Automatic fallback when ABIs are incomplete
+
+##### **amounts_finder**
+- **Purpose**: AI-powered detection of ALL relevant monetary amounts
+- **Dependencies**: `abi_resolver`, `log_decoder`, `trace_decoder`, `token_metadata_enricher`
+- **Output**: Comprehensive list of amounts with confidence scores
+- **Key Features**: Generic detection, context awareness, validation
+
+##### **erc20_price_lookup**
+- **Purpose**: Fetches real-time token prices via CoinMarketCap API
+- **Dependencies**: `token_metadata_enricher`
+- **Output**: USD prices for detected tokens
+- **Key Features**: CEX and DEX price data, multiple lookup methods
+
+#### **Value Enhancement Tools**
+
+##### **protocol_resolver**
+- **Purpose**: AI-powered identification of DeFi protocols and services
+- **Dependencies**: `abi_resolver`, `token_transfer_extractor`, `token_metadata_enricher`
+- **Output**: Protocol names, types, and confidence scores
+- **Key Features**: Probabilistic matching, curated knowledge base
+
+##### **monetary_value_enricher**
+- **Purpose**: Converts detected amounts to USD values using price data
+- **Dependencies**: `amounts_finder`, `erc20_price_lookup`
+- **Output**: USD-denominated values for all transaction amounts
+- **Key Features**: Decimal conversion, gas fee calculation
+
+#### **Identity Resolution Tools**
+
+##### **ens_resolver**
+- **Purpose**: Resolves ENS names for all addresses involved in transaction
+- **Dependencies**: `monetary_value_enricher`
+- **Output**: Human-readable names for Ethereum addresses
+- **Key Features**: Bulk resolution, address discovery from all sources
+
+##### **tag_resolver**
+- **Purpose**: AI-powered categorization of transactions into meaningful tags
+- **Dependencies**: `abi_resolver`, `log_decoder`, `token_transfer_extractor`, `protocol_resolver`
+- **Output**: Contextual tags (e.g., "defi", "swap", "nft", "governance")
+- **Key Features**: Confidence-based filtering, curated taxonomy
+
+#### **Role Analysis Tools**
+
+##### **address_role_resolver**
+- **Purpose**: Determines roles, categories, and types (EOA/Contract) for all addresses
+- **Dependencies**: `abi_resolver`, `log_decoder`, `trace_decoder`, `ens_resolver`, `token_metadata_enricher`
+- **Output**: Complete participant analysis with roles and metadata
+- **Key Features**: AI-powered role inference, EOA/Contract detection, comprehensive address discovery
+
+#### **Final Analysis Tools**
+
+##### **transaction_explainer**
+- **Purpose**: Generates human-readable explanations using advanced RAG (Retrieval-Augmented Generation)
+- **Dependencies**: `abi_resolver`, `log_decoder`, `trace_decoder`, `ens_resolver`, `token_metadata_enricher`, `erc20_price_lookup`, `monetary_value_enricher`, `address_role_resolver`, `protocol_resolver`, `tag_resolver`, `static_context_provider`
+- **Output**: Natural language transaction summaries with structured metadata
+- **Key Features**: Autonomous function calling, multi-context RAG, structured output
+
+##### **annotation_generator**
+- **Purpose**: Creates interactive annotations for frontend UI enhancement
+- **Dependencies**: `transaction_explainer`
+- **Output**: Interactive elements with tooltips, links, and metadata
+- **Key Features**: Context-aware annotations, automatic link generation
+
+### 🔧 Tool Interface
+
+Every tool implements the standard `Tool` interface:
+
+```go
+type Tool interface {
+    Name() string                                                          // Unique identifier
+    Description() string                                                   // Human-readable description
+    Dependencies() []string                                                // Tools this depends on
+    Process(ctx context.Context, baggage map[string]interface{}) error    // Main processing logic
+    GetPromptContext(ctx context.Context, baggage map[string]interface{}) string // LLM context
+    GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext // RAG knowledge
+}
+```
+
+### 🚦 Pipeline Execution
+
+The pipeline uses **Kahn's algorithm** for topological sorting to ensure tools execute in proper dependency order. The system automatically:
+
+- ✅ Validates all dependencies are satisfied
+- ✅ Detects circular dependencies  
+- ✅ Calculates optimal execution order
+- ✅ Provides detailed execution logging
+- ✅ Handles tool failures gracefully
+
+### 📊 Data Flow
+
+Tools communicate through a shared **baggage** map that flows through the pipeline:
+
+```go
+// Tools add structured data for deterministic logic
+baggage["token_transfers"] = []TokenTransfer{...}
+
+// Tools provide LLM context via GetPromptContext()
+func (t *MyTool) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+    return "### MY ANALYSIS:\n- Key insights for LLM processing"
+}
+
+// Tools contribute knowledge via GetRagContext() 
+func (t *MyTool) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+    ragContext := NewRagContext()
+    ragContext.AddItem(RagContextItem{...})
+    return ragContext
+}
+```
+
+This architecture ensures **complete tool isolation** while enabling sophisticated data flow and AI-powered analysis.
+
 ## Installation
 
 ### Prerequisites
