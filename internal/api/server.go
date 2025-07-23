@@ -186,6 +186,29 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Send immediate feedback that request was received and validated
+	immediateEvent := models.ProgressEvent{
+		Type:      "component_update",
+		Component: &models.ComponentUpdate{
+			ID:          "request_received",
+			Group:       models.ComponentGroupData,
+			Title:       "Request Received",
+			Status:      models.ComponentStatusRunning,
+			Description: fmt.Sprintf("Analyzing transaction %s on network %d...", request.TxHash[:10]+"...", request.NetworkID),
+			Timestamp:   time.Now(),
+			StartTime:   func() *time.Time { t := time.Now(); return &t }(),
+			Duration:    0,
+		},
+		Timestamp: time.Now(),
+	}
+
+	// Send immediate event
+	eventData, _ := json.Marshal(immediateEvent)
+	fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", eventData)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
 	// Create progress channel
 	progressChan := make(chan models.ProgressEvent, 50)
 

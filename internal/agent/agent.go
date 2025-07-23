@@ -345,9 +345,6 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 	// Create progress tracker
 	progressTracker := models.NewProgressTracker(progressChan)
 	defer progressTracker.Close() // Ensure heartbeat goroutine is stopped
-	
-	// Send initial progress
-	progressTracker.UpdateComponent("initialization", models.ComponentGroupData, "Starting Analysis", models.ComponentStatusRunning, "Initializing transaction analysis...")
 
 	fmt.Println("\n" + strings.Repeat("🌟", 40))
 	fmt.Printf("🔍 ANALYZING TRANSACTION: %s\n", request.TxHash)
@@ -374,10 +371,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 		return nil, err
 	}
 
-	// Mark initialization as complete
-	progressTracker.UpdateComponent("initialization", models.ComponentGroupData, "Starting Analysis", models.ComponentStatusFinished, "Transaction analysis initialized successfully")
-
-	// Update progress - fetching transaction data
+	// Update progress - fetching transaction data (this is now the first real step)
 	progressTracker.UpdateComponent("fetch_data", models.ComponentGroupData, "Fetching Transaction Data", models.ComponentStatusRunning, "Getting transaction details from blockchain...")
 
 	// Step 1: Fetch raw transaction data using RPC

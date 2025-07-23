@@ -533,7 +533,7 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 
 // startHeartbeat ensures there's always a progress update within 500ms
 func (pt *ProgressTracker) startHeartbeat() {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(250 * time.Millisecond) // More frequent heartbeat for more activity
 	defer ticker.Stop()
 	
 	for {
@@ -545,8 +545,8 @@ func (pt *ProgressTracker) startHeartbeat() {
 			// Explicit done signal, stop heartbeat
 			return
 		case <-ticker.C:
-			// Check if we need to send a heartbeat
-			if time.Since(pt.lastUpdate) >= 450*time.Millisecond {
+			// Check if we need to send a heartbeat - reduced threshold for more updates
+			if time.Since(pt.lastUpdate) >= 200*time.Millisecond {
 				// Find the most recent running component to update
 				var latestRunning *ComponentUpdate
 				var latestTime time.Time
@@ -559,11 +559,8 @@ func (pt *ProgressTracker) startHeartbeat() {
 				}
 				
 				if latestRunning != nil {
-					// Send a subtle heartbeat update
-					heartbeatDesc := latestRunning.Description
-					if !strings.Contains(heartbeatDesc, "...") {
-						heartbeatDesc += "..."
-					}
+					// Send a subtle heartbeat update with more dynamic descriptions
+					heartbeatDesc := pt.generateProgressDescription(latestRunning)
 					
 					pt.UpdateComponent(
 						latestRunning.ID,
@@ -575,6 +572,31 @@ func (pt *ProgressTracker) startHeartbeat() {
 				}
 			}
 		}
+	}
+}
+
+// generateProgressDescription creates dynamic progress descriptions for heartbeats
+func (pt *ProgressTracker) generateProgressDescription(component *ComponentUpdate) string {
+	elapsed := time.Since(*component.StartTime)
+	
+	// Create more dynamic, varied descriptions based on elapsed time
+	baseDesc := component.Description
+	if strings.Contains(baseDesc, "...") {
+		baseDesc = strings.TrimSuffix(baseDesc, "...")
+	}
+	
+	// Add time-based variations to make it feel more alive
+	switch {
+	case elapsed < 2*time.Second:
+		return baseDesc + "..."
+	case elapsed < 4*time.Second:
+		return baseDesc + " (processing)"
+	case elapsed < 6*time.Second:
+		return baseDesc + " (working)"
+	case elapsed < 10*time.Second:
+		return baseDesc + " (still processing)"
+	default:
+		return baseDesc + " (almost done)"
 	}
 }
 
