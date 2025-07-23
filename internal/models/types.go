@@ -51,22 +51,22 @@ type NetworkConfig struct {
 // Uses the pattern: RPC_ENDPOINT_CHAIN_<CHAIN_ID>, NETWORK_NAME_CHAIN_<CHAIN_ID>, EXPLORER_URL_CHAIN_<CHAIN_ID>
 func LoadNetworksFromEnv() map[int64]Network {
 	networks := make(map[int64]Network)
-	
+
 	// First, load defaults
 	for id, network := range defaultNetworks {
 		networks[id] = network
 	}
-	
+
 	// Look for RPC endpoint environment variables
 	for _, envVar := range os.Environ() {
 		parts := strings.Split(envVar, "=")
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		value := parts[1]
-		
+
 		// Check if this is an RPC endpoint variable
 		if strings.HasPrefix(key, "RPC_ENDPOINT_CHAIN_") {
 			chainIDStr := strings.TrimPrefix(key, "RPC_ENDPOINT_CHAIN_")
@@ -74,7 +74,7 @@ func LoadNetworksFromEnv() map[int64]Network {
 			if err != nil {
 				continue
 			}
-			
+
 			// Get or create network for this chain ID
 			network, exists := networks[chainID]
 			if !exists {
@@ -88,55 +88,55 @@ func LoadNetworksFromEnv() map[int64]Network {
 			networks[chainID] = network
 		}
 	}
-	
+
 	// Load network names from environment variables
 	for _, envVar := range os.Environ() {
 		parts := strings.Split(envVar, "=")
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		value := parts[1]
-		
+
 		if strings.HasPrefix(key, "NETWORK_NAME_CHAIN_") {
 			chainIDStr := strings.TrimPrefix(key, "NETWORK_NAME_CHAIN_")
 			chainID, err := strconv.ParseInt(chainIDStr, 10, 64)
 			if err != nil {
 				continue
 			}
-			
+
 			if network, exists := networks[chainID]; exists {
 				network.Name = value
 				networks[chainID] = network
 			}
 		}
 	}
-	
+
 	// Load explorer URLs from environment variables
 	for _, envVar := range os.Environ() {
 		parts := strings.Split(envVar, "=")
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := parts[0]
 		value := parts[1]
-		
+
 		if strings.HasPrefix(key, "EXPLORER_URL_CHAIN_") {
 			chainIDStr := strings.TrimPrefix(key, "EXPLORER_URL_CHAIN_")
 			chainID, err := strconv.ParseInt(chainIDStr, 10, 64)
 			if err != nil {
 				continue
 			}
-			
+
 			if network, exists := networks[chainID]; exists {
 				network.Explorer = value
 				networks[chainID] = network
 			}
 		}
 	}
-	
+
 	return networks
 }
 
@@ -158,7 +158,7 @@ func ListNetworkIDs() []int64 {
 	if SupportedNetworks == nil {
 		InitializeNetworks()
 	}
-	
+
 	var ids []int64
 	for id := range SupportedNetworks {
 		ids = append(ids, id)
@@ -225,7 +225,7 @@ type TokenTransfer struct {
 
 // Annotation represents an interactive element in the explanation text
 type Annotation struct {
-	Text    string `json:"text"`    // Text to match (e.g. "0@100 USDT" for first occurrence)
+	Text    string `json:"text"`              // Text to match (e.g. "0@100 USDT" for first occurrence)
 	Link    string `json:"link,omitempty"`    // Optional URL to link to
 	Tooltip string `json:"tooltip,omitempty"` // Optional HTML tooltip content
 	Icon    string `json:"icon,omitempty"`    // Optional icon URL or path
@@ -233,13 +233,13 @@ type Annotation struct {
 
 // AnnotationContextItem represents a piece of context that can be used for annotations
 type AnnotationContextItem struct {
-	Type        string `json:"type"`        // token, address, protocol, amount, etc.
-	Value       string `json:"value"`       // The actual value (address, token symbol, etc.)
-	Name        string `json:"name,omitempty"`        // Human-readable name
-	Icon        string `json:"icon,omitempty"`        // Icon URL or path
-	Link        string `json:"link,omitempty"`        // Link URL
-	Description string `json:"description,omitempty"` // Description for tooltip
-	Metadata    map[string]interface{} `json:"metadata,omitempty"` // Additional metadata
+	Type        string                 `json:"type"`                  // token, address, protocol, amount, etc.
+	Value       string                 `json:"value"`                 // The actual value (address, token symbol, etc.)
+	Name        string                 `json:"name,omitempty"`        // Human-readable name
+	Icon        string                 `json:"icon,omitempty"`        // Icon URL or path
+	Link        string                 `json:"link,omitempty"`        // Link URL
+	Description string                 `json:"description,omitempty"` // Description for tooltip
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`    // Additional metadata
 }
 
 // AnnotationContext holds all context data that tools contribute for annotations

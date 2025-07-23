@@ -381,7 +381,7 @@ func (t *TokenMetadataEnricher) GetPromptContext(ctx context.Context, baggage ma
 			}
 			contextParts = append(contextParts, line)
 		}
-		
+
 		contextParts = append(contextParts, "", "Note: These contracts respond to token-like methods (name, symbol, decimals) but may not be actual tokens. Router contracts, aggregators, and other DeFi contracts often implement these methods for compatibility.")
 	}
 

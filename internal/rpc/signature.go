@@ -50,74 +50,10 @@ func NewSignatureResolver(rpcClient *Client, use4ByteAPI bool) *SignatureResolve
 	}
 }
 
-// Common function signatures (most reliable - from RPC experience)
-var commonFunctionSignatures = map[string]string{
-	// ERC20
-	"0xa9059cbb": "transfer(address,uint256)",
-	"0x23b872dd": "transferFrom(address,address,uint256)",
-	"0x095ea7b3": "approve(address,uint256)",
-	"0x70a08231": "balanceOf(address)",
-	"0xdd62ed3e": "allowance(address,address)",
-	"0x18160ddd": "totalSupply()",
-	"0x06fdde03": "name()",
-	"0x95d89b41": "symbol()",
-	"0x313ce567": "decimals()",
-
-	// ERC721
-	"0x42842e0e": "safeTransferFrom(address,address,uint256)",
-	"0xb88d4fde": "safeTransferFrom(address,address,uint256,bytes)",
-	"0x6352211e": "ownerOf(uint256)",
-	"0xc87b56dd": "tokenURI(uint256)",
-	"0xa22cb465": "setApprovalForAll(address,bool)",
-	"0x081812fc": "getApproved(uint256)",
-	"0xe985e9c5": "isApprovedForAll(address,address)",
-
-	// Common DeFi
-	"0x7ff36ab5": "swapExactETHForTokens(uint256,address[],address,uint256)",
-	"0x38ed1739": "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)",
-	"0xfb3bdb41": "swapETHForExactTokens(uint256,address[],address,uint256)",
-	"0x8803dbee": "swapTokensForExactTokens(uint256,uint256,address[],address,uint256)",
-	"0xe8e33700": "addLiquidity(address,address,uint256,uint256,uint256,uint256,address,uint256)",
-	"0xf305d719": "addLiquidityETH(address,uint256,uint256,uint256,address,uint256)",
-	"0x02751cec": "removeLiquidity(address,address,uint256,uint256,uint256,address,uint256)",
-	"0xaf2979eb": "removeLiquidityETH(address,uint256,uint256,uint256,address,uint256)",
-
-	// Staking/Rewards
-	"0xa694fc3a": "stake(uint256)",
-	"0x2e17de78": "unstake(uint256)",
-	"0x3d18b912": "getReward()",
-	"0xe9fad8ee": "exit()",
-
-	// Governance
-	"0x15373e3d": "propose(address[],uint256[],string[],bytes[],string)",
-	"0x56781388": "castVote(uint256,uint8)",
-	"0x7b3c71d3": "delegate(address)",
-}
-
-// Common event signatures
-var commonEventSignatures = map[string]string{
-	// ERC20 Events
-	"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef": "Transfer(address,address,uint256)",
-	"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925": "Approval(address,address,uint256)",
-
-	// ERC721 Events
-	"0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31": "ApprovalForAll(address,address,bool)",
-
-	// Uniswap V2 Events
-	"0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822": "Swap(address,uint256,uint256,uint256,uint256,address)",
-	"0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1": "Sync(uint112,uint112)",
-	"0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f": "Mint(address,uint256,uint256)",
-	"0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5": "Burn(address,uint256,uint256,address)",
-
-	// Uniswap V2 Factory
-	"0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9": "PairCreated(address,address,address,uint256)",
-
-	// Common DeFi events
-	"0x2f00e3cdd69a77be7ed215ec7b2a36784dd158f921fca79ac29ffa6880a6be49": "Deposit(address,uint256)",
-	"0x884edad9ce6fa2440d8a54cc123490eb96d2768479d49ff9c7366125a9424364": "Withdraw(address,uint256)",
-	"0x90890809c654f11d6e72a28fa60149770a0d11ec6c92319d6ceb2bb0a4ea1a15": "Staked(address,uint256)",
-	"0x0f5bb82176feb1b5e747e28471aa92156a04d9f3ab9f45f28e2d704232b93f75": "Unstaked(address,uint256)",
-}
+// Signature resolution should rely on:
+// 1. ABI data from verified contracts (primary source)
+// 2. 4byte.directory API (secondary source)
+// 3. Generic fallback (no hardcoded assumptions)
 
 // ResolveFunctionSignature resolves a function signature to its human-readable form
 func (sr *SignatureResolver) ResolveFunctionSignature(ctx context.Context, signature string) (*SignatureInfo, error) {
@@ -132,18 +68,7 @@ func (sr *SignatureResolver) ResolveFunctionSignature(ctx context.Context, signa
 		return cached, nil
 	}
 
-	// Check common signatures first (most reliable)
-	if textSig, exists := commonFunctionSignatures[sig]; exists {
-		info := &SignatureInfo{
-			Signature: textSig,
-			Name:      extractFunctionName(textSig),
-			Type:      "function",
-		}
-		sr.cache[sig] = info
-		return info, nil
-	}
-
-	// If 4byte API is enabled, try it
+	// Try 4byte API if enabled (generic approach - no hardcoded assumptions)
 	if sr.use4ByteAPI {
 		if info, err := sr.resolve4Byte(ctx, sig); err == nil && info != nil {
 			sr.cache[sig] = info
@@ -151,7 +76,7 @@ func (sr *SignatureResolver) ResolveFunctionSignature(ctx context.Context, signa
 		}
 	}
 
-	// Return unknown signature
+	// Return generic information - let ABI resolver and LLM interpret
 	info := &SignatureInfo{
 		Signature: signature,
 		Name:      "unknown",
@@ -174,18 +99,7 @@ func (sr *SignatureResolver) ResolveEventSignature(ctx context.Context, signatur
 		return cached, nil
 	}
 
-	// Check common event signatures first
-	if textSig, exists := commonEventSignatures[sig]; exists {
-		info := &SignatureInfo{
-			Signature: textSig,
-			Name:      extractEventName(textSig),
-			Type:      "event",
-		}
-		sr.cache[sig] = info
-		return info, nil
-	}
-
-	// If 4byte API is enabled, try event signatures API
+	// Try 4byte API if enabled for event signatures (generic approach)
 	if sr.use4ByteAPI {
 		if info, err := sr.resolveEventSignature4Byte(ctx, sig); err == nil && info != nil {
 			sr.cache[sig] = info
@@ -193,7 +107,7 @@ func (sr *SignatureResolver) ResolveEventSignature(ctx context.Context, signatur
 		}
 	}
 
-	// Return unknown event signature
+	// Return generic information - let ABI resolver and LLM interpret
 	info := &SignatureInfo{
 		Signature: signature,
 		Name:      "unknown",

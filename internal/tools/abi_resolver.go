@@ -30,7 +30,7 @@ type ContractInfo struct {
 	CompilerVersion  string      `json:"compiler_version"`
 	IsVerified       bool        `json:"is_verified"`
 	IsProxy          bool        `json:"is_proxy"`
-	Implementation   string      `json:"implementation,omitempty"`   // For proxy contracts
+	Implementation   string      `json:"implementation,omitempty"`    // For proxy contracts
 	IsImplementation bool        `json:"is_implementation,omitempty"` // True if this is an implementation contract
 	ProxyAddress     string      `json:"proxy_address,omitempty"`     // Address of the proxy that uses this implementation
 	ParsedABI        []ABIMethod `json:"parsed_abi"`                  // Parsed ABI for easier access
@@ -131,17 +131,17 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 	for _, address := range contractAddresses {
 		if contractInfo, err := a.resolveContract(ctx, address, networkID); err == nil {
 			resolvedContracts[strings.ToLower(address)] = contractInfo
-			
+
 			// If this is a proxy contract, also resolve the implementation contract
 			if contractInfo.IsProxy && contractInfo.Implementation != "" {
 				// Add small delay before resolving implementation
 				time.Sleep(200 * time.Millisecond)
-				
+
 				if implInfo, err := a.resolveContract(ctx, contractInfo.Implementation, networkID); err == nil {
 					// Store implementation contract info with a clear key
 					implKey := strings.ToLower(contractInfo.Implementation)
 					resolvedContracts[implKey] = implInfo
-					
+
 					// Mark this as an implementation contract for context
 					implInfo.IsImplementation = true
 					implInfo.ProxyAddress = address
@@ -155,7 +155,7 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 
 	// Add resolved contracts to baggage
 	baggage["resolved_contracts"] = resolvedContracts
-	
+
 	// Also add the list of all discovered contract addresses for other tools to use
 	baggage["contract_addresses"] = contractAddresses
 	return nil
@@ -215,7 +215,7 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 						}
 					}
 				}
-				
+
 				// Also get the main trace 'to' address
 				if to, ok := trace["to"].(string); ok && to != "" {
 					addressMap[strings.ToLower(to)] = true
@@ -224,23 +224,21 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 		}
 	}
 
-	// CRITICAL: Extract spender addresses from Approval events
-	// These are often protocol contracts/routers that users interact with
+	// GENERIC: Extract ALL address parameters from ALL events
+	// This works with any event type without hardcoded event names
 	if events, ok := baggage["events"].([]models.Event); ok {
 		for _, event := range events {
-			if event.Name == "Approval" && event.Parameters != nil {
-				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
-					// Clean up padded addresses (remove leading zeros)
-					cleanSpender := strings.TrimPrefix(spender, "0x000000000000000000000000")
-					if len(cleanSpender) == 40 && cleanSpender != spender {
-						cleanSpender = "0x" + cleanSpender
-					} else {
-						cleanSpender = spender
-					}
-					
-					// Add the spender address to our contract list
-					if cleanSpender != "" && cleanSpender != "0x" {
-						addressMap[strings.ToLower(cleanSpender)] = true
+			if event.Parameters != nil {
+				// Extract ALL address-like parameters from ANY event
+				for _, paramValue := range event.Parameters {
+					if addressStr, ok := paramValue.(string); ok && addressStr != "" {
+						// Check if this looks like an address (42 chars starting with 0x, or 66 chars padded)
+						if a.looksLikeAddress(addressStr) {
+							cleanAddress := a.cleanAddress(addressStr)
+							if cleanAddress != "" && cleanAddress != "0x" {
+								addressMap[strings.ToLower(cleanAddress)] = true
+							}
+						}
 					}
 				}
 			}
@@ -365,7 +363,7 @@ func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, ne
 	// Contract is verified, fetch the metadata.json file
 	repoURL := "https://repo.sourcify.dev"
 	var metadataURL string
-	
+
 	if status == "perfect" {
 		metadataURL = fmt.Sprintf("%s/contracts/full_match/%d/%s/metadata.json", repoURL, chainID, address)
 	} else {
@@ -684,20 +682,20 @@ func (a *ABIResolver) getEtherscanURL(networkID int64) string {
 		}
 		return endpoint
 	}
-	
+
 	// Priority 2: Get network configuration for fallback
 	network, exists := models.GetNetwork(networkID)
 	if !exists {
 		return ""
 	}
-	
+
 	// Priority 3: Derive API URL from explorer URL using common patterns
 	// This works with any network without hardcoding specific chain IDs
 	explorerURL := network.Explorer
 	if explorerURL == "" {
 		return ""
 	}
-	
+
 	// Convert explorer URL to API URL using common patterns
 	if strings.Contains(explorerURL, "etherscan.io") {
 		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
@@ -712,7 +710,7 @@ func (a *ABIResolver) getEtherscanURL(networkID int64) string {
 	} else if strings.Contains(explorerURL, "snowtrace.io") {
 		return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
 	}
-	
+
 	// For unknown explorers, try the most common pattern
 	return strings.Replace(explorerURL, "https://", "https://api.", 1) + "/api"
 }
@@ -733,7 +731,7 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	for address, contract := range resolvedContracts {
 		if contract.IsVerified {
 			var contractInfo []string
-			
+
 			// Contract address and name with type context
 			if contract.IsImplementation {
 				// This is an implementation contract
@@ -766,7 +764,7 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 
 			// Contract verification status
 			contractInfo = append(contractInfo, "Status: Verified on Etherscan")
-			
+
 			if contract.CompilerVersion != "" {
 				contractInfo = append(contractInfo, fmt.Sprintf("Compiler: %s", contract.CompilerVersion))
 			}
@@ -779,7 +777,7 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 						functions = append(functions, method.Name)
 					} else if method.Type == "event" && method.Name != "" {
 						events = append(events, method.Name)
-						
+
 						// Build detailed event parameter information
 						eventDetail := fmt.Sprintf("%s(", method.Name)
 						var paramStrings []string
@@ -796,7 +794,7 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 							}
 						}
 						eventDetail += strings.Join(paramStrings, ", ") + ")"
-						
+
 						// Create clear contract description for event source
 						contractDesc := contract.ContractName
 						if contract.IsImplementation {
@@ -808,16 +806,16 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 							if contract.IsImplementation {
 								contractDesc = "Implementation Contract"
 							} else if contract.IsProxy {
-								contractDesc = "Proxy Contract" 
+								contractDesc = "Proxy Contract"
 							} else {
 								contractDesc = "Contract"
 							}
 						}
-						
+
 						eventDetails = append(eventDetails, fmt.Sprintf("- %s on %s: %s", method.Name, contractDesc, eventDetail))
 					}
 				}
-				
+
 				if len(functions) > 0 {
 					// Show first few functions to avoid overwhelming the prompt
 					displayFunctions := functions
@@ -827,7 +825,7 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 					}
 					contractInfo = append(contractInfo, fmt.Sprintf("Functions: %s", strings.Join(displayFunctions, ", ")))
 				}
-				
+
 				if len(events) > 0 {
 					// Show first few events
 					displayEvents := events
@@ -855,8 +853,6 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 		contextParts = append(contextParts, strings.Join(eventDetails, "\n"))
 	}
 
-
-
 	// Add proxy-implementation guidance if relevant
 	hasProxies := false
 	hasImplementations := false
@@ -879,6 +875,60 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	contextParts = append(contextParts, "", "Note: Contract names from Etherscan verification are authoritative. Use verified contract names to distinguish between token contracts (e.g., 'USDC', 'DAI') and protocol contracts (e.g., 'AggregationRouterV6', 'UniswapV2Router02').")
 
 	return strings.Join(contextParts, "\n")
+}
+
+// looksLikeAddress checks if a string looks like an Ethereum address
+func (a *ABIResolver) looksLikeAddress(addr string) bool {
+	if addr == "" {
+		return false
+	}
+
+	// Remove 0x prefix for length check
+	cleanAddr := addr
+	if strings.HasPrefix(addr, "0x") {
+		cleanAddr = addr[2:]
+	}
+
+	// Address should be 40 hex chars (20 bytes) or 64 hex chars (padded)
+	if len(cleanAddr) != 40 && len(cleanAddr) != 64 {
+		return false
+	}
+
+	// Check if it's valid hex
+	for _, char := range cleanAddr {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// cleanAddress removes padding from addresses and validates format
+func (a *ABIResolver) cleanAddress(address string) string {
+	if address == "" {
+		return ""
+	}
+
+	// Remove 0x prefix for processing
+	addr := address
+	hasPrefix := strings.HasPrefix(addr, "0x")
+	if hasPrefix {
+		addr = addr[2:]
+	}
+
+	// If it's a padded 64-character address, extract the last 40 characters
+	if len(addr) == 64 {
+		addr = addr[24:] // Remove padding, keep last 40 chars
+	}
+
+	// Validate it's a proper hex address (40 characters)
+	if len(addr) != 40 {
+		return ""
+	}
+
+	// Re-add prefix and return
+	return "0x" + addr
 }
 
 // GetResolvedContract is a helper function to get resolved contract from baggage

@@ -42,4 +42,4 @@ func (acc *AnnotationContextCollector) Collect(ctx context.Context, baggage map[
 	}
 
 	return aggregated
-} 
+}

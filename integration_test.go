@@ -23,17 +23,17 @@ func TestCompleteTransactionPipeline_Integration(t *testing.T) {
 
 	// Test cases with different networks and transaction types
 	testCases := []struct {
-		name      string
-		txHash    string
-		networkID int64
-		network   string
+		name         string
+		txHash       string
+		networkID    int64
+		network      string
 		expectations struct {
-			shouldContainNFTs   bool
-			shouldContainSwap   bool
-			shouldHaveGasFee    bool
-			nativeTokenSymbol   string
-			minGasFeeUSD        float64 // Minimum expected gas fee in USD
-			maxGasFeeUSD        float64 // Maximum expected gas fee in USD
+			shouldContainNFTs bool
+			shouldContainSwap bool
+			shouldHaveGasFee  bool
+			nativeTokenSymbol string
+			minGasFeeUSD      float64 // Minimum expected gas fee in USD
+			maxGasFeeUSD      float64 // Maximum expected gas fee in USD
 		}
 	}{
 		{
@@ -42,19 +42,19 @@ func TestCompleteTransactionPipeline_Integration(t *testing.T) {
 			networkID: 137,
 			network:   "Polygon",
 			expectations: struct {
-				shouldContainNFTs   bool
-				shouldContainSwap   bool
-				shouldHaveGasFee    bool
-				nativeTokenSymbol   string
-				minGasFeeUSD        float64
-				maxGasFeeUSD        float64
+				shouldContainNFTs bool
+				shouldContainSwap bool
+				shouldHaveGasFee  bool
+				nativeTokenSymbol string
+				minGasFeeUSD      float64
+				maxGasFeeUSD      float64
 			}{
-				shouldContainNFTs:   true,  // Should detect ERC1155 NFTs
-				shouldContainSwap:   true,  // Should detect USDC swap
-				shouldHaveGasFee:    true,  // Should calculate MATIC gas fees
-				nativeTokenSymbol:   "MATIC",
-				minGasFeeUSD:        0.001, // Very low for Polygon
-				maxGasFeeUSD:        5.0,   // Should be much less than $5
+				shouldContainNFTs: true, // Should detect ERC1155 NFTs
+				shouldContainSwap: true, // Should detect USDC swap
+				shouldHaveGasFee:  true, // Should calculate MATIC gas fees
+				nativeTokenSymbol: "MATIC",
+				minGasFeeUSD:      0.001, // Very low for Polygon
+				maxGasFeeUSD:      5.0,   // Should be much less than $5
 			},
 		},
 	}
@@ -126,7 +126,7 @@ func TestCompleteTransactionPipeline_Integration(t *testing.T) {
 				summary := strings.ToLower(result.Summary)
 				if strings.Contains(summary, "$") && (strings.Contains(summary, "gas") || strings.Contains(summary, "fee")) {
 					t.Logf("✅ Gas fees properly included in summary: %s", result.Summary)
-					
+
 					// Extract USD amount if possible and verify it's reasonable
 					// This is a basic check - in production you'd want more sophisticated parsing
 					if tc.networkID == 137 && strings.Contains(summary, "$0.0") { // Polygon should have very low fees
@@ -151,10 +151,10 @@ func TestCompleteTransactionPipeline_Integration(t *testing.T) {
 			t.Logf("   Gas Used: %d", result.GasUsed)
 			t.Logf("   Status: %s", result.Status)
 			t.Logf("   Transfers: %d", len(result.Transfers))
-			
+
 			for i, transfer := range result.Transfers {
-				t.Logf("     Transfer %d: %s %s (%s) from %s to %s", 
-					i+1, transfer.FormattedAmount, transfer.Symbol, transfer.Type, 
+				t.Logf("     Transfer %d: %s %s (%s) from %s to %s",
+					i+1, transfer.FormattedAmount, transfer.Symbol, transfer.Type,
 					transfer.From, transfer.To)
 				if transfer.AmountUSD != "" {
 					t.Logf("       USD Value: $%s", transfer.AmountUSD)
@@ -168,7 +168,7 @@ func TestCompleteTransactionPipeline_Integration(t *testing.T) {
 					if nftTransfers, exists := baggage["nft_transfers"]; exists {
 						t.Logf("   NFT Transfers found in baggage: %+v", nftTransfers)
 					}
-					
+
 					// Check debug info
 					if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
 						if nftDebug, exists := debugInfo["nft_decoder"]; exists {
@@ -261,4 +261,4 @@ func TestNFTDecoder_RealTransaction_Integration(t *testing.T) {
 
 	t.Logf("✅ NFT Decoder Integration Test Passed")
 	t.Logf("Generated Context:\n%s", context)
-} 
+}

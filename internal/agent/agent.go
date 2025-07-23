@@ -154,6 +154,13 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, tokenMetadata)
 
+	// Add amounts finder (NEW - uses LLM to detect ALL relevant amounts generically)
+	amountsFinder := txtools.NewAmountsFinder(a.llm)
+	if err := pipeline.AddProcessor(amountsFinder); err != nil {
+		return nil, fmt.Errorf("failed to add amounts finder: %w", err)
+	}
+	contextProviders = append(contextProviders, amountsFinder)
+
 	// Add icon resolver (discovers token icons from TrustWallet GitHub)
 	iconResolver := txtools.NewIconResolver(staticContextProvider)
 	iconResolver.SetVerbose(true) // Enable verbose for debugging icon discovery
@@ -161,7 +168,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
 	}
 
-	// Add price lookup if API key is available
+	// Add price lookup if API key is available (runs AFTER amounts_finder)
 	var priceLookup *txtools.ERC20PriceLookup
 	if a.coinMarketCapAPIKey != "" {
 		priceLookup = txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey)
@@ -170,7 +177,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		}
 		contextProviders = append(contextProviders, priceLookup)
 
-		// Add monetary value enricher (runs after price lookup)
+		// Add monetary value enricher (runs after amounts_finder + price lookup)
 		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.coinMarketCapAPIKey)
 		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
 			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)
@@ -205,7 +212,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	// Add context providers to baggage for transaction explainer
 	baggage["context_providers"] = contextProviders
 
-	// Add transaction explainer 
+	// Add transaction explainer
 	if err := pipeline.AddProcessor(a.explainer); err != nil {
 		return nil, fmt.Errorf("failed to add transaction explainer: %w", err)
 	}
@@ -224,7 +231,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	if priceLookup != nil {
 		annotationGenerator.AddContextProvider(priceLookup)
 	}
-	
+
 	// Add monetary enricher if available (for gas fee tooltips)
 	for _, provider := range contextProviders {
 		if monetaryProvider, ok := provider.(*txtools.MonetaryValueEnricher); ok {
@@ -251,7 +258,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	if explanation.Metadata == nil {
 		explanation.Metadata = make(map[string]interface{})
 	}
-	
+
 	// Create a clean copy of baggage without circular references
 	cleanBaggage := make(map[string]interface{})
 	for key, value := range baggage {
@@ -298,8 +305,6 @@ func (a *TxplainAgent) enhanceExplanationWithRPC(ctx context.Context, client *rp
 			}
 		}
 	}
-
-
 
 	// Add metadata about contracts involved
 	if explanation.Metadata == nil {

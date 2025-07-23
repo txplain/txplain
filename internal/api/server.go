@@ -66,12 +66,12 @@ func (s *Server) setupRoutes() {
 
 	// Serve static assets (CSS, JS, etc.) - must come before SPA handler
 	s.router.PathPrefix("/assets/").Handler(http.StripPrefix("/assets/", http.FileServer(http.Dir("./web/dist/assets/"))))
-	
+
 	// Serve vite.svg and other root-level static files
 	s.router.HandleFunc("/vite.svg", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./web/dist/vite.svg")
 	})
-	
+
 	// Serve index.html for SPA routing (must be last to catch all remaining routes)
 	s.router.PathPrefix("/").HandlerFunc(s.handleSPA).Methods("GET")
 }
@@ -138,13 +138,13 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 	// Return the explanation
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	// Create a debug version without metadata to avoid potential circular references
 	debugExplanation := *explanation
 	debugExplanation.Metadata = nil
-	
+
 	log.Printf("About to encode JSON response...")
-	
+
 	// Ensure we handle JSON encoding errors
 	if encodeErr := json.NewEncoder(w).Encode(explanation); encodeErr != nil {
 		log.Printf("FAILED to encode explanation response as JSON: %v", encodeErr)
@@ -211,14 +211,14 @@ func (s *Server) handleGetTransactionDetails(w http.ResponseWriter, r *http.Requ
 // handleSPA serves the React SPA for non-API routes
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	// Skip API routes and static assets
-	if strings.HasPrefix(r.URL.Path, "/api/") || 
-	   strings.HasPrefix(r.URL.Path, "/health") ||
-	   strings.HasPrefix(r.URL.Path, "/assets/") ||
-	   r.URL.Path == "/vite.svg" {
+	if strings.HasPrefix(r.URL.Path, "/api/") ||
+		strings.HasPrefix(r.URL.Path, "/health") ||
+		strings.HasPrefix(r.URL.Path, "/assets/") ||
+		r.URL.Path == "/vite.svg" {
 		http.NotFound(w, r)
 		return
 	}
-	
+
 	// Serve index.html for SPA routing
 	http.ServeFile(w, r, "./web/dist/index.html")
 }
@@ -237,7 +237,7 @@ func (s *Server) writeErrorResponse(w http.ResponseWriter, statusCode int, messa
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	
+
 	// Ensure we always write a response, even if JSON encoding fails
 	if encodeErr := json.NewEncoder(w).Encode(response); encodeErr != nil {
 		log.Printf("Failed to encode error response as JSON: %v", encodeErr)
@@ -252,7 +252,7 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if err := recover(); err != nil {
 				log.Printf("PANIC in %s %s: %v", r.Method, r.URL.Path, err)
-				
+
 				// Only write response if headers haven't been sent yet
 				if w.Header().Get("Content-Type") == "" {
 					s.writeErrorResponse(w, http.StatusInternalServerError, "Internal server error", fmt.Errorf("panic: %v", err))
@@ -262,7 +262,7 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 				}
 			}
 		}()
-		
+
 		next.ServeHTTP(w, r)
 	})
 }

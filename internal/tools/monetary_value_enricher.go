@@ -25,6 +25,18 @@ type MonetaryValueEnricher struct {
 	httpClient *http.Client
 }
 
+// EnrichedAmount represents a detected amount with USD value calculations
+type EnrichedAmount struct {
+	DetectedAmount          // Embed the original detected amount
+	FormattedAmount string  `json:"formatted_amount"` // Human-readable amount (e.g., "1.234567")
+	USDValue        float64 `json:"usd_value"`        // USD equivalent value
+	USDFormatted    string  `json:"usd_formatted"`    // Formatted USD value (e.g., "1,234.56")
+	TokenDecimals   int     `json:"token_decimals"`   // Token decimals used for conversion
+	PricePerToken   float64 `json:"price_per_token"`  // USD price per token used
+	PriceSource     string  `json:"price_source"`     // Source of price data ("CEX", "DEX", "COMBINED")
+	HasPriceData    bool    `json:"has_price_data"`   // Whether USD calculation was possible
+}
+
 // NewMonetaryValueEnricher creates a new monetary value enricher
 func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string) *MonetaryValueEnricher {
 	return &MonetaryValueEnricher{
@@ -46,33 +58,44 @@ func (m *MonetaryValueEnricher) Description() string {
 
 // Dependencies returns the tools this processor depends on
 func (m *MonetaryValueEnricher) Dependencies() []string {
-	return []string{"token_metadata_enricher", "erc20_price_lookup"}
+	return []string{"amounts_finder", "erc20_price_lookup"}
 }
 
-// Process enriches all monetary values with USD equivalents
+// Process enriches detected amounts with USD equivalents
 func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Get detected amounts from amounts_finder
+	detectedAmounts, ok := baggage["detected_amounts"].([]DetectedAmount)
+	if !ok || len(detectedAmounts) == 0 {
+		return nil // No amounts detected, nothing to enrich
+	}
+
+	// Get token prices from erc20_price_lookup
+	tokenPrices, hasPrices := baggage["token_prices"].(map[string]*TokenPrice)
+
+	// Get token metadata for decimal conversion
+	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
+
+	if !hasMetadata {
+		return nil // Can't convert amounts without metadata
+	}
+
 	// Get native token price for gas fee calculations
 	nativeTokenPrice := m.getNativeTokenPrice(ctx, baggage)
 
-	// Get token metadata and prices from baggage
-	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
-	tokenPrices, _ := baggage["token_prices"].(map[string]*TokenPrice)
+	// Enrich each detected amount with USD value
+	enrichedAmounts := make([]EnrichedAmount, 0, len(detectedAmounts))
 
-	if !hasMetadata {
-		return nil // Can't enrich without metadata, but prices are optional
+	for _, amount := range detectedAmounts {
+		enriched := m.enrichDetectedAmount(amount, tokenPrices, tokenMetadata, hasPrices)
+		if enriched != nil {
+			enrichedAmounts = append(enrichedAmounts, *enriched)
+		}
 	}
 
-	// Enrich transfers with formatted amounts and USD values (if available)
-	if err := m.enrichTransfers(baggage, tokenMetadata, tokenPrices); err != nil {
-		return fmt.Errorf("failed to enrich transfers: %w", err)
-	}
+	// Add enriched amounts to baggage
+	baggage["enriched_amounts"] = enrichedAmounts
 
-	// Enrich events with formatted values (if price data available)
-	if err := m.enrichEvents(baggage, tokenMetadata, tokenPrices); err != nil {
-		return fmt.Errorf("failed to enrich events: %w", err)
-	}
-
-	// Enrich raw data with USD values
+	// Enrich raw data with gas fees (unchanged - still needed)
 	if err := m.enrichRawData(baggage, nativeTokenPrice); err != nil {
 		return fmt.Errorf("failed to enrich raw data: %w", err)
 	}
@@ -80,7 +103,99 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	return nil
 }
 
+// enrichDetectedAmount converts a detected amount to an enriched amount with USD values
+func (m *MonetaryValueEnricher) enrichDetectedAmount(detected DetectedAmount, tokenPrices map[string]*TokenPrice, tokenMetadata map[string]*TokenMetadata, hasPrices bool) *EnrichedAmount {
+	// Get token metadata for decimal conversion
+	metadata, exists := tokenMetadata[strings.ToLower(detected.TokenContract)]
+	if !exists {
+		return nil // Can't convert without decimals
+	}
 
+	// Convert raw amount to formatted amount
+	formattedAmount := m.convertAmountToTokens(detected.Amount, metadata.Decimals)
+	if formattedAmount == 0 {
+		return nil // Skip zero amounts
+	}
+
+	// Format the amount for display
+	formattedStr := m.formatAmount(formattedAmount)
+
+	// Create enriched amount with basic info
+	enriched := &EnrichedAmount{
+		DetectedAmount:  detected,
+		FormattedAmount: formattedStr,
+		TokenDecimals:   metadata.Decimals,
+		HasPriceData:    false,
+	}
+
+	// Add USD value if price data is available
+	if hasPrices {
+		if price, exists := tokenPrices[strings.ToLower(detected.TokenContract)]; exists && price.Price > 0 {
+			usdValue := formattedAmount * price.Price
+			enriched.USDValue = usdValue
+			enriched.USDFormatted = fmt.Sprintf("%.2f", usdValue)
+			enriched.PricePerToken = price.Price
+			enriched.PriceSource = price.PriceSource
+			enriched.HasPriceData = true
+		}
+	}
+
+	return enriched
+}
+
+// formatAmount formats a token amount for display
+func (m *MonetaryValueEnricher) formatAmount(amount float64) string {
+	if amount >= 1000000 {
+		// For millions and above, use 2 decimal places
+		return fmt.Sprintf("%.2f", amount)
+	} else if amount >= 1000 {
+		// For thousands, use 3 decimal places
+		return fmt.Sprintf("%.3f", amount)
+	} else if amount >= 1 {
+		// For regular amounts, use 6 decimal places
+		return fmt.Sprintf("%.6f", amount)
+	} else {
+		// For very small amounts, use more precision
+		return fmt.Sprintf("%.8f", amount)
+	}
+}
+
+// isAmountParameter checks if a parameter name likely contains an amount/value
+func (m *MonetaryValueEnricher) isAmountParameter(paramName string) bool {
+	// Common parameter names that contain amounts/values
+	amountParams := map[string]bool{
+		"value":    true, // ERC20/ERC721 transfers
+		"amount":   true, // Generic amounts
+		"quantity": true, // NFT quantities
+		"balance":  true, // Balance changes
+		"supply":   true, // Token supply changes
+		"deposit":  true, // Deposit amounts
+		"withdraw": true, // Withdrawal amounts
+		"payment":  true, // Payment amounts
+		"fee":      true, // Fee amounts
+		"reward":   true, // Reward amounts
+		"stake":    true, // Staking amounts
+		"loan":     true, // Loan amounts
+		"debt":     true, // Debt amounts
+		"price":    true, // Price values
+		"cost":     true, // Cost values
+	}
+
+	// Check exact match first
+	lowerParam := strings.ToLower(paramName)
+	if amountParams[lowerParam] {
+		return true
+	}
+
+	// Check if parameter name contains amount-related keywords
+	for keyword := range amountParams {
+		if strings.Contains(lowerParam, keyword) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // enrichTransfers enriches transfer objects with formatted amounts and USD values
 func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, tokenMetadata map[string]*TokenMetadata, tokenPrices map[string]*TokenPrice) error {
@@ -100,7 +215,7 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 	var enrichmentDebug []string
 	for i, transfer := range transfers {
 		transferDebug := fmt.Sprintf("Transfer %d (contract: %s)", i, transfer.Contract)
-		
+
 		// Check if this is a native token transfer using pattern detection
 		isNativeToken := m.isNativeTokenAddress(transfer.Contract)
 		if isNativeToken {
@@ -109,12 +224,19 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 			if nativeSymbol != "" {
 				transfers[i].Symbol = nativeSymbol
 				transfers[i].Name = fmt.Sprintf("%s Native Token", nativeSymbol)
-				transfers[i].Decimals = 18 // Native tokens typically use 18 decimals
-				transfers[i].Type = "ETH" // Use ETH type for native tokens
+				transfers[i].Decimals = 18   // Native tokens typically use 18 decimals
+				transfers[i].Type = "NATIVE" // Generic type for native tokens
 				transferDebug += fmt.Sprintf(" - NATIVE TOKEN: %s", nativeSymbol)
+			} else {
+				// Fallback when native token symbol is unknown
+				transfers[i].Symbol = "NATIVE"
+				transfers[i].Name = "Native Token"
+				transfers[i].Decimals = 18
+				transfers[i].Type = "NATIVE"
+				transferDebug += " - NATIVE TOKEN: Unknown Symbol"
 			}
 		}
-		
+
 		// Get token metadata (skip if already set for native tokens)
 		var metadata *TokenMetadata
 		if !isNativeToken {
@@ -144,7 +266,7 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 		if transfer.Amount != "" {
 			formattedAmount := m.convertAmountToTokens(transfer.Amount, transfers[i].Decimals)
 			transferDebug += fmt.Sprintf(" - RAW AMOUNT: %s", transfer.Amount)
-			
+
 			// Format the amount based on its magnitude for better readability
 			var formattedStr string
 			if formattedAmount >= 1000000 {
@@ -160,7 +282,7 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 				// For very small amounts, use more precision
 				formattedStr = fmt.Sprintf("%.8f", formattedAmount)
 			}
-			
+
 			// Remove trailing zeros and decimal point if not needed
 			formattedStr = strings.TrimRight(formattedStr, "0")
 			formattedStr = strings.TrimRight(formattedStr, ".")
@@ -180,7 +302,7 @@ func (m *MonetaryValueEnricher) enrichTransfers(baggage map[string]interface{}, 
 		} else {
 			transferDebug += " - NO AMOUNT"
 		}
-		
+
 		enrichmentDebug = append(enrichmentDebug, transferDebug)
 	}
 
@@ -208,45 +330,50 @@ func (m *MonetaryValueEnricher) enrichEvents(baggage map[string]interface{}, tok
 	}
 
 	for i, event := range events {
-		if event.Name == "Transfer" && event.Parameters != nil {
-					// Get token metadata
-		metadata := tokenMetadata[strings.ToLower(event.Contract)]
-		if metadata == nil {
-			continue
-		}
-
-		// Add formatted value if "value" parameter exists
-		if valueStr, ok := event.Parameters["value"].(string); ok && valueStr != "" {
-			formattedAmount := m.convertAmountToTokens(valueStr, metadata.Decimals)
-			
-			// Format the amount based on its magnitude for better readability
-			var formattedStr string
-			if formattedAmount >= 1000000 {
-				// For millions and above, use 2 decimal places
-				formattedStr = fmt.Sprintf("%.2f", formattedAmount)
-			} else if formattedAmount >= 1000 {
-				// For thousands, use 3 decimal places
-				formattedStr = fmt.Sprintf("%.3f", formattedAmount)
-			} else if formattedAmount >= 1 {
-				// For regular amounts, use 6 decimal places
-				formattedStr = fmt.Sprintf("%.6f", formattedAmount)
-			} else {
-				// For very small amounts, use more precision
-				formattedStr = fmt.Sprintf("%.8f", formattedAmount)
+		if event.Parameters != nil {
+			// Get token metadata for this contract
+			metadata := tokenMetadata[strings.ToLower(event.Contract)]
+			if metadata == nil {
+				continue
 			}
-			
-			// Remove trailing zeros and decimal point if not needed
-			formattedStr = strings.TrimRight(formattedStr, "0")
-			formattedStr = strings.TrimRight(formattedStr, ".")
-			events[i].Parameters["value_formatted"] = formattedStr
 
-			// Calculate USD value only if price data is available
-			price := tokenPrices[strings.ToLower(event.Contract)]
-			if price != nil {
-				usdValue := formattedAmount * price.Price
-				events[i].Parameters["value_usd"] = fmt.Sprintf("%.2f", usdValue)
+			// Look for ANY parameter that could represent a value/amount
+			for paramName, paramValue := range event.Parameters {
+				if valueStr, ok := paramValue.(string); ok && valueStr != "" {
+					// Check if this parameter name suggests it contains an amount
+					if m.isAmountParameter(paramName) {
+						formattedAmount := m.convertAmountToTokens(valueStr, metadata.Decimals)
+
+						// Format the amount based on its magnitude for better readability
+						var formattedStr string
+						if formattedAmount >= 1000000 {
+							// For millions and above, use 2 decimal places
+							formattedStr = fmt.Sprintf("%.2f", formattedAmount)
+						} else if formattedAmount >= 1000 {
+							// For thousands, use 3 decimal places
+							formattedStr = fmt.Sprintf("%.3f", formattedAmount)
+						} else if formattedAmount >= 1 {
+							// For regular amounts, use 6 decimal places
+							formattedStr = fmt.Sprintf("%.6f", formattedAmount)
+						} else {
+							// For very small amounts, use more precision
+							formattedStr = fmt.Sprintf("%.8f", formattedAmount)
+						}
+
+						// Remove trailing zeros and decimal point if not needed
+						formattedStr = strings.TrimRight(formattedStr, "0")
+						formattedStr = strings.TrimRight(formattedStr, ".")
+						events[i].Parameters[paramName+"_formatted"] = formattedStr
+
+						// Calculate USD value only if price data is available
+						price := tokenPrices[strings.ToLower(event.Contract)]
+						if price != nil {
+							usdValue := formattedAmount * price.Price
+							events[i].Parameters[paramName+"_usd"] = fmt.Sprintf("%.2f", usdValue)
+						}
+					}
+				}
 			}
-		}
 		}
 	}
 
@@ -292,7 +419,7 @@ func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
 }
 
 // getNativeTokenFromRPC attempts to get native token symbol from RPC or network context
-// This is a completely generic approach that works with any network  
+// This is a completely generic approach that works with any network
 func (m *MonetaryValueEnricher) getNativeTokenFromRPC(network models.Network) string {
 	// Check if network has native token info configured
 	// This could be extended to use RPC calls or network metadata
@@ -382,7 +509,7 @@ func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) flo
 			return price
 		}
 	}
-	
+
 	// No hardcoded prices - return 0 to indicate price unavailable
 	// This is better than hardcoding outdated prices
 	// The system will work without USD values but still show token amounts
@@ -397,14 +524,14 @@ func (m *MonetaryValueEnricher) getNativeTokenPriceFromAPI(networkID int64) floa
 	if nativeSymbol == "" {
 		return 0
 	}
-	
+
 	// Use existing CoinMarketCap API to get current price
 	if m.apiKey != "" {
 		if price, err := m.fetchNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
 			return price
 		}
 	}
-	
+
 	// Fallback: use the existing fallback mechanism
 	return m.getFallbackNativeTokenPrice(networkID)
 }
@@ -464,7 +591,7 @@ func (m *MonetaryValueEnricher) convertAmountToTokens(amountStr string, decimals
 
 	// Convert to big.Float and adjust for decimals to maintain precision
 	amountFloat := new(big.Float).SetInt(amountBig)
-	
+
 	if decimals > 0 {
 		// Create divisor (10^decimals) as big.Float for precise division
 		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
@@ -481,11 +608,11 @@ func (m *MonetaryValueEnricher) createFallbackMetadata(contractAddress, amount, 
 	// Start with safe defaults
 	decimals := 18 // Default to 18 for most ERC20 tokens
 	name := symbol // Use symbol as name if available
-	
+
 	// Use generic approach: rely on RPC data and amount pattern analysis
 	// instead of hardcoding assumptions about specific token symbols
 	// This approach works for any token without symbol-based assumptions
-	
+
 	// Try to infer decimals from amount patterns if we have transaction data
 	if amount != "" && strings.HasPrefix(amount, "0x") {
 		inferredDecimals := m.inferDecimalsFromAmount(amount)
@@ -516,7 +643,7 @@ func (m *MonetaryValueEnricher) inferDecimalsFromAmount(amount string) int {
 	if !strings.HasPrefix(amount, "0x") {
 		return -1 // Invalid
 	}
-	
+
 	// Look at the length of the hex value to guess decimals
 	hexLen := len(amount) - 2 // Remove 0x prefix
 	if hexLen <= 8 {
@@ -529,7 +656,7 @@ func (m *MonetaryValueEnricher) inferDecimalsFromAmount(amount string) int {
 		// Very large hex values often indicate 18+ decimals
 		return 18
 	}
-	
+
 	// For middle range, be conservative
 	return 18
 }
@@ -546,222 +673,93 @@ func (m *MonetaryValueEnricher) hexToUint64(hexStr string) uint64 {
 
 // GetPromptContext provides monetary context for LLM prompts
 func (m *MonetaryValueEnricher) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
-	// Get transfers from baggage
-	transfers, ok := baggage["transfers"].([]models.TokenTransfer)
-	
-	// Build context parts (gas fees should always be included if available)
+	// Get enriched amounts from baggage
+	enrichedAmounts, ok := baggage["enriched_amounts"].([]EnrichedAmount)
+	if !ok || len(enrichedAmounts) == 0 {
+		// Still provide gas fee context if available
+		return m.getGasFeeContext(baggage)
+	}
+
 	var contextParts []string
-	
-	// Only add transfer context if transfers exist
-	if ok && len(transfers) > 0 {
-		// Build enriched transfers context
-		contextParts = append(contextParts, "### Enriched Token Transfers:")
+	contextParts = append(contextParts, "### ENRICHED AMOUNTS:")
 
-	for i, transfer := range transfers {
-		transferInfo := fmt.Sprintf("\n\nTransfer #%d:", i+1)
-		
-		// Token info
-		if transfer.Name != "" && transfer.Symbol != "" {
-			transferInfo += fmt.Sprintf("\n- Token: %s (%s)", transfer.Name, transfer.Symbol)
-		} else if transfer.Symbol != "" {
-			transferInfo += fmt.Sprintf("\n- Token: %s", transfer.Symbol)
-		} else {
-			transferInfo += fmt.Sprintf("\n- Contract: %s", transfer.Contract)
-		}
-		
-		// Addresses
-		transferInfo += fmt.Sprintf("\n- From: %s", transfer.From)
-		transferInfo += fmt.Sprintf("\n- To: %s", transfer.To)
-		
-		// Amount
-		if transfer.FormattedAmount != "" && transfer.Symbol != "" {
-			transferInfo += fmt.Sprintf("\n- Amount: %s %s", transfer.FormattedAmount, transfer.Symbol)
-			if transfer.AmountUSD != "" {
-				transferInfo += fmt.Sprintf("\n- USD Value: $%s", transfer.AmountUSD)
-			}
-		} else if transfer.Amount != "" {
-			transferInfo += fmt.Sprintf("\n- Raw Amount: %s", transfer.Amount)
-		}
-		
-		contextParts = append(contextParts, transferInfo)
+	// Group amounts by type for better organization
+	amountsByType := make(map[string][]EnrichedAmount)
+	for _, amount := range enrichedAmounts {
+		amountsByType[amount.AmountType] = append(amountsByType[amount.AmountType], amount)
 	}
 
-	// Enhanced payment flow analysis for minting transactions
-	paymentFlow := m.analyzePaymentFlow(transfers, baggage)
-	if paymentFlow != nil {
-		contextParts = append(contextParts, "\n\n### Payment Flow Analysis:")
-		
-		if paymentFlow.ActualUser != "" {
-			contextParts = append(contextParts, fmt.Sprintf("\n- ACTUAL USER: %s (%s)", paymentFlow.ActualUser, paymentFlow.UserRole))
-			contextParts = append(contextParts, "\n- CRITICAL: Use the ACTUAL USER in your explanation, not contract addresses")
-		}
-		
-		if paymentFlow.Payer != "" {
-			if paymentFlow.ActualUser != "" && paymentFlow.Payer != paymentFlow.ActualUser {
-				contextParts = append(contextParts, fmt.Sprintf("\n- Contract/Router: %s paid %s %s ($%s) on behalf of user", 
-					paymentFlow.Payer, paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.InitialAmountUSD))
+	// Display amounts grouped by type
+	for amountType, amounts := range amountsByType {
+		typeHeader := fmt.Sprintf("\n%s AMOUNTS:", strings.ToUpper(amountType))
+		contextParts = append(contextParts, typeHeader)
+
+		for i, amount := range amounts {
+			amountInfo := fmt.Sprintf("\nAmount #%d:", i+1)
+
+			// Token and amount info
+			if amount.TokenSymbol != "" {
+				amountInfo += fmt.Sprintf("\n- Token: %s (%s)", amount.TokenSymbol, amount.TokenContract)
 			} else {
-				contextParts = append(contextParts, fmt.Sprintf("\n- Payer: %s paid %s %s ($%s)", 
-					paymentFlow.Payer, paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.InitialAmountUSD))
+				amountInfo += fmt.Sprintf("\n- Token: %s", amount.TokenContract)
 			}
-		}
-		
-		if paymentFlow.FinalRecipient != "" && paymentFlow.FinalAmount != "" {
-			contextParts = append(contextParts, fmt.Sprintf("\n- Final recipient: %s received %s %s ($%s)", 
-				paymentFlow.FinalRecipient, paymentFlow.FinalAmount, paymentFlow.Token, paymentFlow.FinalAmountUSD))
-		}
-		
-		if paymentFlow.TotalFees != "" {
-			contextParts = append(contextParts, fmt.Sprintf("\n- Transaction fees: %s %s ($%s)", 
-				paymentFlow.TotalFees, paymentFlow.Token, paymentFlow.TotalFeesUSD))
-			
-			// Show individual fee recipients
-			if len(paymentFlow.FeeRecipients) > 0 {
-				contextParts = append(contextParts, "\n- Fee recipients:")
-				for _, feeRecipient := range paymentFlow.FeeRecipients {
-					if feeRecipient.AmountUSD != "" {
-						contextParts = append(contextParts, fmt.Sprintf("  • %s %s ($%s) → %s", 
-							feeRecipient.Amount, paymentFlow.Token, feeRecipient.AmountUSD, feeRecipient.Address))
-					} else {
-						contextParts = append(contextParts, fmt.Sprintf("  • %s %s → %s", 
-							feeRecipient.Amount, paymentFlow.Token, feeRecipient.Address))
-					}
+
+			amountInfo += fmt.Sprintf("\n- Amount: %s", amount.FormattedAmount)
+
+			// USD value if available
+			if amount.HasPriceData {
+				amountInfo += fmt.Sprintf("\n- USD Value: $%s", amount.USDFormatted)
+				amountInfo += fmt.Sprintf("\n- Price per Token: $%.6f", amount.PricePerToken)
+				if amount.PriceSource != "" {
+					amountInfo += fmt.Sprintf(" [%s]", amount.PriceSource)
 				}
-			}
-		}
-		
-		if paymentFlow.GasFeeUSD != "" {
-			contextParts = append(contextParts, fmt.Sprintf("\n- Gas fees: $%s USD", paymentFlow.GasFeeUSD))
-		}
-		
-		// Check if this relates to NFT minting
-		if m.isNFTMinting(baggage) {
-			contextParts = append(contextParts, "\n- This payment is for NFT MINTING (NFTs minted from zero address)")
-			nftRecipients := m.getNFTRecipients(baggage)
-			if len(nftRecipients) > 0 {
-				contextParts = append(contextParts, fmt.Sprintf("\n- NFT recipients: %v", nftRecipients))
-			}
-		}
-		
-		// Add comprehensive fee summary for LLM
-		contextParts = append(contextParts, "\n\n### Fee Summary for Final Explanation:")
-		contextParts = append(contextParts, "\n- CRITICAL: Always include fees in the final explanation")
-		
-		// User identification guidance
-		if paymentFlow.ActualUser != "" {
-			contextParts = append(contextParts, fmt.Sprintf("\n- CRITICAL: The transaction is for user %s, not contract %s", 
-				paymentFlow.ActualUser, paymentFlow.Payer))
-			contextParts = append(contextParts, fmt.Sprintf("\n- Use format: \"Action by/for %s\" not \"by %s\"", 
-				paymentFlow.ActualUser, paymentFlow.Payer))
-		}
-		
-		totalCostUSD := ""
-		if paymentFlow.InitialAmountUSD != "" {
-			if initialUSD, err := strconv.ParseFloat(paymentFlow.InitialAmountUSD, 64); err == nil {
-				totalCost := initialUSD
-				if paymentFlow.GasFeeUSD != "" {
-					if gasUSD, err := strconv.ParseFloat(paymentFlow.GasFeeUSD, 64); err == nil {
-						totalCost += gasUSD
-					}
-				}
-				totalCostUSD = fmt.Sprintf("%.2f", totalCost)
-				contextParts = append(contextParts, fmt.Sprintf("\n- Total cost to user: $%s USD (including all fees)", totalCostUSD))
-			}
-		}
-		
-		// Fee breakdown format for LLM
-		if paymentFlow.TotalFees != "" && paymentFlow.GasFeeUSD != "" {
-			if len(paymentFlow.FeeRecipients) == 1 {
-				// Single fee recipient
-				contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s (%s %s fees to %s + $%s gas)\"", 
-					paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.TotalFees, paymentFlow.Token, 
-					paymentFlow.FeeRecipients[0].Address, paymentFlow.GasFeeUSD))
-			} else if len(paymentFlow.FeeRecipients) > 1 {
-				// Multiple fee recipients
-				contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s (%s %s fees to %d recipients + $%s gas)\"", 
-					paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.TotalFees, paymentFlow.Token, 
-					len(paymentFlow.FeeRecipients), paymentFlow.GasFeeUSD))
 			} else {
-				// No specific fee recipients tracked
-				contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s (%s %s fees + $%s gas)\"", 
-					paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.TotalFees, paymentFlow.Token, paymentFlow.GasFeeUSD))
+				amountInfo += "\n- USD Value: Not available (no price data)"
 			}
-		} else if paymentFlow.TotalFees != "" {
-			if len(paymentFlow.FeeRecipients) == 1 {
-				contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s (%s %s fees to %s)\"", 
-					paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.TotalFees, paymentFlow.Token, 
-					paymentFlow.FeeRecipients[0].Address))
-			} else if len(paymentFlow.FeeRecipients) > 1 {
-				contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s (%s %s fees to %d recipients)\"", 
-					paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.TotalFees, paymentFlow.Token, 
-					len(paymentFlow.FeeRecipients)))
-			} else {
-				contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s (%s %s fees)\"", 
-					paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.TotalFees, paymentFlow.Token))
+
+			// Flow information
+			if amount.FromAddress != "" && amount.ToAddress != "" {
+				amountInfo += fmt.Sprintf("\n- Flow: %s → %s", amount.FromAddress, amount.ToAddress)
 			}
-		} else if paymentFlow.GasFeeUSD != "" {
-			contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"for %s %s + $%s gas\"", 
-				paymentFlow.InitialAmount, paymentFlow.Token, paymentFlow.GasFeeUSD))
+
+			// Context and confidence
+			amountInfo += fmt.Sprintf("\n- Context: %s", amount.Context)
+			amountInfo += fmt.Sprintf("\n- Confidence: %.1f%%", amount.Confidence*100)
+
+			contextParts = append(contextParts, amountInfo)
 		}
 	}
 
-	// Add net flow analysis for better transaction understanding
-	netFlows := m.calculateNetFlows(transfers)
-	if len(netFlows) > 0 {
-		contextParts = append(contextParts, "\n\n### Net Flow Analysis:")
-		contextParts = append(contextParts, "\nThis analysis helps identify the main transaction purpose:")
-		
-		for token, flows := range netFlows {
-			if len(flows) > 0 {
-				contextParts = append(contextParts, fmt.Sprintf("\n\n%s flows:", token))
-				for address, flow := range flows {
-					if flow.NetAmount != 0 {
-						var flowDirection string
-						if flow.NetAmount > 0 {
-							flowDirection = "received"
-						} else {
-							flowDirection = "sent"
-							flow.NetAmount = -flow.NetAmount // Make positive for display
-						}
-						
-						if flow.FormattedAmount != "" {
-							contextParts = append(contextParts, fmt.Sprintf("\n- %s %s %s %s", address, flowDirection, flow.FormattedAmount, token))
-						} else {
-							contextParts = append(contextParts, fmt.Sprintf("\n- %s %s %.6f %s", address, flowDirection, flow.NetAmount, token))
-						}
-					}
-				}
-			}
-		}
-		
-		// Add hints about transaction type
-		contextParts = append(contextParts, "\n\n### Transaction Pattern Hints:")
-		if m.isNFTMinting(baggage) {
-			contextParts = append(contextParts, "\n- Pattern suggests NFT MINTING (user pays for newly minted NFTs)")
-		} else if m.looksLikePurchase(transfers, netFlows) {
-			contextParts = append(contextParts, "\n- Pattern suggests a PURCHASE transaction (user pays tokens, receives items/services)")
-		} else if m.looksLikeSwap(transfers, netFlows) {
-			contextParts = append(contextParts, "\n- Pattern suggests a SWAP transaction (user exchanges one token for another)")
-		}
-	}
-	
-	} // End of transfer context block
-
-	// Add transaction fees if available (regardless of whether transfers exist)
-	if gasFeeUSD := m.getGasFeeInUSD(baggage); gasFeeUSD != "" {
-		contextParts = append(contextParts, "\n\n### Transaction Fees:")
-		contextParts = append(contextParts, fmt.Sprintf("\n- Gas Fee: $%s USD", gasFeeUSD))
-		
-		// Add fee summary for LLM when only gas fees are present
-		if len(transfers) == 0 || !ok {
-			contextParts = append(contextParts, "\n\n### Fee Summary for Final Explanation:")
-			contextParts = append(contextParts, "\n- CRITICAL: Always include gas fees in the final explanation")
-			contextParts = append(contextParts, fmt.Sprintf("\n- Gas fees: $%s USD", gasFeeUSD))
-			contextParts = append(contextParts, fmt.Sprintf("\n- Suggested format: \"[action] + $%s gas\"", gasFeeUSD))
-		}
+	// Add gas fee context
+	gasFeeContext := m.getGasFeeContext(baggage)
+	if gasFeeContext != "" {
+		contextParts = append(contextParts, "\n"+gasFeeContext)
 	}
 
-	return strings.Join(contextParts, "")
+	return strings.Join(contextParts, "\n")
+}
+
+// getGasFeeContext provides gas fee context regardless of other amounts
+func (m *MonetaryValueEnricher) getGasFeeContext(baggage map[string]interface{}) string {
+	rawData, ok := baggage["raw_data"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	receipt, ok := rawData["receipt"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	// Check if gas fee USD is already calculated
+	if gasFeeUSD, ok := receipt["gas_fee_usd"].(string); ok && gasFeeUSD != "" {
+		if gasFeeNative, ok := receipt["gas_fee_native"].(string); ok && gasFeeNative != "" {
+			return fmt.Sprintf("### TRANSACTION FEES:\n- Gas Fee: %s native tokens = $%s USD", gasFeeNative, gasFeeUSD)
+		}
+		return fmt.Sprintf("### TRANSACTION FEES:\n- Gas Fee: $%s USD", gasFeeUSD)
+	}
+
+	return ""
 }
 
 // NetFlowData represents net flow information for an address
@@ -775,17 +773,17 @@ type NetFlowData struct {
 func (m *MonetaryValueEnricher) calculateNetFlows(transfers []models.TokenTransfer) map[string]map[string]*NetFlowData {
 	// Map: token_symbol -> address -> net_flow_data
 	flows := make(map[string]map[string]*NetFlowData)
-	
+
 	for _, transfer := range transfers {
 		token := transfer.Symbol
 		if token == "" {
 			token = transfer.Contract
 		}
-		
+
 		if flows[token] == nil {
 			flows[token] = make(map[string]*NetFlowData)
 		}
-		
+
 		// Parse amount
 		var amount float64
 		if transfer.FormattedAmount != "" {
@@ -793,7 +791,7 @@ func (m *MonetaryValueEnricher) calculateNetFlows(transfers []models.TokenTransf
 				amount = amt
 			}
 		}
-		
+
 		// Update sender (negative)
 		if transfer.From != "" {
 			if flows[token][transfer.From] == nil {
@@ -802,7 +800,7 @@ func (m *MonetaryValueEnricher) calculateNetFlows(transfers []models.TokenTransf
 			flows[token][transfer.From].NetAmount -= amount
 			flows[token][transfer.From].TransferCount++
 		}
-		
+
 		// Update receiver (positive)
 		if transfer.To != "" {
 			if flows[token][transfer.To] == nil {
@@ -810,14 +808,14 @@ func (m *MonetaryValueEnricher) calculateNetFlows(transfers []models.TokenTransf
 			}
 			flows[token][transfer.To].NetAmount += amount
 			flows[token][transfer.To].TransferCount++
-			
+
 			// Store formatted amount for the largest positive flow
 			if flows[token][transfer.To].NetAmount > 0 && transfer.FormattedAmount != "" {
 				flows[token][transfer.To].FormattedAmount = fmt.Sprintf("%.6f", flows[token][transfer.To].NetAmount)
 			}
 		}
 	}
-	
+
 	return flows
 }
 
@@ -827,12 +825,12 @@ func (m *MonetaryValueEnricher) looksLikePurchase(transfers []models.TokenTransf
 	// This is a strong indicator of a purchase
 	// We can't directly access baggage here, but the presence of small net flows with
 	// multiple intermediary transfers suggests a purchase with fees/routing
-	
+
 	// Look for pattern: one address sends significant amount, multiple addresses receive smaller amounts
 	for _, addressFlows := range netFlows {
 		var senders, receivers int
 		var maxSent, totalReceived float64
-		
+
 		for _, flow := range addressFlows {
 			if flow.NetAmount < 0 {
 				senders++
@@ -844,13 +842,13 @@ func (m *MonetaryValueEnricher) looksLikePurchase(transfers []models.TokenTransf
 				totalReceived += flow.NetAmount
 			}
 		}
-		
+
 		// Pattern: one main sender, multiple receivers with small amounts suggests purchase/fees
 		if senders == 1 && receivers > 2 && maxSent > totalReceived*1.5 {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -858,11 +856,11 @@ func (m *MonetaryValueEnricher) looksLikePurchase(transfers []models.TokenTransf
 func (m *MonetaryValueEnricher) looksLikeSwap(transfers []models.TokenTransfer, netFlows map[string]map[string]*NetFlowData) bool {
 	// Look for pattern: user sends one token type and receives a different token type
 	// with minimal intermediary transfers
-	
+
 	if len(netFlows) == 2 { // Exactly two different tokens
 		var userAddress string
 		var sentToken, receivedToken string
-		
+
 		for token, addressFlows := range netFlows {
 			for address, flow := range addressFlows {
 				if flow.NetAmount < 0 && userAddress == "" {
@@ -873,10 +871,10 @@ func (m *MonetaryValueEnricher) looksLikeSwap(transfers []models.TokenTransfer, 
 				}
 			}
 		}
-		
+
 		return userAddress != "" && sentToken != "" && receivedToken != "" && sentToken != receivedToken
 	}
-	
+
 	return false
 }
 
@@ -888,21 +886,21 @@ func (m *MonetaryValueEnricher) getGasFeeInUSD(baggage map[string]interface{}) s
 
 // PaymentFlowData represents payment flow analysis
 type PaymentFlowData struct {
-	Payer              string
-	FinalRecipient     string
-	ActualUser         string  // The actual user/beneficiary (from protocol events)
-	UserRole           string  // "borrower", "lender", "trader", etc.
-	Token              string
-	InitialAmount      string
-	InitialAmountUSD   string
-	FinalAmount        string
-	FinalAmountUSD     string
-	TotalFees          string
-	TotalFeesUSD       string
-	FeeRecipients      []FeeRecipient
-	GasFeeUSD          string
-	NetworkFees        string
-	NetworkFeesUSD     string
+	Payer            string
+	FinalRecipient   string
+	ActualUser       string // The actual user/beneficiary (from protocol events)
+	UserRole         string // "borrower", "lender", "trader", etc.
+	Token            string
+	InitialAmount    string
+	InitialAmountUSD string
+	FinalAmount      string
+	FinalAmountUSD   string
+	TotalFees        string
+	TotalFeesUSD     string
+	FeeRecipients    []FeeRecipient
+	GasFeeUSD        string
+	NetworkFees      string
+	NetworkFeesUSD   string
 }
 
 // FeeRecipient represents an address that received fees
@@ -917,11 +915,11 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 	if len(transfers) == 0 {
 		return nil
 	}
-	
+
 	// Find the largest initial transfer (likely the main payment)
 	var largestTransfer *models.TokenTransfer
 	var largestAmount float64
-	
+
 	for i, transfer := range transfers {
 		if transfer.FormattedAmount != "" {
 			if amount, err := strconv.ParseFloat(transfer.FormattedAmount, 64); err == nil {
@@ -932,14 +930,14 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 			}
 		}
 	}
-	
+
 	if largestTransfer == nil {
 		return nil
 	}
-	
+
 	// Identify the actual user from protocol events
 	actualUser, userRole := m.identifyActualUserFromEvents(baggage)
-	
+
 	paymentFlow := &PaymentFlowData{
 		Payer:            largestTransfer.From,
 		Token:            largestTransfer.Symbol,
@@ -949,13 +947,13 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 		UserRole:         userRole,
 		FeeRecipients:    []FeeRecipient{},
 	}
-	
+
 	// Find the final recipient (largest outgoing transfer to a user address that's not the payer)
 	// and identify fee recipients
 	var finalTransfer *models.TokenTransfer
 	var finalAmount float64
 	var totalFeesAmount float64
-	
+
 	for i, transfer := range transfers {
 		if transfer.FormattedAmount != "" && transfer.Symbol == paymentFlow.Token {
 			if amount, err := strconv.ParseFloat(transfer.FormattedAmount, 64); err == nil {
@@ -963,7 +961,7 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 				if transfer.From == paymentFlow.Payer {
 					continue
 				}
-				
+
 				// Check if this might be a final recipient transfer (larger amount)
 				if amount > finalAmount {
 					// If we had a previous final transfer, it's now a fee recipient
@@ -975,7 +973,7 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 						})
 						totalFeesAmount += finalAmount
 					}
-					
+
 					finalAmount = amount
 					finalTransfer = &transfers[i]
 				} else {
@@ -990,16 +988,16 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 			}
 		}
 	}
-	
+
 	if finalTransfer != nil {
 		paymentFlow.FinalRecipient = finalTransfer.To
 		paymentFlow.FinalAmount = finalTransfer.FormattedAmount
 		paymentFlow.FinalAmountUSD = finalTransfer.AmountUSD
-		
+
 		// Calculate total fees based on tracked fee recipients
 		if totalFeesAmount > 0 {
 			paymentFlow.TotalFees = fmt.Sprintf("%.3f", totalFeesAmount)
-			
+
 			// Calculate total USD fees from fee recipients
 			var totalFeesUSD float64
 			for _, feeRecipient := range paymentFlow.FeeRecipients {
@@ -1014,10 +1012,10 @@ func (m *MonetaryValueEnricher) analyzePaymentFlow(transfers []models.TokenTrans
 			}
 		}
 	}
-	
+
 	// Calculate gas fees from transaction data
 	paymentFlow.GasFeeUSD = m.calculateGasFeeUSD(baggage)
-	
+
 	return paymentFlow
 }
 
@@ -1027,42 +1025,42 @@ func (m *MonetaryValueEnricher) calculateGasFeeUSD(baggage map[string]interface{
 	if !ok {
 		return ""
 	}
-	
+
 	receipt, ok := rawData["receipt"].(map[string]interface{})
 	if !ok {
 		return ""
 	}
-	
+
 	// First check if gas_fee_usd is already calculated (from enrichRawData)
 	if gasFeeUSD, ok := receipt["gas_fee_usd"].(string); ok && gasFeeUSD != "" {
 		return gasFeeUSD
 	}
-	
+
 	gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
 	effectiveGasPriceHex, hasGasPrice := receipt["effectiveGasPrice"].(string)
-	
+
 	if !hasGasUsed || !hasGasPrice {
 		return ""
 	}
-	
+
 	// Parse gas values
 	gasUsed, err1 := strconv.ParseUint(gasUsedHex[2:], 16, 64)
 	gasPrice, err2 := strconv.ParseUint(effectiveGasPriceHex[2:], 16, 64)
-	
+
 	if err1 != nil || err2 != nil {
 		return ""
 	}
-	
+
 	// Calculate fee in native token (wei for Ethereum-based chains)
 	feeWei := gasUsed * gasPrice
 	feeEth := float64(feeWei) / 1e18
-	
+
 	// Get network-specific native token price
 	networkID, ok := rawData["network_id"].(float64)
 	if !ok {
 		return ""
 	}
-	
+
 	// Generic native token pricing using CoinMarketCap API
 	nativeTokenPrice := m.getNativeTokenPriceFromAPI(int64(networkID))
 	if nativeTokenPrice == 0 {
@@ -1072,12 +1070,12 @@ func (m *MonetaryValueEnricher) calculateGasFeeUSD(baggage map[string]interface{
 		}
 		return ""
 	}
-	
+
 	feeUSD := feeEth * nativeTokenPrice
 	if feeUSD > 0.001 { // Only show if meaningful amount
 		return fmt.Sprintf("%.3f", feeUSD)
 	}
-	
+
 	return "0.001" // Show minimal fee for very small amounts
 }
 
@@ -1096,11 +1094,11 @@ func (m *MonetaryValueEnricher) isNFTMinting(baggage map[string]interface{}) boo
 				}
 			}
 		default:
-			// Try to access via reflection or other methods if needed
-			// For now, also check events
+			// Check all events generically for zero address transfers (minting pattern)
 			if events, ok := baggage["events"].([]models.Event); ok {
 				for _, event := range events {
-					if event.Name == "TransferSingle" && event.Parameters != nil {
+					if event.Parameters != nil {
+						// Look for any event with a "from" parameter set to zero address
 						if from, ok := event.Parameters["from"].(string); ok {
 							if from == "0x0000000000000000000000000000000000000000" {
 								return true
@@ -1111,18 +1109,19 @@ func (m *MonetaryValueEnricher) isNFTMinting(baggage map[string]interface{}) boo
 			}
 		}
 	}
-	
+
 	return false
 }
 
 // getNFTRecipients gets the list of NFT recipients
 func (m *MonetaryValueEnricher) getNFTRecipients(baggage map[string]interface{}) []string {
 	var recipients []string
-	
-	// Check events for TransferSingle with zero address from
+
+	// Check all events generically for zero address transfers (minting pattern)
 	if events, ok := baggage["events"].([]models.Event); ok {
 		for _, event := range events {
-			if event.Name == "TransferSingle" && event.Parameters != nil {
+			if event.Parameters != nil {
+				// Look for any event with "from" zero address and "to" recipient
 				if from, ok := event.Parameters["from"].(string); ok {
 					if from == "0x0000000000000000000000000000000000000000" {
 						if to, ok := event.Parameters["to"].(string); ok {
@@ -1133,7 +1132,7 @@ func (m *MonetaryValueEnricher) getNFTRecipients(baggage map[string]interface{})
 			}
 		}
 	}
-	
+
 	return m.uniqueRecipients(recipients)
 }
 
@@ -1141,14 +1140,14 @@ func (m *MonetaryValueEnricher) getNFTRecipients(baggage map[string]interface{})
 func (m *MonetaryValueEnricher) uniqueRecipients(recipients []string) []string {
 	seen := make(map[string]bool)
 	var unique []string
-	
+
 	for _, recipient := range recipients {
 		if !seen[recipient] {
 			seen[recipient] = true
 			unique = append(unique, recipient)
 		}
 	}
-	
+
 	return unique
 }
 
@@ -1158,19 +1157,19 @@ func (m *MonetaryValueEnricher) identifyActualUserFromEvents(baggage map[string]
 	if !ok {
 		return "", ""
 	}
-	
+
 	logs, ok := rawData["logs"].([]interface{})
 	if !ok {
 		return "", ""
 	}
-	
+
 	// Check events for user identification patterns
 	for _, logInterface := range logs {
 		logMap, ok := logInterface.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		
+
 		// Look for decoded event data
 		if eventsInterface, ok := baggage["events"]; ok {
 			if events, ok := eventsInterface.([]models.Event); ok {
@@ -1182,60 +1181,52 @@ func (m *MonetaryValueEnricher) identifyActualUserFromEvents(baggage map[string]
 				}
 			}
 		}
-		
+
 		// Also check raw event parameters for common DeFi user patterns
 		if address, role := m.extractUserFromEventParameters(logMap); address != "" {
 			return address, role
 		}
 	}
-	
+
 	return "", ""
 }
 
 // extractUserFromEvent extracts user information from decoded events
 func (m *MonetaryValueEnricher) extractUserFromEvent(event models.Event) (string, string) {
 	params := event.Parameters
-	
-	// Common DeFi user identification patterns
+
+	// Generic DeFi user identification patterns - work with ANY event type
 	if onBehalf, ok := params["onBehalf"].(string); ok && onBehalf != "" {
-		// This is common in lending protocols (Aave, Morpho, etc.)
-		switch event.Name {
-		case "Repay", "Borrow":
-			return onBehalf, "borrower"
-		case "Supply", "Deposit":
-			return onBehalf, "lender"
-		case "Withdraw", "WithdrawCollateral":
-			return onBehalf, "withdrawer"
-		default:
-			return onBehalf, "user"
-		}
+		// onBehalf parameter is common in lending protocols (Aave, Morpho, etc.)
+		// Let the LLM determine the role based on context rather than hardcoded event names
+		return onBehalf, "user"
 	}
-	
+
 	if borrower, ok := params["borrower"].(string); ok && borrower != "" {
 		return borrower, "borrower"
 	}
-	
+
 	if lender, ok := params["lender"].(string); ok && lender != "" {
 		return lender, "lender"
 	}
-	
+
 	if user, ok := params["user"].(string); ok && user != "" {
 		return user, "user"
 	}
-	
+
 	if account, ok := params["account"].(string); ok && account != "" {
 		return account, "user"
 	}
-	
+
 	if owner, ok := params["owner"].(string); ok && owner != "" {
 		// Common in token approvals, NFT transfers
 		return owner, "owner"
 	}
-	
+
 	if recipient, ok := params["recipient"].(string); ok && recipient != "" {
 		return recipient, "recipient"
 	}
-	
+
 	return "", ""
 }
 
@@ -1243,16 +1234,16 @@ func (m *MonetaryValueEnricher) extractUserFromEvent(event models.Event) (string
 func (m *MonetaryValueEnricher) extractUserFromEventParameters(logMap map[string]interface{}) (string, string) {
 	// This is a fallback for when events aren't fully decoded
 	// We can look for common patterns in raw data or topics
-	
+
 	topics, ok := logMap["topics"].([]interface{})
 	if !ok || len(topics) < 2 {
 		return "", ""
 	}
-	
+
 	// For indexed parameters in topics, we can try to identify user addresses
 	// This is more complex and would require event signature analysis
 	// For now, return empty - the main extraction should work from decoded events
-	
+
 	return "", ""
 }
 
@@ -1269,35 +1260,35 @@ func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggag
 			networkID = int64(nid)
 		}
 	}
-	
+
 	// Get network configuration dynamically
 	network, networkExists := models.GetNetwork(networkID)
 	if !networkExists {
 		return annotationContext // Return empty if network not configured
 	}
-	
+
 	nativeSymbol := m.getNativeTokenSymbol(networkID)
 	nativePrice := m.getNativeTokenPrice(ctx, baggage)
-	
+
 	if nativeSymbol != "" && nativePrice > 0 {
 		priceText := fmt.Sprintf("$%.2f", nativePrice)
 		if nativePrice < 0.01 {
 			priceText = fmt.Sprintf("$%.6f", nativePrice)
 		}
-		
+
 		// Use generic names based on available data
 		nativeTokenFullName := nativeSymbol // Default to symbol
 		if network.Name != "" {
 			// Use network name as context for native token full name
 			nativeTokenFullName = fmt.Sprintf("%s Native Token", network.Name)
 		}
-		
+
 		// Use network explorer URL dynamically
 		explorerURL := network.Explorer
 		if explorerURL == "" {
 			explorerURL = "https://explorer.com" // Generic fallback
 		}
-		
+
 		annotationContext.AddItem(models.AnnotationContextItem{
 			Type:        "native_token",
 			Value:       nativeSymbol,
@@ -1322,19 +1313,19 @@ func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggag
 			if transfer.FormattedAmount != "" && transfer.Symbol != "" && transfer.AmountUSD != "" {
 				amountText := fmt.Sprintf("%s %s", transfer.FormattedAmount, transfer.Symbol)
 				usdText := fmt.Sprintf("$%s", transfer.AmountUSD)
-				
+
 				description := fmt.Sprintf("Token transfer: %s worth $%s USD", amountText, transfer.AmountUSD)
-				
+
 				// Create tooltip for token amounts
 				tooltipRows := []string{
 					fmt.Sprintf("<tr><td><strong>Amount:</strong></td><td>%s %s</td></tr>", transfer.FormattedAmount, transfer.Symbol),
 					fmt.Sprintf("<tr><td><strong>USD Value:</strong></td><td>$%s</td></tr>", transfer.AmountUSD),
 					fmt.Sprintf("<tr><td><strong>Token:</strong></td><td>%s</td></tr>", transfer.Name),
-					fmt.Sprintf("<tr><td><strong>Contract:</strong></td><td>%s...%s</td></tr>", 
+					fmt.Sprintf("<tr><td><strong>Contract:</strong></td><td>%s...%s</td></tr>",
 						transfer.Contract[:6], transfer.Contract[len(transfer.Contract)-4:]),
 				}
 				tooltip := fmt.Sprintf("<table>%s</table>", strings.Join(tooltipRows, ""))
-				
+
 				// Add context for the token amount
 				annotationContext.AddItem(models.AnnotationContextItem{
 					Type:        "amount",
@@ -1343,25 +1334,25 @@ func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggag
 					Description: description,
 					Metadata: map[string]interface{}{
 						"formatted_amount": transfer.FormattedAmount,
-						"symbol":          transfer.Symbol,
-						"usd_value":       transfer.AmountUSD,
-						"token_name":      transfer.Name,
-						"contract":        transfer.Contract,
-						"tooltip":         tooltip,
+						"symbol":           transfer.Symbol,
+						"usd_value":        transfer.AmountUSD,
+						"token_name":       transfer.Name,
+						"contract":         transfer.Contract,
+						"tooltip":          tooltip,
 					},
 				})
-				
-				// Add context for USD amounts  
+
+				// Add context for USD amounts
 				annotationContext.AddItem(models.AnnotationContextItem{
 					Type:        "amount",
 					Value:       usdText,
 					Name:        "USD Value",
 					Description: fmt.Sprintf("$%s USD equivalent of %s", transfer.AmountUSD, amountText),
 					Metadata: map[string]interface{}{
-						"usd_value":       transfer.AmountUSD,
-						"token_amount":    transfer.FormattedAmount,
-						"token_symbol":    transfer.Symbol,
-						"tooltip":         tooltip,
+						"usd_value":    transfer.AmountUSD,
+						"token_amount": transfer.FormattedAmount,
+						"token_symbol": transfer.Symbol,
+						"tooltip":      tooltip,
 					},
 				})
 			}
@@ -1377,7 +1368,7 @@ func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggag
 				tooltipRows := []string{
 					fmt.Sprintf("<tr><td><strong>Gas Fee:</strong></td><td>$%s USD</td></tr>", gasFeeUSD),
 				}
-				
+
 				// Add native gas amount if available
 				if gasFeeNative, ok := receipt["gas_fee_native"].(string); ok {
 					networkID := int64(1) // Default fallback
@@ -1389,25 +1380,25 @@ func (m *MonetaryValueEnricher) GetAnnotationContext(ctx context.Context, baggag
 						tooltipRows = append(tooltipRows, fmt.Sprintf("<tr><td><strong>Native Amount:</strong></td><td>%s %s</td></tr>", gasFeeNative, nativeSymbol))
 					}
 				}
-				
+
 				// Add gas used and price if available
 				if gasUsed, ok := receipt["gasUsed"].(string); ok {
 					if gasUsedInt := m.hexToUint64(gasUsed); gasUsedInt > 0 {
 						tooltipRows = append(tooltipRows, fmt.Sprintf("<tr><td><strong>Gas Used:</strong></td><td>%s</td></tr>", formatNumber(gasUsedInt)))
 					}
 				}
-				
+
 				if effectiveGasPrice, ok := receipt["effectiveGasPrice"].(string); ok {
 					if gasPriceInt := m.hexToUint64(effectiveGasPrice); gasPriceInt > 0 {
 						gasPriceGwei := float64(gasPriceInt) / 1e9
 						tooltipRows = append(tooltipRows, fmt.Sprintf("<tr><td><strong>Gas Price:</strong></td><td>%.2f Gwei</td></tr>", gasPriceGwei))
 					}
 				}
-				
+
 				gasFeeTooltip = fmt.Sprintf("<table>%s</table>", strings.Join(tooltipRows, ""))
 			}
 		}
-		
+
 		// Add gas fee annotation context item
 		annotationContext.AddItem(models.AnnotationContextItem{
 			Type:        "gas_fee",
@@ -1430,7 +1421,7 @@ func formatNumber(n uint64) string {
 	if len(str) <= 3 {
 		return str
 	}
-	
+
 	// Add commas every 3 digits from the right
 	var result []rune
 	for i, r := range str {
@@ -1447,15 +1438,15 @@ func (m *MonetaryValueEnricher) isNativeTokenAddress(address string) bool {
 	if address == "" {
 		return false
 	}
-	
+
 	// Normalize to lowercase for comparison
 	addr := strings.ToLower(strings.TrimSpace(address))
-	
+
 	// Remove 0x prefix if present
 	if strings.HasPrefix(addr, "0x") {
 		addr = addr[2:]
 	}
-	
+
 	// Common native token representations used across DeFi protocols
 	nativeTokenPatterns := []string{
 		"0000000000000000000000000000000000000000", // Zero address - most common
@@ -1464,59 +1455,32 @@ func (m *MonetaryValueEnricher) isNativeTokenAddress(address string) bool {
 		"0000000000000000000000000000000000001010", // Used in some protocols
 		"1111111111111111111111111111111111111111", // Some protocols use this pattern
 	}
-	
+
 	for _, pattern := range nativeTokenPatterns {
 		if addr == pattern {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
 // getNativeTokenSymbolFromNetwork gets the native token symbol for a network
-// This is generic and works with any network configuration
+// This is generic and works with any network without hardcoded assumptions
 func (m *MonetaryValueEnricher) getNativeTokenSymbolFromNetwork(networkID int64) string {
-	// Get network configuration dynamically
-	network, exists := models.GetNetwork(networkID)
-	if !exists {
-		return ""
-	}
-	
-	// Extract native token symbol from network configuration
-	// This could be enhanced to check RPC calls or network metadata
-	// For now, we can use environment variables or infer from network name
-	
 	// Check for environment variable first: NATIVE_TOKEN_SYMBOL_CHAIN_<NETWORK_ID>
 	envVar := fmt.Sprintf("NATIVE_TOKEN_SYMBOL_CHAIN_%d", networkID)
 	if symbol := os.Getenv(envVar); symbol != "" {
 		return symbol
 	}
-	
-	// Generic fallback: try to infer from well-known network names
-	// This is still generic because it uses the dynamic network configuration
-	networkName := strings.ToLower(network.Name)
-	switch {
-	case strings.Contains(networkName, "ethereum"):
-		return "ETH"
-	case strings.Contains(networkName, "polygon"):
-		return "MATIC"
-	case strings.Contains(networkName, "binance") || strings.Contains(networkName, "bsc"):
-		return "BNB"
-	case strings.Contains(networkName, "avalanche"):
-		return "AVAX"
-	case strings.Contains(networkName, "arbitrum"):
-		return "ETH" // Arbitrum uses ETH as native token
-	case strings.Contains(networkName, "optimism"):
-		return "ETH" // Optimism uses ETH as native token
-	case strings.Contains(networkName, "base"):
-		return "ETH" // Base uses ETH as native token
-	case strings.Contains(networkName, "fantom"):
-		return "FTM"
-	case strings.Contains(networkName, "cronos"):
-		return "CRO"
-	default:
-		// For unknown networks, return empty - system will work without USD values
-		return ""
-	}
+
+	// Check if the network configuration includes native token info
+	// This could be enhanced to use RPC calls to get network-specific token info
+	// For example: eth_getBalance uses the native token, and we could query
+	// network metadata or well-known contract addresses
+
+	// For now, if no environment variable is set and no network-specific data exists,
+	// return empty string - the system will work without native token symbols
+	// This allows the system to be completely generic and work with any network
+	return ""
 }

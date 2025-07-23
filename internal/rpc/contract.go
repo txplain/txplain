@@ -94,7 +94,7 @@ func (c *Client) GetContractInfo(ctx context.Context, contractAddress string) (*
 // checkSupportedInterfaces checks which standard interfaces are supported
 func (c *Client) checkSupportedInterfaces(ctx context.Context, contractAddress string) []string {
 	var interfaces []string
-	
+
 	// Check common interfaces
 	interfaceChecks := map[string]string{
 		"ERC165":  ERC165_INTERFACE_ID,
@@ -102,20 +102,20 @@ func (c *Client) checkSupportedInterfaces(ctx context.Context, contractAddress s
 		"ERC721":  ERC721_INTERFACE_ID,
 		"ERC1155": ERC1155_INTERFACE_ID,
 	}
-	
+
 	for name, id := range interfaceChecks {
 		if c.supportsInterface(ctx, contractAddress, id) {
 			interfaces = append(interfaces, name)
 		}
 	}
-	
+
 	return interfaces
 }
 
 // checkAvailableMethods checks which standard methods are available
 func (c *Client) checkAvailableMethods(ctx context.Context, contractAddress string) []string {
 	var methods []string
-	
+
 	// Check common ERC20 methods
 	erc20Methods := map[string]string{
 		"name":        ERC20_NAME,
@@ -124,25 +124,25 @@ func (c *Client) checkAvailableMethods(ctx context.Context, contractAddress stri
 		"totalSupply": ERC20_TOTAL_SUPPLY,
 		"balanceOf":   ERC20_BALANCE_OF,
 	}
-	
+
 	for methodName, signature := range erc20Methods {
 		if c.methodExists(ctx, contractAddress, signature) {
 			methods = append(methods, methodName)
 		}
 	}
-	
+
 	// Check common ERC721 methods
 	erc721Methods := map[string]string{
 		"tokenURI": ERC721_TOKEN_URI,
 		"ownerOf":  ERC721_OWNER_OF,
 	}
-	
+
 	for methodName, signature := range erc721Methods {
 		if c.methodExists(ctx, contractAddress, signature) {
 			methods = append(methods, methodName)
 		}
 	}
-	
+
 	return methods
 }
 
@@ -153,7 +153,7 @@ func (c *Client) methodExists(ctx context.Context, contractAddress, methodSig st
 	if methodSig == ERC20_BALANCE_OF || methodSig == ERC721_OWNER_OF || methodSig == ERC721_TOKEN_URI {
 		return false // Skip methods that need parameters
 	}
-	
+
 	_, err := c.ethCall(ctx, contractAddress, methodSig)
 	return err == nil
 }
@@ -162,7 +162,7 @@ func (c *Client) methodExists(ctx context.Context, contractAddress, methodSig st
 func (c *Client) tryFetchTokenLikeInfo(ctx context.Context, contractAddress string, info *ContractInfo) {
 	// Add debug context
 	var debugInfo []string
-	
+
 	// Try to fetch name
 	if nameResult, err := c.ethCall(ctx, contractAddress, ERC20_NAME); err == nil {
 		if name := c.decodeString(nameResult); name != "" {
@@ -175,7 +175,7 @@ func (c *Client) tryFetchTokenLikeInfo(ctx context.Context, contractAddress stri
 		debugInfo = append(debugInfo, fmt.Sprintf("name_error=%v", err))
 	}
 
-	// Try to fetch symbol  
+	// Try to fetch symbol
 	if symbolResult, err := c.ethCall(ctx, contractAddress, ERC20_SYMBOL); err == nil {
 		if symbol := c.decodeString(symbolResult); symbol != "" {
 			info.Symbol = symbol
@@ -206,7 +206,7 @@ func (c *Client) tryFetchTokenLikeInfo(ctx context.Context, contractAddress stri
 	} else {
 		debugInfo = append(debugInfo, fmt.Sprintf("decimals_error=%v", err))
 	}
-	
+
 	// Only default to 18 if we couldn't fetch decimals at all and we have other token-like info
 	if !decimalsSet && (info.Name != "" || info.Symbol != "") {
 		info.Decimals = 18
@@ -224,7 +224,7 @@ func (c *Client) tryFetchTokenLikeInfo(ctx context.Context, contractAddress stri
 	} else {
 		debugInfo = append(debugInfo, fmt.Sprintf("totalSupply_error=%v", err))
 	}
-	
+
 	// Store debug info in metadata for troubleshooting
 	if len(debugInfo) > 0 {
 		info.Metadata["rpc_debug"] = strings.Join(debugInfo, ", ")
@@ -246,8 +246,6 @@ func (c *Client) supportsInterface(ctx context.Context, contractAddress, interfa
 	}
 	return false
 }
-
-
 
 // These functions are no longer needed as we provide raw information without classification
 

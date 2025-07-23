@@ -13,7 +13,7 @@ import (
 // StaticContextProvider loads context from CSV files for common tokens, protocols, addresses
 type StaticContextProvider struct {
 	tokens    map[string]models.AnnotationContextItem // address -> token info
-	protocols map[string]models.AnnotationContextItem // name -> protocol info  
+	protocols map[string]models.AnnotationContextItem // name -> protocol info
 	addresses map[string]models.AnnotationContextItem // address -> address info
 	verbose   bool
 }
@@ -26,12 +26,12 @@ func NewStaticContextProvider() *StaticContextProvider {
 		addresses: make(map[string]models.AnnotationContextItem),
 		verbose:   false,
 	}
-	
+
 	// Load data from CSV files on initialization
 	provider.loadTokens()
 	provider.loadProtocols()
 	provider.loadAddresses()
-	
+
 	return provider
 }
 
@@ -71,7 +71,7 @@ func (scp *StaticContextProvider) GetAnnotationContext(ctx context.Context, bagg
 	// Add all loaded tokens (both by address and by symbol for easier matching)
 	for _, item := range scp.tokens {
 		context.Items = append(context.Items, item)
-		
+
 		// Also add entries by symbol for easier matching in text
 		if symbol, ok := item.Metadata["symbol"].(string); ok && symbol != "" {
 			symbolItem := item
@@ -313,4 +313,4 @@ func (scp *StaticContextProvider) GetProtocolInfo(name string) (models.Annotatio
 func (scp *StaticContextProvider) GetAddressInfo(address string) (models.AnnotationContextItem, bool) {
 	item, exists := scp.addresses[strings.ToLower(address)]
 	return item, exists
-} 
+}
