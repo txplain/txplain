@@ -85,12 +85,21 @@ func (t *TagResolver) Dependencies() []string {
 
 // Process identifies tags probabilistically from transaction data
 func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.verbose {
+		fmt.Println("\n" + strings.Repeat("🏷️", 60))
+		fmt.Printf("🔍 TAG RESOLVER: Starting AI-powered tag detection (threshold: %.1f%%)\n", t.confidenceThreshold*100)
+		fmt.Printf("📚 Knowledge base: %d tags loaded\n", len(t.tagKnowledge))
+		fmt.Println(strings.Repeat("🏷️", 60))
+	}
+
 	// Collect context from all context providers in the baggage (same as TransactionExplainer)
 	var additionalContext []string
-	if contextProviders, ok := baggage["context_providers"].([]Tool); ok {
+	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
 		for _, provider := range contextProviders {
-			if context := provider.GetPromptContext(ctx, baggage); context != "" {
-				additionalContext = append(additionalContext, context)
+			if toolProvider, ok := provider.(Tool); ok {
+				if context := toolProvider.GetPromptContext(ctx, baggage); context != "" {
+					additionalContext = append(additionalContext, context)
+				}
 			}
 		}
 	}
@@ -99,20 +108,22 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 	contextData := strings.Join(additionalContext, "\n\n")
 
 	if t.verbose {
-		fmt.Println("=== TAG RESOLVER: CONTEXT FROM PROVIDERS ===")
-		fmt.Printf("Context: %s\n", contextData)
-		fmt.Println("=== END CONTEXT ===")
-		fmt.Println()
+		fmt.Printf("📊 Built analysis context: %d characters\n", len(contextData))
 	}
 
 	// Use AI to identify tags with context from previous tools
 	tags, err := t.identifyTagsWithAI(ctx, contextData)
 	if err != nil {
 		if t.verbose {
-			fmt.Printf("Tag Resolution failed: %v\n", err)
+			fmt.Printf("❌ AI tag detection failed: %v\n", err)
+			fmt.Println("⚠️  Falling back to empty tag list")
 		}
 		// Fall back to empty list - don't fail the whole pipeline
 		tags = []ProbabilisticTag{}
+	}
+
+	if t.verbose && len(tags) > 0 {
+		fmt.Printf("🧠 AI detected %d potential tags\n", len(tags))
 	}
 
 	// Filter by confidence threshold
@@ -124,12 +135,21 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 	}
 
 	if t.verbose {
-		fmt.Printf("Tag Resolver: Found %d tags above %.1f%% confidence\n",
+		fmt.Printf("✅ Filtered to %d tags above %.1f%% confidence\n",
 			len(highConfidenceTags), t.confidenceThreshold*100)
-		for i, tag := range highConfidenceTags {
-			fmt.Printf("  Tag[%d]: %s (%s) - %.1f%% confidence\n",
-				i, tag.Tag, tag.Category, tag.Confidence*100)
+		
+		// Show summary of detected tags
+		if len(highConfidenceTags) > 0 {
+			fmt.Println("\n📋 DETECTED TAGS SUMMARY:")
+			for i, tag := range highConfidenceTags {
+				fmt.Printf("   %d. %s (%s) - Confidence: %.1f%%\n",
+					i+1, tag.Tag, tag.Category, tag.Confidence*100)
+			}
 		}
+		
+		fmt.Println("\n" + strings.Repeat("🏷️", 60))
+		fmt.Println("✅ TAG RESOLVER: Completed successfully")
+		fmt.Println(strings.Repeat("🏷️", 60) + "\n")
 	}
 
 	// Convert to string slice for backward compatibility
@@ -234,9 +254,11 @@ func (t *TagResolver) identifyTagsWithAI(ctx context.Context, contextData string
 	prompt := t.buildTagAnalysisPrompt(contextData)
 
 	if t.verbose {
-		fmt.Println("=== TAG RESOLVER: PROMPT ===")
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("🤖 TAG RESOLVER: LLM PROMPT")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println(prompt)
-		fmt.Println("=== END PROMPT ===")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println()
 	}
 
@@ -259,10 +281,11 @@ func (t *TagResolver) identifyTagsWithAI(ctx context.Context, contextData string
 	}
 
 	if t.verbose {
-		fmt.Println("=== TAG RESOLVER: LLM RESPONSE ===")
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println("🤖 TAG RESOLVER: LLM RESPONSE")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println(responseText)
-		fmt.Println("=== END RESPONSE ===")
-		fmt.Println()
+		fmt.Println(strings.Repeat("=", 80) + "\n")
 	}
 
 	// Parse AI response

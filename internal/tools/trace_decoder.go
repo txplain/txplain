@@ -268,9 +268,9 @@ func (t *TraceDecoder) weiToEther(weiStr string) string {
 
 // GetPromptContext provides function calls context for LLM prompts
 func (t *TraceDecoder) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
-	// Get decoded data from baggage
-	decodedData, ok := baggage["decoded_data"].(*models.DecodedData)
-	if !ok || len(decodedData.Calls) == 0 {
+	// Only use calls data that THIS tool created and stored in baggage
+	calls, ok := baggage["calls"].([]models.Call)
+	if !ok || len(calls) == 0 {
 		return ""
 	}
 
@@ -278,7 +278,7 @@ func (t *TraceDecoder) GetPromptContext(ctx context.Context, baggage map[string]
 	contextParts = append(contextParts, "### FUNCTION CALLS:")
 
 	// Add calls information - same logic as transaction explainer had
-	for i, call := range decodedData.Calls {
+	for i, call := range calls {
 		// Only include calls that are meaningful for explanation
 		if call.Contract == "" && call.Method == "" && call.Value == "" {
 			continue // Skip empty/meaningless calls

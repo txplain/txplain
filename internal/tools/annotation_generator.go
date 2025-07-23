@@ -18,6 +18,15 @@ type AnnotationGenerator struct {
 	verbose bool
 }
 
+// getKeys returns a slice of keys from a map for debugging
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // NewAnnotationGenerator creates a new annotation generator
 func NewAnnotationGenerator(llm llms.Model) *AnnotationGenerator {
 	return &AnnotationGenerator{
@@ -38,22 +47,52 @@ func (ag *AnnotationGenerator) Dependencies() []string {
 
 // Process generates annotations for the explanation text
 func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if ag.verbose {
+		fmt.Println("\n" + strings.Repeat("📝", 60))
+		fmt.Println("🔍 ANNOTATION GENERATOR: Starting interactive annotation generation")
+		fmt.Printf("📦 Baggage keys available: %v\n", getKeys(baggage))
+		fmt.Println(strings.Repeat("📝", 60))
+	}
+	
 	// Get the explanation result
 	explanation, ok := baggage["explanation"].(*models.ExplanationResult)
 	if !ok || explanation == nil {
 		if ag.verbose {
-			fmt.Println("AnnotationGenerator: No explanation found in baggage, skipping")
+			fmt.Println("⚠️  No explanation found in baggage, skipping annotation generation")
+			fmt.Println(strings.Repeat("📝", 60) + "\n")
 		}
 		return nil // Not an error, just nothing to annotate
 	}
 
+	if ag.verbose {
+		fmt.Printf("📄 Explanation text length: %d characters\n", len(explanation.Summary))
+	}
+
 	// Collect context from all context providers using GetPromptContext
 	var contextParts []string
-	if contextProviders, ok := baggage["context_providers"].([]Tool); ok {
-		for _, provider := range contextProviders {
-			if context := provider.GetPromptContext(ctx, baggage); context != "" {
-				contextParts = append(contextParts, context)
+	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
+		if ag.verbose {
+			fmt.Printf("🔍 Found %d context providers\n", len(contextProviders))
+		}
+		for i, provider := range contextProviders {
+			if toolProvider, ok := provider.(Tool); ok {
+				context := toolProvider.GetPromptContext(ctx, baggage)
+				if ag.verbose {
+					fmt.Printf("   Provider[%d] (%T): Context length = %d\n", i, toolProvider, len(context))
+				}
+				if context != "" {
+					contextParts = append(contextParts, context)
+				}
+			} else {
+				if ag.verbose {
+					fmt.Printf("   Provider[%d] (%T) does not implement Tool interface\n", i, provider)
+				}
 			}
+		}
+	} else {
+		if ag.verbose {
+			fmt.Println("⚠️  No context_providers found in baggage!")
+			fmt.Printf("Available baggage keys: %v\n", getKeys(baggage))
 		}
 	}
 
@@ -61,8 +100,7 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 	contextText := strings.Join(contextParts, "\n\n")
 
 	if ag.verbose {
-		fmt.Printf("AnnotationGenerator: Collected context from providers\n")
-		fmt.Printf("Context text length: %d characters\n", len(contextText))
+		fmt.Printf("📊 Combined context from all providers: %d characters\n", len(contextText))
 	}
 
 	// Add network-specific context to the text
@@ -78,6 +116,10 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 	// Combine all context text
 	fullContextText := contextText + networkContext
 
+	if ag.verbose {
+		fmt.Printf("📄 Full context text for LLM: %d characters\n", len(fullContextText))
+	}
+
 	// Generate annotations using AI with the text context
 	annotations, err := ag.generateAnnotationsFromText(ctx, explanation.Summary, fullContextText)
 	if err != nil {
@@ -91,11 +133,12 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 	baggage["explanation"] = explanation
 
 	if ag.verbose {
-		fmt.Printf("AnnotationGenerator: Generated %d annotations for text: '%s'\n", len(annotations), explanation.Summary)
+		fmt.Printf("📊 Generated %d annotations for text: '%s'\n", len(annotations), explanation.Summary)
 		for i, annotation := range annotations {
 			fmt.Printf("  Annotation[%d]: Text='%s', HasLink=%t, HasTooltip=%t, HasIcon=%t\n",
 				i, annotation.Text, annotation.Link != "", annotation.Tooltip != "", annotation.Icon != "")
 		}
+		fmt.Println(strings.Repeat("📝", 60) + "\n")
 	}
 
 	return nil
@@ -117,9 +160,11 @@ func (ag *AnnotationGenerator) generateAnnotationsFromText(ctx context.Context, 
 	prompt := ag.buildAnnotationPromptFromText(explanationText, contextText)
 
 	if ag.verbose {
-		fmt.Println("=== ANNOTATION GENERATOR: PROMPT SENT TO LLM ===")
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("🤖 ANNOTATION GENERATOR: LLM PROMPT")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println(prompt)
-		fmt.Println("=== END OF PROMPT ===")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println()
 	}
 
@@ -136,17 +181,18 @@ func (ag *AnnotationGenerator) generateAnnotationsFromText(ctx context.Context, 
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
-	// Parse the LLM response
+	// Get response text
 	responseText := ""
 	if response != nil && len(response.Choices) > 0 {
 		responseText = response.Choices[0].Content
 	}
 
 	if ag.verbose {
-		fmt.Println("=== ANNOTATION GENERATOR: LLM RESPONSE ===")
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println("🤖 ANNOTATION GENERATOR: LLM RESPONSE")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println(responseText)
-		fmt.Println("=== END OF LLM RESPONSE ===")
-		fmt.Println()
+		fmt.Println(strings.Repeat("=", 80) + "\n")
 	}
 
 	// Parse the response into annotations

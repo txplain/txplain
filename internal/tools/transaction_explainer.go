@@ -49,6 +49,10 @@ func (t *TransactionExplainer) Dependencies() []string {
 
 // Process generates explanations using TRUE RAG with autonomous function calling
 func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.verbose {
+		fmt.Printf("TransactionExplainer.Process: Starting with %d baggage items\n", len(baggage))
+	}
+	
 	// Clean up baggage first - remove unnecessary data before processing
 	t.cleanupBaggage(baggage)
 
@@ -82,9 +86,6 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 			}
 		}
 
-		// Remove context providers after use - they're no longer needed
-		delete(baggage, "context_providers")
-
 		// Generate explanation with autonomous RAG function calling
 		explanation, err := t.generateExplanation(ctx, decodedData, baggage, lightweightContext)
 		if err != nil {
@@ -97,9 +98,6 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 		// This should never happen - all explanations use RAG now
 		return fmt.Errorf("no context providers found - cannot generate explanation")
 	}
-
-	// Final cleanup after processing
-	t.finalCleanup(baggage)
 
 	return nil
 }
@@ -204,15 +202,7 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 	}
 }
 
-// finalCleanup removes temporary data after explanation is generated
-func (t *TransactionExplainer) finalCleanup(baggage map[string]interface{}) {
-	// Remove temporary data that's no longer needed
-	delete(baggage, "decoded_data")       // Temporary structure for LLM
-	delete(baggage, "contract_addresses") // List not needed in final result
 
-	// Keep only essential data for frontend
-	// Keep: explanation, transfers, protocols, token_metadata, tags, address_roles, ens_names
-}
 
 // Name returns the tool name
 func (t *TransactionExplainer) Name() string {
@@ -771,71 +761,38 @@ func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map
 
 	// Get all context from tools
 	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
-		for _, provider := range contextProviders {
+		if t.verbose {
+			fmt.Printf("TransactionExplainer.GetPromptContext: Found %d context providers\n", len(contextProviders))
+		}
+		for i, provider := range contextProviders {
 			if contextProvider, ok := provider.(interface {
 				GetPromptContext(context.Context, map[string]interface{}) string
 			}); ok {
-				if context := contextProvider.GetPromptContext(ctx, baggage); context != "" {
+				context := contextProvider.GetPromptContext(ctx, baggage)
+				if t.verbose {
+					fmt.Printf("TransactionExplainer.GetPromptContext: Provider[%d] (%T): Context length = %d\n", i, contextProvider, len(context))
+				}
+				if context != "" {
 					contextParts = append(contextParts, context)
 				}
+			} else {
+				if t.verbose {
+					fmt.Printf("TransactionExplainer.GetPromptContext: Provider[%d] (%T) does not implement GetPromptContext interface\n", i, provider)
+				}
 			}
 		}
-	}
-
-	// Only add debug information if DEBUG environment variable is set to "true"
-	if os.Getenv("DEBUG") == "true" {
+	} else {
 		if t.verbose {
-			fmt.Println("=== DEBUG MODE ENABLED - INCLUDING BAGGAGE DEBUG INFO ===")
-		}
-
-		// Add debug information if available
-		if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
-			var debugParts []string
-
-			// Add token metadata debug info
-			if tokenDebug, ok := debugInfo["token_metadata"].(map[string]interface{}); ok {
-				debugParts = append(debugParts, "=== TOKEN METADATA DEBUG ===")
-				if discoveredAddresses, ok := tokenDebug["discovered_addresses"].([]string); ok {
-					debugParts = append(debugParts, fmt.Sprintf("Discovered %d token addresses: %v", len(discoveredAddresses), discoveredAddresses))
-				}
-				if rpcResults, ok := tokenDebug["rpc_results"].([]string); ok {
-					debugParts = append(debugParts, "RPC Results:")
-					for _, result := range rpcResults {
-						debugParts = append(debugParts, "  - "+result)
-					}
-				}
-				if rpcErrors, ok := tokenDebug["token_metadata_rpc_errors"].([]string); ok {
-					debugParts = append(debugParts, "RPC Errors:")
-					for _, err := range rpcErrors {
-						debugParts = append(debugParts, "  - "+err)
-					}
-				}
-				if finalMetadata, ok := tokenDebug["final_metadata"].([]string); ok {
-					debugParts = append(debugParts, "Final Metadata:")
-					for _, metadata := range finalMetadata {
-						debugParts = append(debugParts, "  - "+metadata)
-					}
-				}
-			}
-
-			// Add transfer enrichment debug info
-			if transferDebug, ok := debugInfo["transfer_enricher"].(map[string]interface{}); ok {
-				debugParts = append(debugParts, "=== TRANSFER ENRICHER DEBUG ===")
-				if enrichedTransfers, ok := transferDebug["enriched_transfers"].([]string); ok {
-					debugParts = append(debugParts, "Enriched Transfers:")
-					for _, transfer := range enrichedTransfers {
-						debugParts = append(debugParts, "  - "+transfer)
-					}
-				}
-			}
-
-			if len(debugParts) > 0 {
-				contextParts = append(contextParts, strings.Join(debugParts, "\n"))
-			}
+			fmt.Println("TransactionExplainer.GetPromptContext: No context_providers found in baggage!")
 		}
 	}
 
-	return strings.Join(contextParts, "\n\n")
+	result := strings.Join(contextParts, "\n\n")
+	if t.verbose {
+		fmt.Printf("TransactionExplainer.GetPromptContext: Combined context length = %d\n", len(result))
+	}
+
+	return result
 }
 
 func (t *TransactionExplainer) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
@@ -1053,7 +1010,15 @@ CRITICAL CONTINUATION RULE:
 - ALWAYS provide a final explanation, even if some searches return no results
 - If a search finds nothing, simply continue your analysis without that information
 - DO NOT stop or ask for more context - analyze what you can see and provide the best summary possible
+- NEVER ask the user to provide transaction details or raw data - work with what you have
+- If you can't find complete information, provide the best explanation possible with available details
 - The goal is ALWAYS to reach a final transaction explanation, regardless of search results
+
+CRITICAL ROLE DATA RECOGNITION:
+- UserRoleUpdated, RoleGranted, RoleRevoked events ARE role data - use their parameters directly
+- Events with role/permission parameters contain the role information you need
+- Do NOT claim "no role data" when role-related events are present in the context
+- Extract role numbers, enabled/disabled status, and user addresses from these events
 
 ## Transaction Analysis:`
 
@@ -1082,11 +1047,11 @@ EXAMPLE WORKFLOW FOR TOKEN TRANSACTION:
 5. Provide final explanation: "Swapped 100 LINK for 0.5 ETH via 1inch aggregator + $1.20 gas"
 
 EXAMPLE WORKFLOW FOR ROLE MANAGEMENT:
-1. See UserRoleUpdated event with role parameter 7 → understand this is role management
-2. See unknown contract 0x123... → search_protocols("0x123") 
-3. Find no protocol results → continue with "contract" description
-4. See transaction initiator with ENS name → include ENS in explanation
-5. Provide final explanation: "Granted role #7 to 0x000...000 by 0x7e97...63c7 (cocytus.eth) + $0.75 gas"
+1. See UserRoleUpdated event with role parameter 7, enabled=true → extract role data directly from event
+2. See transaction initiator with ENS name → include ENS in explanation  
+3. See unknown contract 0x123... → search_protocols("0x123") if needed
+4. Find no protocol results → continue with "access control contract" description using available event data
+5. Provide final explanation: "Granted role #7 to 0x000...000 by 0x7e97...63c7 (cocytus.eth) on access control contract + $0.75 gas"
 
 EXAMPLE WITH NO SEARCH RESULTS:
 1. See unknown contract 0x123... → search_protocols("0x123")
@@ -1105,6 +1070,12 @@ FORMATTING RULES:
 - Be specific about actions: Approved, Swapped, Transferred, Granted, Revoked, Updated, Deployed, etc.
 
 **CRITICAL RULE**: Do NOT assume this is a token transaction unless you see clear evidence (Transfer events, token method calls). Many blockchain transactions are about governance, access control, contract management, or other non-token operations.
+
+**ABSOLUTELY FORBIDDEN RESPONSES**: 
+- NEVER say "No known protocol found" and stop analyzing
+- NEVER say "Without token or role data" when events contain role information  
+- NEVER say "Please provide transaction details or raw data for analysis"
+- NEVER ask the user for more information - analyze what you have
 
 Search for anything you don't immediately recognize, but ALWAYS provide your concise, data-rich explanation regardless of search results.`
 
