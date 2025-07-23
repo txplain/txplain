@@ -258,7 +258,7 @@ func printTransactionExplanation(result *models.ExplanationResult, verbose bool)
 		fmt.Println(strings.Repeat("=", 80))
 
 		// Basic transaction info
-		fmt.Printf("📝 Transaction Hash: %s\n", result.TxHash)
+		fmt.Printf("📝 Transaction: %s\n", result.TxHash)
 		fmt.Printf("🏷️  Status: %s\n", strings.ToUpper(result.Status))
 		fmt.Printf("⛽ Gas Used: %s\n", formatNumber(result.GasUsed))
 		if result.BlockNumber > 0 {

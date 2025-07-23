@@ -35,7 +35,7 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
         {/* Transaction Hash Input */}
         <div>
           <label htmlFor="txHash" className="block text-sm font-medium text-gray-700 mb-2">
-            Transaction Hash
+            Transaction
           </label>
           <input
             type="text"
@@ -110,10 +110,10 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
                       d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                     ></path>
                   </svg>
-                  Analyzing Transaction...
+                  Analyzing...
               </div>
             ) : (
-              'Explain Transaction'
+              'Explain'
             )}
           </button>
         </div>
@@ -121,7 +121,7 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
 
       {/* Examples */}
       <div className="mt-8 border-t border-gray-200 pt-6">
-        <h3 className="text-sm font-medium text-gray-700 mb-3">Example Transactions:</h3>
+        <h3 className="text-sm font-medium text-gray-700 mb-3">Examples:</h3>
         <div className="space-y-2">
           <button
             type="button"
@@ -162,6 +162,14 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
             disabled={loading}
           >
             0xc2d06d1d...fcd89fce64 (Cross-chain Verification)
+          </button>
+          <button
+            type="button"
+            onClick={() => setTxHash('0x5035ce80e4963588f8a3eb47ffe866cd64bff1960fa206595e5658546adf558f')}
+            className="text-sm text-blue-600 hover:text-blue-800 block truncate max-w-full"
+            disabled={loading}
+          >
+            0x5035ce80...6adf558f (Batch Order Fulfillment)
           </button>
         </div>
       </div>

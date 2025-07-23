@@ -152,6 +152,10 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 
 	calls, err := t.decodeTrace(ctx, traceData, networkID)
 	if err != nil {
+		// Update progress tracker to show the error before returning
+		if progressTracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+			progressTracker.UpdateComponent("trace_decoder", models.ComponentGroupDecoding, "Decoding Function Calls", models.ComponentStatusRunning, fmt.Sprintf("Trace decoding failed: %v", err))
+		}
 		if t.verbose {
 			fmt.Printf("❌ Failed to decode trace: %v\n", err)
 			fmt.Println(strings.Repeat("🔍", 60) + "\n")

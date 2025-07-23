@@ -580,6 +580,10 @@ func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedD
 	}, t.verbose, llms.WithTools(ragTools), llms.WithToolChoice("auto"))
 
 	if err != nil {
+		// Update progress tracker to show the error before returning
+		if hasProgress {
+			progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, fmt.Sprintf("AI call failed: %v", err))
+		}
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
@@ -717,6 +721,10 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 		// Send function results back to LLM for final response with retry logic
 		finalResponse, err := CallLLMWithRetry(ctx, t.llm, functionMessages, t.verbose)
 		if err != nil {
+			// Update progress tracker to show the error before returning
+			if hasProgress {
+				progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, fmt.Sprintf("Final AI call failed: %v", err))
+			}
 			return nil, fmt.Errorf("failed to get final response after function calls: %w", err)
 		}
 
