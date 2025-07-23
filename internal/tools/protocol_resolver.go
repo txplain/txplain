@@ -253,15 +253,15 @@ func (p *ProtocolResolver) identifyProtocolsWithAI(ctx context.Context, contextD
 		fmt.Println()
 	}
 
-	// Call LLM
-	response, err := p.llm.GenerateContent(ctx, []llms.MessageContent{
+	// Call LLM with retry logic for robustness
+	response, err := CallLLMWithRetry(ctx, p.llm, []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(prompt),
 			},
 		},
-	})
+	}, p.verbose)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}

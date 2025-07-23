@@ -259,7 +259,19 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 
 		result, err := s.agent.ExplainTransactionWithProgress(r.Context(), &request, progressChan)
 		if err != nil {
-			// Error will be sent via progress channel by the agent
+			// CRITICAL FIX: Ensure error is sent to client before channel closes
+			// Previously, this was causing components to get stuck when errors occurred
+			select {
+			case progressChan <- models.ProgressEvent{
+				Type:      "error",
+				Error:     fmt.Sprintf("Transaction analysis failed: %v", err),
+				Timestamp: time.Now(),
+			}:
+				// Error sent successfully
+			case <-time.After(1 * time.Second):
+				// Timeout sending error, proceed to close channel
+				// This prevents hanging if the client has disconnected
+			}
 			return
 		}
 

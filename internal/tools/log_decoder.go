@@ -36,7 +36,7 @@ func NewLogDecoderWithRPC(rpcClient *rpc.Client, cache Cache) *LogDecoder {
 type LogDecoder struct {
 	rpcClient         *rpc.Client
 	signatureResolver *rpc.SignatureResolver
-	verbose           bool // Added for debug logging
+	verbose           bool  // Added for debug logging
 	cache             Cache // Cache for log decoding results
 }
 
@@ -78,7 +78,7 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 	if nid, ok := rawData["network_id"].(float64); ok {
 		networkID = int64(nid)
 	}
-	
+
 	txHash, ok := rawData["tx_hash"].(string)
 	if !ok {
 		return fmt.Errorf("missing transaction hash in raw_data")
@@ -113,7 +113,7 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		// No logs, add empty events to baggage
 		emptyEvents := []models.Event{}
 		baggage["events"] = emptyEvents
-		
+
 		// Cache empty result to avoid repeated processing
 		if l.cache != nil {
 			cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))

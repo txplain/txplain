@@ -569,15 +569,15 @@ func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedD
 	// Get RAG function tools for autonomous searching
 	ragTools := t.ragService.GetLangChainGoTools()
 
-	// Call LLM with function calling enabled - THE LLM DECIDES WHAT TO SEARCH
-	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
+	// Call LLM with function calling enabled and retry logic - THE LLM DECIDES WHAT TO SEARCH
+	response, err := CallLLMWithRetry(ctx, t.llm, []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(prompt),
 			},
 		},
-	}, llms.WithTools(ragTools), llms.WithToolChoice("auto"))
+	}, t.verbose, llms.WithTools(ragTools), llms.WithToolChoice("auto"))
 
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
@@ -714,8 +714,8 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 			fmt.Println("=== SENDING FUNCTION RESULTS BACK TO LLM ===")
 		}
 
-		// Send function results back to LLM for final response
-		finalResponse, err := t.llm.GenerateContent(ctx, functionMessages)
+		// Send function results back to LLM for final response with retry logic
+		finalResponse, err := CallLLMWithRetry(ctx, t.llm, functionMessages, t.verbose)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get final response after function calls: %w", err)
 		}

@@ -337,15 +337,15 @@ func (a *AddressRoleResolver) inferAddressRoles(ctx context.Context, baggage map
 		fmt.Println()
 	}
 
-	// Call LLM
-	response, err := a.llm.GenerateContent(ctx, []llms.MessageContent{
+	// Call LLM with retry logic for robustness
+	response, err := CallLLMWithRetry(ctx, a.llm, []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(prompt),
 			},
 		},
-	})
+	}, a.verbose)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}

@@ -15,7 +15,7 @@ import (
 type TraceDecoder struct {
 	rpcClient         *rpc.Client
 	signatureResolver *rpc.SignatureResolver
-	verbose           bool // Added verbose flag
+	verbose           bool  // Added verbose flag
 	cache             Cache // Cache for trace decoding results
 }
 
@@ -75,7 +75,7 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 	if nid, ok := rawData["network_id"].(float64); ok {
 		networkID = int64(nid)
 	}
-	
+
 	txHash, ok := rawData["tx_hash"].(string)
 	if !ok {
 		return fmt.Errorf("missing transaction hash in raw_data")
@@ -110,7 +110,7 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 		// No trace data available, set empty calls in baggage
 		emptyCalls := []models.Call{}
 		baggage["calls"] = emptyCalls
-		
+
 		// Cache empty result to avoid repeated processing
 		if t.cache != nil {
 			cacheKey := fmt.Sprintf(TraceDecodingKeyPattern, networkID, strings.ToLower(txHash))

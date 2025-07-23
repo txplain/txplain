@@ -243,15 +243,15 @@ func (a *AmountsFinder) identifyAmountsWithLLM(ctx context.Context, contextData 
 		fmt.Println()
 	}
 
-	// Call LLM
-	response, err := a.llm.GenerateContent(ctx, []llms.MessageContent{
+	// Call LLM with retry logic for robustness against context cancellation and network errors
+	response, err := CallLLMWithRetry(ctx, a.llm, []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
 				llms.TextPart(prompt),
 			},
 		},
-	})
+	}, a.verbose)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
