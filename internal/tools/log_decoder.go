@@ -236,8 +236,21 @@ func (t *LogDecoder) hexToUint64(hex string) (uint64, error) {
 // decodeLogsWithRPC processes log entries with RPC enhancements
 func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, networkID int64, baggage map[string]interface{}) ([]models.Event, error) {
 	var events []models.Event
+	totalLogs := len(logs)
+	
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
 
-	for _, logEntry := range logs {
+	for i, logEntry := range logs {
+		// Send progress updates every 10 logs or every 500ms
+		if hasProgress && (i%10 == 0 || i == totalLogs-1) {
+			progress := fmt.Sprintf("Processing log %d of %d", i+1, totalLogs)
+			if i == totalLogs-1 {
+				progress = fmt.Sprintf("Finalizing %d decoded events", len(events))
+			}
+			progressTracker.UpdateComponent("log_decoder", models.ComponentGroupDecoding, "Decoding Events", models.ComponentStatusRunning, progress)
+		}
+
 		logMap, ok := logEntry.(map[string]interface{})
 		if !ok {
 			continue

@@ -57,6 +57,9 @@ func (s *Server) setupRoutes() {
 
 	// Transaction explanation endpoint
 	v1.HandleFunc("/explain", s.handleExplainTransaction).Methods("POST")
+	
+	// Transaction explanation with Server-Sent Events
+	v1.HandleFunc("/explain-sse", s.handleExplainTransactionSSE).Methods("POST")
 
 	// Get supported networks
 	v1.HandleFunc("/networks", s.handleGetNetworks).Methods("GET")
@@ -153,6 +156,96 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 		// but we can log the error for debugging
 	} else {
 		log.Printf("Successfully encoded and sent JSON response")
+	}
+}
+
+// handleExplainTransactionSSE handles transaction explanation with Server-Sent Events
+func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Request) {
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
+
+	// Parse request body
+	var request models.TransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		s.writeSSEError(w, "Invalid request body", err)
+		return
+	}
+
+	// Validate request
+	if request.TxHash == "" {
+		s.writeSSEError(w, "Transaction hash is required", nil)
+		return
+	}
+
+	if !models.IsValidNetwork(request.NetworkID) {
+		s.writeSSEError(w, "Unsupported network ID", nil)
+		return
+	}
+
+	// Create progress channel
+	progressChan := make(chan models.ProgressEvent, 50)
+
+	// Start processing in goroutine
+	go func() {
+		defer close(progressChan)
+
+		result, err := s.agent.ExplainTransactionWithProgress(r.Context(), &request, progressChan)
+		if err != nil {
+			// Error will be sent via progress channel by the agent
+			return
+		}
+
+		// Send final completion (backup in case agent doesn't send it)
+		progressChan <- models.ProgressEvent{
+			Type:      "complete",
+			Result:    result,
+			Timestamp: time.Now(),
+		}
+	}()
+
+	// Stream progress updates
+	for event := range progressChan {
+		eventData, err := json.Marshal(event)
+		if err != nil {
+			continue // Skip malformed events
+		}
+
+		// Send SSE event
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, eventData)
+		
+		// Flush immediately
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+
+		// Break on completion or error
+		if event.Type == "complete" || event.Type == "error" {
+			break
+		}
+	}
+}
+
+// writeSSEError writes an error event via SSE
+func (s *Server) writeSSEError(w http.ResponseWriter, message string, err error) {
+	errorEvent := models.ProgressEvent{
+		Type:      "error",
+		Error:     message,
+		Timestamp: time.Now(),
+	}
+	
+	if err != nil {
+		errorEvent.Error = fmt.Sprintf("%s: %v", message, err)
+	}
+
+	eventData, _ := json.Marshal(errorEvent)
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", eventData)
+	
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 

@@ -62,4 +62,28 @@ export interface ExplanationResult {
   tags?: string[]
   metadata?: Record<string, unknown>
   annotations?: Annotation[]
+}
+
+// Progress tracking types
+export type ComponentStatus = 'initiated' | 'running' | 'finished' | 'error'
+export type ComponentGroup = 'data' | 'decoding' | 'enrichment' | 'analysis' | 'finishing'
+
+export interface ComponentUpdate {
+  id: string
+  group: ComponentGroup
+  title: string
+  status: ComponentStatus
+  description: string
+  timestamp: string
+  start_time?: string
+  duration_ms?: number
+  metadata?: any
+}
+
+export interface ProgressEvent {
+  type: 'component_update' | 'complete' | 'error'
+  component?: ComponentUpdate
+  result?: any
+  error?: string
+  timestamp: string
 } 

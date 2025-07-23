@@ -1,18 +1,22 @@
 import { useState, useEffect } from 'react'
 import TransactionForm from './components/TransactionForm.js'
 import ResultsDisplay from './components/ResultsDisplay.js'
-import type { Network, TransactionRequest, ExplanationResult } from './types.js'
+import ProgressDisplay from './components/ProgressDisplay.js'
+import type { Network, TransactionRequest, ExplanationResult, ComponentUpdate, ProgressEvent } from './types.js'
 
 function App() {
   const [networks, setNetworks] = useState<Network[]>([])
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ExplanationResult | null>(null)
   const [error, setError] = useState<string>('')
+  const [components, setComponents] = useState<ComponentUpdate[]>([])
 
   // Load networks on component mount
   useEffect(() => {
     fetchNetworks()
   }, [])
+
+
 
   const fetchNetworks = async () => {
     try {
@@ -30,39 +34,82 @@ function App() {
     setLoading(true)
     setError('')
     setResult(null)
-
-    // Create AbortController for request timeout and cancellation
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 360000) // 6 minutes (1 minute buffer over server's 5-minute timeout)
+    setComponents([
+      {
+        id: 'initialization',
+        group: 'data',
+        title: 'Starting Analysis', 
+        status: 'running',
+        description: 'Initializing transaction analysis...',
+        timestamp: new Date().toISOString()
+      }
+    ])
 
     try {
-      const response = await fetch('/api/v1/explain', {
+      // Use fetch with SSE streaming instead of EventSource (which doesn't support POST)
+      const response = await fetch('/api/v1/explain-sse', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(request),
-        signal: controller.signal, // Add abort signal
       })
 
-      clearTimeout(timeoutId) // Clear timeout on successful response
-
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to explain transaction')
+        throw new Error('Failed to start analysis')
       }
 
-      const explanation = await response.json()
-      setResult(explanation)
-    } catch (err: unknown) {
-      clearTimeout(timeoutId) // Clear timeout on error
-      
-      if (err instanceof Error) {
-        if (err.name === 'AbortError') {
-          setError('Request timed out. Complex transactions may take up to 6 minutes to analyze.')
-        } else {
-          setError(err.message)
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        throw new Error('No response body')
+      }
+
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        
+        // Keep the last incomplete line in buffer
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const eventData = JSON.parse(line.slice(6)) as ProgressEvent
+              
+              if (eventData.type === 'component_update' && eventData.component) {
+                setComponents(prev => {
+                  const existing = prev.find(c => c.id === eventData.component!.id)
+                  if (existing) {
+                    return prev.map(c => c.id === eventData.component!.id ? eventData.component! : c)
+                  } else {
+                    return [...prev, eventData.component!]
+                  }
+                })
+              } else if (eventData.type === 'complete' && eventData.result) {
+                setResult(eventData.result as ExplanationResult)
+                setLoading(false)
+                return
+              } else if (eventData.type === 'error') {
+                setError(eventData.error || 'Analysis failed')
+                setLoading(false)
+                return
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE data:', e)
+            }
+          }
         }
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message)
       } else {
         setError('An unexpected error occurred')
       }
@@ -89,6 +136,14 @@ function App() {
             loading={loading}
             onSubmit={explainTransaction}
           />
+
+          {/* Progress Display */}
+          {(loading || components.length > 0) && (
+            <ProgressDisplay 
+              components={components} 
+              isComplete={!loading && result !== null}
+            />
+          )}
 
           {error && (
             <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">

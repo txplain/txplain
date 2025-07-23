@@ -30,7 +30,7 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-lg p-6">
+    <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Transaction Hash Input */}
         <div>
