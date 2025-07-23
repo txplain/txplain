@@ -49,6 +49,10 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 	}
 
 	if e.rpcClient == nil {
+		// Update progress tracker to show the error before returning
+		if progressTracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+			progressTracker.UpdateComponent("ens_resolver", models.ComponentGroupEnrichment, "Resolving ENS Names", models.ComponentStatusRunning, "Configuration error: RPC client not set")
+		}
 		if e.verbose {
 			fmt.Println("❌ RPC client not set")
 			fmt.Println(strings.Repeat("🏷️", 60) + "\n")

@@ -90,6 +90,10 @@ func (a *AddressRoleResolver) Process(ctx context.Context, baggage map[string]in
 	// Step 3: Use AI to infer roles and categories
 	roleData, err := a.inferAddressRoles(ctx, baggage, addresses)
 	if err != nil {
+		// Update progress tracker to show the error before returning
+		if progressTracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+			progressTracker.UpdateComponent("address_role_resolver", models.ComponentGroupAnalysis, "Analyzing Address Roles", models.ComponentStatusRunning, fmt.Sprintf("AI role analysis failed: %v", err))
+		}
 		if a.verbose {
 			fmt.Printf("❌ Failed to infer address roles: %v\n", err)
 			fmt.Println(strings.Repeat("🏠", 60) + "\n")

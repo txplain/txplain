@@ -99,7 +99,7 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
       {/* Main Summary */}
       <div className="bg-white rounded-lg shadow-lg p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold text-gray-900">Transaction Summary</h2>
+          <h2 className="text-xl font-semibold text-gray-900">Summary</h2>
           <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(result.status)}`}>
             {result.status.charAt(0).toUpperCase() + result.status.slice(1)}
           </span>
@@ -291,7 +291,7 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
       {/* Transaction Participants */}
       {result.participants && result.participants.length > 0 && (
         <div className="bg-white rounded-lg shadow-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction Participants</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Participants</h3>
           <div className="space-y-3">
             {result.participants.map((participant, index) => {
               // Deterministic color assignment based on category name hash

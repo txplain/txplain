@@ -139,7 +139,7 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
       <div className="bg-white rounded-lg shadow-lg mb-6">
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center space-x-3">
-            <h3 className="text-lg font-semibold text-gray-900">Analysis Progress</h3>
+            <h3 className="text-lg font-semibold text-gray-900">Analysis</h3>
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
               <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mr-1"></div>
               Starting...
@@ -225,14 +225,14 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
       <div 
         className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors rounded-t-lg"
         onClick={() => setIsExpanded(!isExpanded)}
-        title={isExpanded ? "Collapse progress details" : "Expand to explore analysis steps"}
+        title={isExpanded ? "Collapse" : "Expand"}
       >
         <div className="flex items-center space-x-3">
-          <h3 className="text-lg font-semibold text-gray-900">Analysis Progress</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Analysis</h3>
           {isComplete && (
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
               <span className="mr-1">✅</span>
-              Completed - Click to explore steps
+              Completed
             </span>
           )}
         </div>
@@ -243,7 +243,7 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
               {errorComponents > 0 && (
                 <span className="text-red-600 ml-2">{errorComponents} errors</span>
               )}
-              <span className="text-blue-600 ml-2 font-medium">→ Expand to explore</span>
+              <span className="text-blue-600 ml-2 font-medium">→ Expand</span>
             </div>
           )}
           <button className="p-1 hover:bg-gray-200 rounded">

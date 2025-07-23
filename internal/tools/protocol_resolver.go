@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+	"github.com/txplain/txplain/internal/models"
 )
 
 // ProtocolResolver identifies DeFi protocols probabilistically using AI and RAG
@@ -106,6 +107,10 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 	// Use AI to identify protocols with context from previous tools
 	protocols, err := p.identifyProtocolsWithAI(ctx, contextData)
 	if err != nil {
+		// Update progress tracker to show the error while continuing with fallback
+		if progressTracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+			progressTracker.UpdateComponent("protocol_resolver", models.ComponentGroupAnalysis, "Identifying Protocols", models.ComponentStatusRunning, fmt.Sprintf("AI detection failed, using fallback: %v", err))
+		}
 		if p.verbose {
 			fmt.Printf("❌ AI protocol detection failed: %v\n", err)
 			fmt.Println("⚠️  Falling back to empty protocol list")

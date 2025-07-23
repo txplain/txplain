@@ -118,6 +118,10 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 	// Generate annotations using AI with the text context
 	annotations, err := ag.generateAnnotationsFromText(ctx, explanation.Summary, fullContextText)
 	if err != nil {
+		// Update progress tracker to show the error before returning
+		if progressTracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+			progressTracker.UpdateComponent("annotation_generator", models.ComponentGroupFinishing, "Creating Annotations", models.ComponentStatusRunning, fmt.Sprintf("AI annotation generation failed: %v", err))
+		}
 		return fmt.Errorf("failed to generate annotations: %w", err)
 	}
 

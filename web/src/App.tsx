@@ -1,22 +1,118 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import TransactionForm from './components/TransactionForm.js'
 import ResultsDisplay from './components/ResultsDisplay.js'
 import ProgressDisplay from './components/ProgressDisplay.js'
 import type { Network, TransactionRequest, ExplanationResult, ComponentUpdate, ProgressEvent } from './types.js'
 
+// Enhanced error types for better user experience
+interface ErrorState {
+  message: string
+  type: 'server' | 'network' | 'timeout' | 'connection' | 'unknown'
+  isRetryable: boolean
+  details?: string
+}
+
 function App() {
   const [networks, setNetworks] = useState<Network[]>([])
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ExplanationResult | null>(null)
-  const [error, setError] = useState<string>('')
+  const [error, setError] = useState<ErrorState | null>(null)
   const [components, setComponents] = useState<ComponentUpdate[]>([])
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const progressDisplayRef = useRef<HTMLDivElement>(null)
+
+  // Monitor online/offline status
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
+    
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
 
   // Load networks on component mount
   useEffect(() => {
     fetchNetworks()
   }, [])
 
+  const createErrorState = (message: string, type: ErrorState['type'], isRetryable: boolean = true, details?: string): ErrorState => {
+    return { message, type, isRetryable, details }
+  }
 
+  const handleError = (err: unknown, context: string = ''): ErrorState => {
+    console.error(`[ERROR] ${context}:`, err)
+    
+    if (!navigator.onLine) {
+      return createErrorState(
+        'No internet connection detected. Please check your network and try again.',
+        'network',
+        true,
+        'Your device appears to be offline. Check your WiFi or cellular connection.'
+      )
+    }
+
+    if (err instanceof Error) {
+      const errorMessage = err.message.toLowerCase()
+      
+      // Network/connection errors
+      if (errorMessage.includes('fetch') || 
+          errorMessage.includes('network') || 
+          errorMessage.includes('connection') ||
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('abort')) {
+        return createErrorState(
+          'Connection problem detected. This might be due to internet connectivity issues.',
+          'connection',
+          true,
+          'The connection to the server was interrupted. This often happens with unstable internet connections.'
+        )
+      }
+      
+      // Server errors
+      if (errorMessage.includes('server') || 
+          errorMessage.includes('internal') ||
+          errorMessage.includes('service unavailable') ||
+          errorMessage.includes('502') ||
+          errorMessage.includes('503') ||
+          errorMessage.includes('504')) {
+        return createErrorState(
+          'Server is experiencing issues. Please try again in a moment.',
+          'server',
+          true,
+          'The analysis server is temporarily unavailable or overloaded.'
+        )
+      }
+      
+      // Timeout errors
+      if (errorMessage.includes('timeout')) {
+        return createErrorState(
+          'Request timed out. This transaction might be complex or the server is busy.',
+          'timeout',
+          true,
+          'The analysis took longer than expected. Complex transactions may require more time.'
+        )
+      }
+      
+      // Generic error
+      return createErrorState(
+        err.message,
+        'unknown',
+        true,
+        'An unexpected error occurred during analysis.'
+      )
+    }
+    
+    return createErrorState(
+      'An unexpected error occurred',
+      'unknown',
+      true
+    )
+  }
 
   const fetchNetworks = async () => {
     try {
@@ -26,17 +122,58 @@ function App() {
       setNetworks(data.networks)
     } catch (err) {
       console.error('Failed to fetch networks:', err)
-      setError('Failed to load networks. Please refresh the page.')
+      const errorState = handleError(err, 'Network loading')
+      // For network loading, show a simpler error
+      setError(createErrorState(
+        'Failed to load supported networks. Please refresh the page.',
+        errorState.type,
+        true
+      ))
     }
   }
 
   const explainTransaction = async (request: TransactionRequest) => {
     setLoading(true)
-    setError('')
+    setError(null)
     setResult(null)
     setComponents([]) // Start with empty components, let backend drive all updates
 
+    // Scroll to the progress display area after a brief delay to ensure it's rendered
+    setTimeout(() => {
+      if (progressDisplayRef.current) {
+        progressDisplayRef.current.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+          inline: 'nearest'
+        })
+      }
+    }, 100)
+
+    // Check network connectivity first
+    if (!navigator.onLine) {
+      setError(createErrorState(
+        'No internet connection. Please check your network and try again.',
+        'network',
+        true,
+        'Your device is offline. Connect to the internet to analyze transactions.'
+      ))
+      setLoading(false)
+      return
+    }
+
+    let timeoutId: NodeJS.Timeout | null = null
+    let abortController: AbortController | null = null
+
     try {
+      abortController = new AbortController()
+      
+      // Set up a timeout (5 minutes for complex transactions)
+      timeoutId = setTimeout(() => {
+        if (abortController) {
+          abortController.abort()
+        }
+      }, 5 * 60 * 1000) // 5 minutes
+
       // Use fetch with SSE streaming instead of EventSource (which doesn't support POST)
       const response = await fetch('/api/v1/explain-sse', {
         method: 'POST',
@@ -44,86 +181,154 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(request),
+        signal: abortController.signal
       })
 
       if (!response.ok) {
-        throw new Error('Failed to start analysis')
+        if (response.status >= 500) {
+          throw new Error(`Server error (${response.status}): The analysis server is experiencing issues`)
+        } else if (response.status === 429) {
+          throw new Error('Too many requests. Please wait a moment and try again.')
+        } else if (response.status >= 400) {
+          throw new Error(`Request error (${response.status}): Please check your transaction hash and network selection`)
+        }
+        throw new Error(`HTTP error ${response.status}`)
       }
 
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
 
       if (!reader) {
-        throw new Error('No response body')
+        throw new Error('No response stream available')
       }
 
       let buffer = ''
       let eventCount = 0
       let firstEventTime: number | null = null
+      let lastEventTime = Date.now()
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        const readTime = Date.now()
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        
-        // Keep the last incomplete line in buffer
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          // Log all SSE lines for debugging
-          if (line.trim()) {
-            console.log(`[SSE-CLIENT-DEBUG] Line received at ${readTime}: ${line.substring(0, 100)}...`)
+      // Set up a heartbeat timeout to detect stalled connections
+      const heartbeatTimeout = setInterval(() => {
+        const now = Date.now()
+        if (now - lastEventTime > 30000) { // 30 seconds without data
+          console.warn('[SSE-CLIENT] Connection appears stalled, aborting...')
+          if (abortController) {
+            abortController.abort()
           }
+        }
+      }, 10000) // Check every 10 seconds
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const readTime = Date.now()
+          lastEventTime = readTime
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
           
-          if (line.startsWith('data: ')) {
-            try {
-              eventCount++
-              const parseTime = Date.now()
-              if (!firstEventTime) firstEventTime = parseTime
-              
-              const eventData = JSON.parse(line.slice(6)) as ProgressEvent
-              console.log(`[SSE-CLIENT-DEBUG] Event ${eventCount} parsed at ${parseTime} (${parseTime - readTime}ms after read, ${parseTime - firstEventTime}ms since first event):`, eventData.type, eventData.component?.id)
-              
-              if (eventData.type === 'component_update' && eventData.component) {
-                const updateTime = Date.now()
-                setComponents(prev => {
-                  const existing = prev.find(c => c.id === eventData.component!.id)
-                  if (existing) {
-                    return prev.map(c => c.id === eventData.component!.id ? eventData.component! : c)
-                  } else {
-                    return [...prev, eventData.component!]
+          // Keep the last incomplete line in buffer
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            // Log all SSE lines for debugging
+            if (line.trim()) {
+              console.log(`[SSE-CLIENT-DEBUG] Line received at ${readTime}: ${line.substring(0, 100)}...`)
+            }
+            
+            if (line.startsWith('data: ')) {
+              try {
+                eventCount++
+                const parseTime = Date.now()
+                if (!firstEventTime) firstEventTime = parseTime
+                
+                const eventData = JSON.parse(line.slice(6)) as ProgressEvent
+                console.log(`[SSE-CLIENT-DEBUG] Event ${eventCount} parsed at ${parseTime} (${parseTime - readTime}ms after read, ${parseTime - firstEventTime}ms since first event):`, eventData.type, eventData.component?.id)
+                
+                if (eventData.type === 'component_update' && eventData.component) {
+                  const updateTime = Date.now()
+                  setComponents(prev => {
+                    const existing = prev.find(c => c.id === eventData.component!.id)
+                    if (existing) {
+                      return prev.map(c => c.id === eventData.component!.id ? eventData.component! : c)
+                    } else {
+                      return [...prev, eventData.component!]
+                    }
+                  })
+                  console.log(`[SSE-CLIENT-DEBUG] Component updated at ${updateTime} (${updateTime - parseTime}ms after parse)`)
+                } else if (eventData.type === 'complete' && eventData.result) {
+                  console.log('[SSE-CLIENT-DEBUG] Analysis completed, total components received:', components.length)
+                  setResult(eventData.result as ExplanationResult)
+                  setLoading(false)
+                  clearInterval(heartbeatTimeout)
+                  if (timeoutId) clearTimeout(timeoutId)
+                  return
+                } else if (eventData.type === 'error') {
+                  console.log('[SSE-CLIENT-DEBUG] Server sent error:', eventData.error, 'Components received:', components.length)
+                  
+                  // Handle server-sent errors with proper categorization
+                  const serverError = eventData.error || 'Analysis failed'
+                  let errorType: ErrorState['type'] = 'server'
+                  
+                  if (serverError.toLowerCase().includes('context canceled') || 
+                      serverError.toLowerCase().includes('timeout')) {
+                    errorType = 'timeout'
+                  } else if (serverError.toLowerCase().includes('network') || 
+                             serverError.toLowerCase().includes('connection')) {
+                    errorType = 'connection'
                   }
-                })
-                console.log(`[SSE-CLIENT-DEBUG] Component updated at ${updateTime} (${updateTime - parseTime}ms after parse)`)
-              } else if (eventData.type === 'complete' && eventData.result) {
-                console.log('[SSE-CLIENT-DEBUG] Analysis completed, total components received:', components.length)
-                setResult(eventData.result as ExplanationResult)
-                setLoading(false)
-                return
-              } else if (eventData.type === 'error') {
-                console.log('[SSE-CLIENT-DEBUG] Analysis error:', eventData.error, 'Components received:', components.length)
-                setError(eventData.error || 'Analysis failed')
-                setLoading(false)
-                return
+                  
+                  setError(createErrorState(
+                    `Analysis failed: ${serverError}`,
+                    errorType,
+                    true,
+                    'The server encountered an error while analyzing your transaction. This may be due to server load or a complex transaction.'
+                  ))
+                  setLoading(false)
+                  clearInterval(heartbeatTimeout)
+                  if (timeoutId) clearTimeout(timeoutId)
+                  return
+                }
+              } catch (e) {
+                console.error('[SSE-CLIENT-DEBUG] Failed to parse SSE data:', e, 'Line:', line)
               }
-            } catch (e) {
-              console.error('[SSE-CLIENT-DEBUG] Failed to parse SSE data:', e, 'Line:', line)
             }
           }
         }
+      } finally {
+        clearInterval(heartbeatTimeout)
       }
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message)
+      // Clear timeouts
+      if (timeoutId) clearTimeout(timeoutId)
+      
+      // Handle different error types
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError(createErrorState(
+          'Analysis was cancelled or timed out. Complex transactions may take longer to analyze.',
+          'timeout',
+          true,
+          'The request was cancelled, either manually or due to a timeout. Try again with a shorter transaction hash or check your internet connection.'
+        ))
       } else {
-        setError('An unexpected error occurred')
+        setError(handleError(err, 'Transaction analysis'))
       }
     } finally {
       setLoading(false)
     }
+  }
+
+  const retryAnalysis = () => {
+    if (error && error.isRetryable) {
+      setError(null)
+      // Re-trigger the last analysis if we have the form data
+      // This would require storing the last request, but for now just clear the error
+    }
+  }
+
+  const clearError = () => {
+    setError(null)
   }
 
   return (
@@ -137,6 +342,14 @@ function App() {
               <span className="text-sm text-gray-500">Open-source AI-powered blockchain transaction analysis</span>
             </div>
             <div className="flex items-center space-x-4">
+              {/* Network Status Indicator */}
+              {!isOnline && (
+                <div className="flex items-center space-x-2 px-3 py-1 bg-red-100 text-red-800 text-sm rounded-full">
+                  <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                  <span>Offline</span>
+                </div>
+              )}
+              
               {/* GitHub Link */}
               <a 
                 href="https://github.com/txplain/txplain"
@@ -155,6 +368,8 @@ function App() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
+
+
         {/* Main content */}
         <div className="max-w-4xl mx-auto">
           <TransactionForm
@@ -163,26 +378,80 @@ function App() {
             onSubmit={explainTransaction}
           />
 
-          {/* Progress Display */}
-          {(loading || components.length > 0 || result !== null) && (
-            <ProgressDisplay 
-              components={components} 
-              isComplete={!loading && result !== null}
-            />
-          )}
-
+          {/* Error Display - shown in place of Analysis section */}
           {error && (
-            <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <div className="flex">
-                <div className="flex-shrink-0">
-                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                  </svg>
-                </div>
-                <div className="ml-3">
-                  <p className="text-red-800">{error}</p>
+            <div ref={progressDisplayRef} className="mb-6">
+              <div className={`bg-white rounded-lg shadow-lg p-6 border-l-4 ${
+                error.type === 'network' || error.type === 'connection' 
+                  ? 'border-red-400' 
+                  : error.type === 'timeout'
+                  ? 'border-yellow-400'
+                  : error.type === 'server'
+                  ? 'border-orange-400'
+                  : 'border-gray-400'
+              }`}>
+                <div className="flex items-start">
+                  <div className="flex-shrink-0">
+                    {error.type === 'network' || error.type === 'connection' ? (
+                      <svg className="w-5 h-5 text-red-400 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    ) : error.type === 'timeout' ? (
+                      <svg className="w-5 h-5 text-yellow-400 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5 text-orange-400 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="ml-3 flex-1">
+                    <h3 className="text-sm font-medium text-gray-900">
+                      {error.type === 'network' || error.type === 'connection' 
+                        ? 'Connection Problem'
+                        : error.type === 'timeout'
+                        ? 'Request Timed Out'
+                        : error.type === 'server'
+                        ? 'Server Error'
+                        : 'Error'
+                      }
+                    </h3>
+                    <div className="mt-1 text-sm text-gray-600">
+                      <p>{error.message}</p>
+                      {error.details && (
+                        <p className="mt-2 text-xs opacity-75">{error.details}</p>
+                      )}
+                    </div>
+                    {error.isRetryable && (
+                      <div className="mt-3 flex space-x-3">
+                        <button
+                          onClick={retryAnalysis}
+                          className="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition-colors"
+                        >
+                          Try Again
+                        </button>
+                        <button
+                          onClick={clearError}
+                          className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Progress Display - only shown when no error */}
+          {!error && (loading || components.length > 0 || result !== null) && (
+            <div ref={progressDisplayRef}>
+              <ProgressDisplay 
+                components={components} 
+                isComplete={!loading && result !== null}
+              />
             </div>
           )}
 

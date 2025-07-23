@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+	"github.com/txplain/txplain/internal/models"
 )
 
 // TagResolver identifies transaction tags probabilistically using AI and RAG
@@ -104,6 +105,10 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 	// Use AI to identify tags with context from previous tools
 	tags, err := t.identifyTagsWithAI(ctx, contextData)
 	if err != nil {
+		// Update progress tracker to show the error while continuing with fallback
+		if progressTracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+			progressTracker.UpdateComponent("tag_resolver", models.ComponentGroupAnalysis, "Generating Tags", models.ComponentStatusRunning, fmt.Sprintf("AI detection failed, using fallback: %v", err))
+		}
 		if t.verbose {
 			fmt.Printf("❌ AI tag detection failed: %v\n", err)
 			fmt.Println("⚠️  Falling back to empty tag list")

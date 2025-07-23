@@ -107,6 +107,17 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 	// Use LLM to identify all amounts
 	detectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData)
 	if err != nil {
+		// Update progress tracker to show the error before returning
+		if progressTracker != nil {
+			progressTracker.UpdateComponent(
+				"amounts_finder",
+				models.ComponentGroupEnrichment,
+				"Detecting Transaction Amounts",
+				models.ComponentStatusRunning,
+				fmt.Sprintf("AI analysis failed: %v", err),
+			)
+		}
+
 		if a.verbose {
 			fmt.Printf("❌ LLM analysis failed: %v\n", err)
 			fmt.Println(strings.Repeat("💰", 60) + "\n")
