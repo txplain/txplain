@@ -13,9 +13,9 @@ import (
 
 // AnnotationGenerator creates interactive annotations for explanation text using AI
 type AnnotationGenerator struct {
-	llm               llms.Model
-	contextCollector  *AnnotationContextCollector
-	verbose           bool
+	llm              llms.Model
+	contextCollector *AnnotationContextCollector
+	verbose          bool
 }
 
 // NewAnnotationGenerator creates a new annotation generator
@@ -55,11 +55,11 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 
 	// Collect annotation context from all providers
 	annotationContext := ag.contextCollector.Collect(ctx, baggage)
-	
+
 	if ag.verbose {
-		fmt.Printf("AnnotationGenerator: Collected %d context items from %d providers\n", 
+		fmt.Printf("AnnotationGenerator: Collected %d context items from %d providers\n",
 			len(annotationContext.Items), len(ag.contextCollector.providers))
-		
+
 		// Count by type
 		typeCounts := make(map[string]int)
 		for _, item := range annotationContext.Items {
@@ -105,7 +105,7 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 	if ag.verbose {
 		fmt.Printf("AnnotationGenerator: Generated %d annotations for text: '%s'\n", len(annotations), explanation.Summary)
 		for i, annotation := range annotations {
-			fmt.Printf("  Annotation[%d]: Text='%s', HasLink=%t, HasTooltip=%t, HasIcon=%t\n", 
+			fmt.Printf("  Annotation[%d]: Text='%s', HasLink=%t, HasTooltip=%t, HasIcon=%t\n",
 				i, annotation.Text, annotation.Link != "", annotation.Tooltip != "", annotation.Icon != "")
 		}
 	}
@@ -175,7 +175,7 @@ func (ag *AnnotationGenerator) buildAnnotationPrompt(explanationText string, ann
 	if ag.verbose {
 		fmt.Printf("AnnotationGenerator: Building prompt with %d context items\n", len(annotationContext.Items))
 		for i, item := range annotationContext.Items {
-			fmt.Printf("  Context[%d]: Type=%s, Value=%s, Name=%s, Icon=%s, Link=%s\n", 
+			fmt.Printf("  Context[%d]: Type=%s, Value=%s, Name=%s, Icon=%s, Link=%s\n",
 				i, item.Type, item.Value, item.Name, item.Icon, item.Link)
 		}
 	}
@@ -437,45 +437,45 @@ Generate annotations for the explanation text above:`
 func (ag *AnnotationGenerator) parseAnnotationResponse(response string) ([]models.Annotation, error) {
 	// Clean up the response - extract JSON from potential markdown or other formatting
 	response = strings.TrimSpace(response)
-	
+
 	// Look for JSON array in the response
 	jsonStart := strings.Index(response, "[")
 	jsonEnd := strings.LastIndex(response, "]")
-	
+
 	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
 		return nil, fmt.Errorf("no valid JSON array found in response")
 	}
-	
+
 	jsonStr := response[jsonStart : jsonEnd+1]
-	
+
 	// Parse JSON
 	var annotations []models.Annotation
 	if err := json.Unmarshal([]byte(jsonStr), &annotations); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
-	
+
 	// Validate and clean up annotations
 	var validAnnotations []models.Annotation
 	for _, annotation := range annotations {
 		if annotation.Text == "" {
 			continue // Skip annotations without text
 		}
-		
+
 		// Clean up text field
 		annotation.Text = strings.TrimSpace(annotation.Text)
-		
+
 		// Validate URLs
 		if annotation.Link != "" && !ag.isValidURL(annotation.Link) {
 			annotation.Link = "" // Clear invalid URLs
 		}
-		
+
 		if annotation.Icon != "" && !ag.isValidURL(annotation.Icon) {
 			annotation.Icon = "" // Clear invalid icon URLs
 		}
-		
+
 		validAnnotations = append(validAnnotations, annotation)
 	}
-	
+
 	return validAnnotations, nil
 }
 
@@ -489,4 +489,4 @@ func (ag *AnnotationGenerator) isValidURL(url string) bool {
 // GetPromptContext provides context for other tools (not used by this tool)
 func (ag *AnnotationGenerator) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
 	return "" // This tool doesn't provide context to others
-} 
+}

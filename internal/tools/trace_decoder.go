@@ -161,18 +161,18 @@ func (t *TraceDecoder) decodeTraceByStructure(ctx context.Context, trace map[str
 		}
 		return nil
 	}
-	
+
 	// Fallback: try callTracer format first, then Arbitrum format
 	err1 := t.decodeCallTracerResult(ctx, trace, calls, 0)
 	if err1 == nil {
 		return nil
 	}
-	
+
 	err2 := t.decodeArbitrumTrace(ctx, trace, calls)
 	if err2 == nil {
 		return nil
 	}
-	
+
 	return fmt.Errorf("unknown trace format (callTracer error: %v, arbitrum error: %v)", err1, err2)
 }
 
@@ -181,7 +181,7 @@ func (t *TraceDecoder) decodeCallTracerResult(ctx context.Context, trace map[str
 	// Only process calls that have meaningful data for explanations
 	value, hasValue := trace["value"].(string)
 	to, hasTo := trace["to"].(string)
-	
+
 	// Skip calls without ETH value or meaningful contract interaction
 	if !hasValue || value == "" || value == "0x" || value == "0x0" {
 		// Still process subcalls in case they have value
@@ -196,13 +196,13 @@ func (t *TraceDecoder) decodeCallTracerResult(ctx context.Context, trace map[str
 		}
 		return nil
 	}
-	
+
 	// Extract basic call information for meaningful calls only
 	call := models.Call{
 		Depth: depth,
 		Value: value,
 	}
-	
+
 	// Extract call type
 	if callType, ok := trace["type"].(string); ok {
 		call.CallType = callType
@@ -212,10 +212,8 @@ func (t *TraceDecoder) decodeCallTracerResult(ctx context.Context, trace map[str
 		call.Contract = to
 	}
 
-	// For ETH transfers, set a simple method name
-	if call.CallType == "CALL" && call.Value != "" && call.Value != "0" && call.Value != "0x0" {
-		call.Method = "ETH Transfer"
-	}
+	// Don't hardcode method names - let LLM interpret the call based on type and value
+	// The call type and value provide enough context for interpretation
 
 	// Check call success
 	if error, hasError := trace["error"].(string); hasError && error != "" {
@@ -275,7 +273,7 @@ func (t *TraceDecoder) decodeArbitrumTrace(ctx context.Context, trace map[string
 	return nil
 }
 
-// parseArgumentsBasic provides generic argument parsing 
+// parseArgumentsBasic provides generic argument parsing
 func (t *TraceDecoder) parseArgumentsBasic(methodName, argData string, args map[string]interface{}) {
 	// Generic parsing - extract standard 32-byte parameters
 	if len(argData) >= 64 {

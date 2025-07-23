@@ -36,7 +36,7 @@ func (t *TransactionExplainer) SetVerbose(verbose bool) {
 
 // Dependencies returns the tools this processor depends on
 func (t *TransactionExplainer) Dependencies() []string {
-	return []string{"abi_resolver", "log_decoder", "token_transfer_extractor", "nft_decoder", "token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver", "protocol_resolver"}
+	return []string{"abi_resolver", "log_decoder", "token_transfer_extractor", "nft_decoder", "token_metadata_enricher", "amounts_finder", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver", "protocol_resolver"}
 }
 
 // Process generates explanation using all information from baggage
@@ -79,10 +79,10 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 
 	// Add explanation to baggage
 	baggage["explanation"] = explanation
-	
+
 	// Final cleanup after processing
 	t.finalCleanup(baggage)
-	
+
 	return nil
 }
 
@@ -92,15 +92,15 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 	if os.Getenv("DEBUG") != "true" {
 		delete(baggage, "debug_info")
 	}
-	
+
 	// Remove unused keys that take up space
-	delete(baggage, "resolved_contracts")    // Full ABI data not needed
-	delete(baggage, "all_contract_info")     // Comprehensive metadata not needed
-	
+	delete(baggage, "resolved_contracts") // Full ABI data not needed
+	delete(baggage, "all_contract_info")  // Comprehensive metadata not needed
+
 	// Clean up raw data - only keep essential transaction info
 	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
 		cleanedRawData := make(map[string]interface{})
-		
+
 		// Keep only essential transaction info
 		if networkID, exists := rawData["network_id"]; exists {
 			cleanedRawData["network_id"] = networkID
@@ -108,11 +108,11 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 		if txHash, exists := rawData["tx_hash"]; exists {
 			cleanedRawData["tx_hash"] = txHash
 		}
-		
+
 		// Keep only essential receipt data
 		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
 			cleanedReceipt := make(map[string]interface{})
-			
+
 			// Only keep fields actually used by transaction explainer
 			essentialReceiptFields := []string{"gasUsed", "status", "blockNumber", "from", "to", "gas_fee_usd", "gas_fee_native", "effectiveGasPrice"}
 			for _, field := range essentialReceiptFields {
@@ -120,40 +120,32 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 					cleanedReceipt[field] = value
 				}
 			}
-			
+
 			cleanedRawData["receipt"] = cleanedReceipt
 		}
-		
+
 		baggage["raw_data"] = cleanedRawData
 	}
-	
-	// Clean up events - remove excessive parameters
+
+	// Clean up events - keep all parameters for LLM analysis
 	if events, ok := baggage["events"].([]models.Event); ok {
 		for i, event := range events {
 			if event.Parameters != nil {
+				// Keep ALL parameters - let LLM decide what's meaningful
+				// This ensures maximum context for generic transaction analysis
 				cleanedParams := make(map[string]interface{})
-				
-				// Keep ALL meaningful parameters, only skip internal/technical fields
 				for key, value := range event.Parameters {
-					// Skip only internal technical fields, not meaningful parameter names
-					if key == "raw_data" || key == "signature" || 
-					   strings.HasPrefix(key, "topic_") && len(key) > 10 {
-						continue
-					}
-					
-					// Keep ALL other parameters - they all come from ABI decoding
 					cleanedParams[key] = value
 				}
-				
 				events[i].Parameters = cleanedParams
 			}
-			// Remove raw topics and data to reduce size
+			// Remove raw topics and data to reduce size (these are internal blockchain fields)
 			events[i].Topics = nil
 			events[i].Data = ""
 		}
 		baggage["events"] = events
 	}
-	
+
 	// Clean up calls - only keep meaningful ones
 	if calls, ok := baggage["calls"].([]models.Call); ok {
 		var meaningfulCalls []models.Call
@@ -178,7 +170,7 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 		}
 		baggage["calls"] = meaningfulCalls
 	}
-	
+
 	// Clean up contract addresses - remove duplicates
 	if contractAddresses, ok := baggage["contract_addresses"].([]string); ok {
 		// Deduplicate and only keep unique addresses
@@ -197,9 +189,9 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 // finalCleanup removes temporary data after explanation is generated
 func (t *TransactionExplainer) finalCleanup(baggage map[string]interface{}) {
 	// Remove temporary data that's no longer needed
-	delete(baggage, "decoded_data")        // Temporary structure for LLM
-	delete(baggage, "contract_addresses")  // List not needed in final result
-	
+	delete(baggage, "decoded_data")       // Temporary structure for LLM
+	delete(baggage, "contract_addresses") // List not needed in final result
+
 	// Keep only essential data for frontend
 	// Keep: explanation, transfers, protocols, token_metadata, tags, address_roles, ens_names
 }
@@ -342,13 +334,13 @@ func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Contex
 		var validTransfers []models.TokenTransfer
 		for _, transfer := range transfers {
 			// Only include transfers with valid data
-			if transfer.From != "" && transfer.To != "" && 
-			   transfer.From != "0x" && transfer.To != "0x" &&
-			   len(transfer.From) >= 10 && len(transfer.To) >= 10 {
+			if transfer.From != "" && transfer.To != "" &&
+				transfer.From != "0x" && transfer.To != "0x" &&
+				len(transfer.From) >= 10 && len(transfer.To) >= 10 {
 				validTransfers = append(validTransfers, transfer)
 			}
 		}
-		
+
 		explanation.Transfers = validTransfers
 	}
 
@@ -398,8 +390,6 @@ func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Contex
 	return explanation, nil
 }
 
-
-
 // buildExplanationPrompt creates the prompt for the LLM
 func (t *TransactionExplainer) buildExplanationPrompt(decodedData *models.DecodedData, rawData map[string]interface{}, additionalContexts []string) string {
 	prompt := `You are a blockchain transaction analyzer. Provide a VERY SHORT, precise summary of what this transaction accomplished. Keep it under 30 words - users have only 2 seconds to read.
@@ -421,22 +411,22 @@ Focus ONLY on the main action. Don't explain blockchain basics or add warnings.
 
 Call #%d:`,
 			i+1)
-		
+
 		if call.Contract != "" {
 			prompt += fmt.Sprintf(`
 - Contract: %s`, call.Contract)
 		}
-		
+
 		if call.Method != "" {
 			prompt += fmt.Sprintf(`
 - Method: %s`, call.Method)
 		}
-		
+
 		if call.CallType != "" {
 			prompt += fmt.Sprintf(`
 - Type: %s`, call.CallType)
 		}
-		
+
 		// Only show ETH value if significant (> 0)
 		if call.Value != "" && call.Value != "0" && call.Value != "0x" && call.Value != "0x0" {
 			ethValue := t.weiToEther(call.Value)
@@ -445,7 +435,7 @@ Call #%d:`,
 - ETH Value: %s`, ethValue)
 			}
 		}
-		
+
 		if !call.Success {
 			prompt += fmt.Sprintf(`
 - Failed: %s`, call.ErrorReason)
@@ -462,7 +452,7 @@ Call #%d:`,
 					}
 				}
 			}
-			
+
 			if len(essentialArgs) > 0 {
 				prompt += `
 - Info:`
@@ -490,16 +480,13 @@ Event #%d:
 		// Include ALL meaningful parameters with their decoded formats
 		if len(event.Parameters) > 0 {
 			prompt += "\n- Parameters:"
-			
+
 			// Group parameters by base name (param_1, param_2, etc.)
 			paramGroups := make(map[string]map[string]interface{})
-			
+
 			for key, value := range event.Parameters {
-				// Skip only internal technical fields
-				if key == "raw_data" || key == "signature" {
-					continue
-				}
-				
+				// Include ALL parameters - let LLM decide what's meaningful for final explanation
+
 				// Extract base parameter name (e.g., "param_1" from "param_1_decimal")
 				var baseName string
 				if strings.Contains(key, "_") {
@@ -512,41 +499,41 @@ Event #%d:
 				} else {
 					baseName = key
 				}
-				
+
 				if paramGroups[baseName] == nil {
 					paramGroups[baseName] = make(map[string]interface{})
 				}
 				paramGroups[baseName][key] = value
 			}
-			
+
 			// Display parameters with all their decoded formats
 			for baseName, group := range paramGroups {
 				if baseValue, exists := group[baseName]; exists {
 					prompt += fmt.Sprintf("\n  - %s: %v", baseName, baseValue)
-					
+
 					// Add decoded formats on the same line for context
 					var decodedInfo []string
-					
+
 					if decimal, exists := group[baseName+"_decimal"]; exists {
 						decodedInfo = append(decodedInfo, fmt.Sprintf("decimal: %v", decimal))
 					}
-					
+
 					if address, exists := group[baseName+"_address"]; exists {
 						decodedInfo = append(decodedInfo, fmt.Sprintf("address: %v", address))
 					}
-					
+
 					if boolean, exists := group[baseName+"_boolean"]; exists {
 						decodedInfo = append(decodedInfo, fmt.Sprintf("boolean: %v", boolean))
 					}
-					
+
 					if utf8, exists := group[baseName+"_utf8"]; exists {
 						decodedInfo = append(decodedInfo, fmt.Sprintf("utf8: \"%v\"", utf8))
 					}
-					
+
 					if paramType, exists := group[baseName+"_type"]; exists {
 						decodedInfo = append(decodedInfo, fmt.Sprintf("type: %v", paramType))
 					}
-					
+
 					if len(decodedInfo) > 0 {
 						prompt += fmt.Sprintf(" (%s)", strings.Join(decodedInfo, ", "))
 					}
@@ -562,7 +549,7 @@ Event #%d:
 		prompt += `
 
 ### Transaction Context:`
-		
+
 		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
 			// Always include transaction sender prominently
 			if from, ok := receipt["from"].(string); ok {
@@ -610,55 +597,34 @@ CRITICAL SPECIFICITY REQUIREMENTS:
 
 CRITICAL FORMATTING RULE - AVOID REDUNDANCY:
 - NEVER repeat token amounts or token names in the same sentence
-- Format: "Swapped [amount] [token] for [amount] [token] via [protocol] + $[gas] gas" ✅
-- NEVER repeat token amounts or names in the same sentence ❌
+- Format: "[sender] performed [action] involving [amount] [token] via [protocol] + $[gas] gas" ✅
 - If you mention a token amount and name once, don't repeat them again in the same sentence
 - Keep the format clean and concise - one mention per token is enough
 
-MINTING DETECTION:
-- When NFTs are minted from zero address (0x0000000000000000000000000000000000000000), use "minted" language
-- The recipients are the addresses that RECEIVE the NFTs, not the payer
-- For minting: "Minted X NFTs for Y USDC paid by payer-address to recipients"
-- Use payment flow analysis to identify the actual payer and recipients correctly
-- Multiple recipients should be handled: "Minted NFTs to 2 recipients for X USDC"
+TRANSACTION ANALYSIS APPROACH:
+- Analyze the raw transaction data (events, calls, transfers) without preconceived categories
+- Let the transaction data tell you what happened - don't assume specific action types
+- Focus on the actual flow of value: who sent what to whom, and what they received in return
+- Use event parameters and function calls to understand the transaction's purpose
+- Describe what actually occurred based on the data, not predetermined transaction types
 
-TRANSACTION TYPE DETECTION:
-- When NFTs are involved alongside token transfers, prioritize describing it as a purchase/mint/trade rather than a swap
-- Look for patterns: User pays tokens → receives NFTs = PURCHASE
-- Look for patterns: User pays tokens → NFTs minted to recipients = MINTING
-- Look for patterns: User pays tokens → receives NFTs + change = PURCHASE with change
-- Look for patterns: User sends Token A → receives Token B (no NFTs) = SWAP
-- PURCHASE examples: "Purchased 2 NFTs for 30 USDC", "Minted 5 NFTs from collection for 0.1 ETH"
-- MINTING examples: "Minted 3,226x PAYKEN tokens for 30.32 USDC to 2 recipients"
-- Avoid describing NFT transactions as "swaps" unless it's actually NFT-to-NFT trading
+ZERO ADDRESS PATTERN RECOGNITION:
+- When tokens/NFTs are transferred FROM the zero address (0x0000000000000000000000000000000000000000), this typically indicates new token creation
+- When tokens/NFTs are transferred TO the zero address, this typically indicates token destruction
+- Use descriptive language based on the actual data rather than hardcoded terms
 
-RECIPIENT IDENTIFICATION:
-- For MINTING: Recipients are those who receive the newly minted NFTs
-- For PURCHASES: Recipients are those who receive the purchased NFTs
-- Use Payment Flow Analysis section to identify the correct payer
-- Use NFT Transfers section to identify the correct recipients
-- Don't confuse the payer with the recipients
-
-MULTI-HOP SWAP DETECTION:
-- For complex transactions with multiple token transfers, focus on the NET EFFECT for the user
-- Look for the pattern: User sends Token A → Multiple intermediary transfers → User receives Token B
-- The user is typically the address that appears in both the FIRST "from" and FINAL "to" positions across all transfers
-- Ignore intermediary router/contract addresses that facilitate the swap
-- CRITICAL: The final output token is what the user ultimately receives, NOT intermediate tokens like WETH
-- When WETH appears in transfers, it's usually an intermediary step - look for the final non-WETH token received by the user
-- Trace through ALL transfers to find what the user actually ends up with after all conversions
-- Example: User sends USDT → Router converts to WETH → Router converts WETH to GrowAI → User receives GrowAI
-- In this case, report "Swapped USDT for GrowAI tokens" NOT "Swapped USDT for WETH"
+VALUE FLOW ANALYSIS:
+- For transactions with multiple token transfers, trace the complete flow
+- Identify who initiated the transaction (transaction sender)
+- Identify what value entered and exited the system
+- Focus on the NET EFFECT for the actual user
+- Look for intermediary steps but describe the overall outcome
+- Don't assume specific patterns - let the data guide the description
 
 USER IDENTIFICATION IN DEFI:
 - CRITICAL: Always check for "ACTUAL USER" in Payment Flow Analysis section
 - When ACTUAL USER is provided, use that address, NOT the contract/router addresses
 - DeFi transactions often use intermediary contracts - show the real beneficiary
-- Format examples:
-  - "Repaid 25 USDC debt on Morpho for 0xea7b...1889 + $0.55 gas"
-  - "Borrowed 100 DAI on Aave for 0x1234...5678 + $2.30 gas"
-  - "Supplied 50 USDC to Compound for 0x9876...4321 + $1.20 gas"
-- NEVER say "by 0xbbbb...ffcb" when the actual user is "0xea7b...1889"
 - The contract address is the intermediary, not the user
 
 PAYMENT FLOW ANALYSIS:
@@ -670,8 +636,6 @@ PAYMENT FLOW ANALYSIS:
   - CRITICAL: Who is the ACTUAL USER vs intermediary contracts
 - CRITICAL: Always include fee information from "Fee Summary for Final Explanation" section
 - Use suggested fee formats provided in the context
-- For minting with fees: "Minted NFTs for 30.32 USDC (3.55 USDC fees + $0.85 gas)"
-- For purchases with change: "Purchased NFTs for ~27.55 USDC net cost + $1.20 gas"
 - Never omit fee information - users must know where all their value went
 
 MANDATORY FEE REQUIREMENTS:
@@ -706,11 +670,6 @@ EVENT PARAMETER USAGE:
 - For numeric parameters: Include specific numbers (role ID 7, token ID 1234, etc.)
 - For boolean parameters: Include the state (enabled/disabled, approved/revoked, active/inactive)
 - Always prioritize the transaction sender when describing WHO initiated the action
-- Examples: 
-  - "Admin 0x1234...5678 enabled role 7 for user 0x9876...4321" (use role ID)
-  - "0x1234...5678 (dao.eth) granted admin permissions to user 0x9876...4321" (use specific permission type)
-  - "0x5678...1234 revoked role 3 from user 0x9876...4321" (use role ID and action)
-  - "Minted NFT #1234 to 0x1111...2222" (use token ID)
 - NEVER use vague terms like "updated a user role" when specific details are available
 
 CRITICAL ENS NAME REQUIREMENTS:
@@ -718,7 +677,6 @@ CRITICAL ENS NAME REQUIREMENTS:
 - Use the format: "0x1234...5678 (ens-name.eth)" for addresses with ENS names
 - Check the "ENS Names Resolved" and "Address Formatting Guide" sections for available ENS names
 - NEVER use just the shortened address if an ENS name exists - always include both
-- Examples: "0x7e97...63c7 (cocytus.eth) updated role for user 0x1234...5678 (alice.eth)"
 - This applies to ALL addresses in the explanation: transaction sender, event parameters, contract addresses
 
 PROTOCOL USAGE:
@@ -747,16 +705,12 @@ EXPLICIT RECIPIENT REQUIREMENTS:
 - Format: "5 BoredApes NFTs to 0x1111...2222, 3 to 0x3333...4444, and 2 to 0x5555...6666"
 - Use the "Recipient Summary" section to get exact recipient addresses and amounts
 
-Examples (NOTICE: Always include ENS names when available):
-- "[sender] ([ens]) updated role [roleId] to [enabled] for user [user] ([ens]) + $[gas] gas"
-- "[sender] ([ens]) granted [permission] permissions to [recipient] ([ens]) + $[gas] gas"
-- "[sender] ([ens]) revoked role [roleId] from user [user] ([ens]) + $[gas] gas"
-- "Minted [amount]x [token] tokens to [recipient] ([ens]) and [amount]x to [recipient] for [payment] + $[gas] gas"
-- "[sender] ([ens]) transferred [amount] [token] to [recipient] ([ens]) + $[gas] gas"
-- "[sender] ([ens]) swapped [amount] [token] for [amount] [token] on [protocol] + $[gas] gas"
-- "[sender] ([ens]) approved [protocol] to spend [amount] [token] + $[gas] gas"
-- "Transferred NFT #[tokenId] from [sender] ([ens]) to [recipient] ([ens]) + $[gas] gas"
-- "[sender] ([ens]) added liquidity to [protocol] [token]/[token] pool + $[gas] gas"
+GENERIC EXAMPLES (describe what actually happened based on data):
+- "[sender] ([ens]) performed action involving [amount] [token] with [recipient] ([ens]) + $[gas] gas"
+- "[sender] ([ens]) interacted with [protocol] using [amount] [token] + $[gas] gas"
+- "[sender] ([ens]) executed operation resulting in [outcome] + $[gas] gas"
+- "Transaction executed by [sender] ([ens]) involving [details] + $[gas] gas"
+- "[sender] ([ens]) completed operation on [protocol] with [specifications] + $[gas] gas"
 
 CRITICAL: In ALL examples above, notice how ENS names are ALWAYS included when addresses appear. This is MANDATORY - never omit ENS names from the final explanation.
 
@@ -823,19 +777,19 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 	if addressRoles, ok := baggage["address_roles"].(map[string]map[string]string); ok && len(addressRoles) > 0 {
 		// Create categories map for frontend
 		categories := make(map[string][]map[string]string)
-		
+
 		// Group addresses by category
 		for address, roleData := range addressRoles {
 			if roleData != nil {
 				role := roleData["role"]
 				category := roleData["category"]
-				
+
 				if role != "" && category != "" {
 					// Initialize category array if not exists
 					if categories[category] == nil {
 						categories[category] = make([]map[string]string, 0)
 					}
-					
+
 					// Add address to category
 					categories[category] = append(categories[category], map[string]string{
 						"address": address,
@@ -844,11 +798,11 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 				}
 			}
 		}
-		
+
 		// Add to metadata for frontend access
 		result.Metadata["address_categories"] = categories
 		result.Metadata["available_categories"] = []string{}
-		
+
 		// Track which categories are actually used
 		for category := range categories {
 			result.Metadata["available_categories"] = append(result.Metadata["available_categories"].([]string), category)
@@ -985,24 +939,21 @@ TRANSACTION CONTEXT:`
 
 	// Add events context with spender extraction
 	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
-		prompt += "\n\nKEY EVENTS:"
+		prompt += "\n\nEVENTS:"
 		for _, event := range events {
 			eventInfo := fmt.Sprintf("%s event on %s", event.Name, event.Contract)
-			
-			// Extract spender from Approval events as potential protocol contracts
-			if event.Name == "Approval" && event.Parameters != nil {
-				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
-					// Clean up padded spender address
-					cleanSpender := strings.TrimPrefix(spender, "0x000000000000000000000000")
-					if cleanSpender != spender && len(cleanSpender) == 40 {
-						cleanSpender = "0x" + cleanSpender
-					} else {
-						cleanSpender = spender
-					}
-					eventInfo += fmt.Sprintf(" (approved spender: %s)", cleanSpender)
+
+			// Include ALL event parameters generically - no special event handling
+			if event.Parameters != nil {
+				var paramStrings []string
+				for paramName, paramValue := range event.Parameters {
+					paramStrings = append(paramStrings, fmt.Sprintf("%s: %v", paramName, paramValue))
+				}
+				if len(paramStrings) > 0 {
+					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramStrings, ", "))
 				}
 			}
-			
+
 			prompt += fmt.Sprintf("\n- %s", eventInfo)
 		}
 	}
@@ -1287,11 +1238,11 @@ func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map
 		if t.verbose {
 			fmt.Println("=== DEBUG MODE ENABLED - INCLUDING BAGGAGE DEBUG INFO ===")
 		}
-		
+
 		// Add debug information if available
 		if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
 			var debugParts []string
-			
+
 			// Add token metadata debug info
 			if tokenDebug, ok := debugInfo["token_metadata"].(map[string]interface{}); ok {
 				debugParts = append(debugParts, "=== TOKEN METADATA DEBUG ===")
@@ -1301,34 +1252,34 @@ func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map
 				if rpcResults, ok := tokenDebug["rpc_results"].([]string); ok {
 					debugParts = append(debugParts, "RPC Results:")
 					for _, result := range rpcResults {
-						debugParts = append(debugParts, "  - " + result)
+						debugParts = append(debugParts, "  - "+result)
 					}
 				}
 				if rpcErrors, ok := tokenDebug["token_metadata_rpc_errors"].([]string); ok {
 					debugParts = append(debugParts, "RPC Errors:")
 					for _, err := range rpcErrors {
-						debugParts = append(debugParts, "  - " + err)
+						debugParts = append(debugParts, "  - "+err)
 					}
 				}
 				if finalMetadata, ok := tokenDebug["final_metadata"].([]string); ok {
 					debugParts = append(debugParts, "Final Metadata:")
 					for _, metadata := range finalMetadata {
-						debugParts = append(debugParts, "  - " + metadata)
+						debugParts = append(debugParts, "  - "+metadata)
 					}
 				}
 			}
-			
+
 			// Add transfer enrichment debug info
 			if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
 				debugParts = append(debugParts, "=== TRANSFER ENRICHMENT DEBUG ===")
 				for _, debug := range transferDebug {
-					debugParts = append(debugParts, "  - " + debug)
+					debugParts = append(debugParts, "  - "+debug)
 				}
 			}
-			
+
 			if len(debugParts) > 0 {
 				contextParts = append(contextParts, strings.Join(debugParts, "\n"))
-				
+
 				if t.verbose {
 					fmt.Printf("=== BAGGAGE DEBUG CONTEXT (%d sections) ===\n", len(debugParts))
 					fmt.Println(strings.Join(debugParts, "\n"))

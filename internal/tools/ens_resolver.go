@@ -276,7 +276,7 @@ func (e *ENSResolver) GetAnnotationContext(ctx context.Context, baggage map[stri
 
 		// Create shortened version for mapping
 		shortAddr := e.shortenAddress(cleanAddr)
-		
+
 		// Get ENS name if available
 		ensName := ""
 		if ensNames != nil {
@@ -287,7 +287,7 @@ func (e *ENSResolver) GetAnnotationContext(ctx context.Context, baggage map[stri
 		// This maps both full address and shortened address to enable proper linking
 		annotationContext.AddItem(models.AnnotationContextItem{
 			Type:        "address_mapping",
-			Value:       shortAddr, // The shortened display version that appears in explanation text
+			Value:       shortAddr,                             // The shortened display version that appears in explanation text
 			Name:        fmt.Sprintf("Maps to: %s", cleanAddr), // The full address for explorer links
 			Description: fmt.Sprintf("Address mapping: %s → %s", shortAddr, cleanAddr),
 			Metadata: map[string]interface{}{

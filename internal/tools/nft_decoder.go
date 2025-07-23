@@ -18,15 +18,15 @@ type NFTDecoder struct {
 
 // NFTTransfer represents an NFT transfer with metadata
 type NFTTransfer struct {
-	Type        string `json:"type"`         // ERC721, ERC1155
-	Contract    string `json:"contract"`     // NFT contract address
-	From        string `json:"from"`         // Sender address
-	To          string `json:"to"`           // Receiver address
-	TokenID     string `json:"token_id"`     // Token ID
-	Amount      string `json:"amount"`       // Amount (for ERC1155, always "1" for ERC721)
-	Name        string `json:"name"`         // Contract name
-	Symbol      string `json:"symbol"`       // Contract symbol
-	TokenURI    string `json:"token_uri"`    // Token metadata URI (if available)
+	Type           string `json:"type"`            // ERC721, ERC1155
+	Contract       string `json:"contract"`        // NFT contract address
+	From           string `json:"from"`            // Sender address
+	To             string `json:"to"`              // Receiver address
+	TokenID        string `json:"token_id"`        // Token ID
+	Amount         string `json:"amount"`          // Amount (for ERC1155, always "1" for ERC721)
+	Name           string `json:"name"`            // Contract name
+	Symbol         string `json:"symbol"`          // Contract symbol
+	TokenURI       string `json:"token_uri"`       // Token metadata URI (if available)
 	CollectionName string `json:"collection_name"` // Human-friendly collection name
 }
 
@@ -80,7 +80,7 @@ func (n *NFTDecoder) Process(ctx context.Context, baggage map[string]interface{}
 			if contractInfo, err := n.rpcClient.GetContractInfo(ctx, transfer.Contract); err == nil {
 				nftTransfers[i].Name = contractInfo.Name
 				nftTransfers[i].Symbol = contractInfo.Symbol
-				
+
 				// Try to create a human-friendly collection name
 				if contractInfo.Name != "" {
 					nftTransfers[i].CollectionName = contractInfo.Name
@@ -89,8 +89,8 @@ func (n *NFTDecoder) Process(ctx context.Context, baggage map[string]interface{}
 				} else {
 					nftTransfers[i].CollectionName = "Unknown Collection"
 				}
-				
-				debugInfo = append(debugInfo, fmt.Sprintf("Enriched %s: name=%s, symbol=%s", 
+
+				debugInfo = append(debugInfo, fmt.Sprintf("Enriched %s: name=%s, symbol=%s",
 					transfer.Contract, contractInfo.Name, contractInfo.Symbol))
 			} else {
 				debugInfo = append(debugInfo, fmt.Sprintf("Failed to enrich %s: %v", transfer.Contract, err))
@@ -139,9 +139,8 @@ func (n *NFTDecoder) parseERC721Transfer(event models.Event) *NFTTransfer {
 		return nil
 	}
 
-	// ENHANCED VALIDATION: Check event name and signature first
-	// Only process events that are clearly NFT transfers
-	if !n.isValidNFTTransferEvent(event, "ERC721") {
+	// ENHANCED VALIDATION: Check if this looks like an ERC721 transfer based on parameters
+	if !n.looksLikeERC721Transfer(event) {
 		return nil
 	}
 
@@ -184,8 +183,8 @@ func (n *NFTDecoder) parseERC1155TransferSingle(event models.Event) *NFTTransfer
 		return nil
 	}
 
-	// ENHANCED VALIDATION: Check event name and signature first
-	if !n.isValidNFTTransferEvent(event, "ERC1155") {
+	// ENHANCED VALIDATION: Check if this looks like an ERC1155 single transfer
+	if !n.looksLikeERC1155Single(event) {
 		return nil
 	}
 
@@ -226,19 +225,19 @@ func (n *NFTDecoder) parseERC1155TransferBatch(event models.Event) []NFTTransfer
 		return nil
 	}
 
-	// ENHANCED VALIDATION: Check event name and signature first
-	if !n.isValidNFTTransferEvent(event, "ERC1155_BATCH") {
+	// ENHANCED VALIDATION: Check if this looks like an ERC1155 batch transfer
+	if !n.looksLikeERC1155Batch(event) {
 		return nil
 	}
 
 	from, _ := event.Parameters["from"].(string)
 	to, _ := event.Parameters["to"].(string)
-	
+
 	// Additional validation: ensure we have required parameters
 	if from == "" || to == "" {
 		return nil
 	}
-	
+
 	// Clean addresses
 	from = n.cleanAddress(from)
 	to = n.cleanAddress(to)
@@ -263,62 +262,57 @@ func (n *NFTDecoder) parseERC1155TransferBatch(event models.Event) []NFTTransfer
 	}
 }
 
-// isValidNFTTransferEvent validates that an event is actually an NFT transfer
-func (n *NFTDecoder) isValidNFTTransferEvent(event models.Event, expectedType string) bool {
-	// Known NFT transfer event signatures
-	knownNFTSignatures := map[string]string{
-		// ERC721/ERC20 Transfer: Transfer(address indexed from, address indexed to, uint256 value/tokenId)
-		"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef": "Transfer",
-		
-		// ERC1155 TransferSingle: TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)
-		"0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62": "TransferSingle",
-		
-		// ERC1155 TransferBatch: TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)
-		"0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb": "TransferBatch",
-	}
-
-	// Check if event name matches expected NFT transfer events
-	eventName := event.Name
-	if eventName == "" {
+// looksLikeERC721Transfer detects ERC721 transfer pattern based on parameters
+func (n *NFTDecoder) looksLikeERC721Transfer(event models.Event) bool {
+	if event.Parameters == nil {
 		return false
 	}
 
-	// For events resolved by name (from ABI), check name directly
-	switch expectedType {
-	case "ERC721":
-		if eventName != "Transfer" {
-			return false
-		}
-		// For ERC721 Transfer, we need tokenId parameter to distinguish from ERC20
-		if _, hasTokenID := event.Parameters["tokenId"]; !hasTokenID {
-			return false
-		}
-	case "ERC1155":
-		if eventName != "TransferSingle" {
-			return false
-		}
-		// For ERC1155, we need id and value parameters
-		if _, hasID := event.Parameters["id"]; !hasID {
-			return false
-		}
-		if _, hasValue := event.Parameters["value"]; !hasValue {
-			return false
-		}
-	case "ERC1155_BATCH":
-		if eventName != "TransferBatch" {
-			return false
-		}
+	// ERC721 Transfer pattern: from, to, tokenId parameters
+	_, hasFrom := event.Parameters["from"]
+	_, hasTo := event.Parameters["to"]
+	_, hasTokenId := event.Parameters["tokenId"]
+
+	// Must have all three parameters and NOT have ERC1155-specific parameters
+	_, hasOperator := event.Parameters["operator"]
+	_, hasId := event.Parameters["id"] // ERC1155 uses 'id' instead of 'tokenId'
+
+	return hasFrom && hasTo && hasTokenId && !hasOperator && !hasId
+}
+
+// looksLikeERC1155Single detects ERC1155 TransferSingle pattern based on parameters
+func (n *NFTDecoder) looksLikeERC1155Single(event models.Event) bool {
+	if event.Parameters == nil {
+		return false
 	}
 
-	// For events resolved by signature hash, check against known signatures
-	if strings.HasPrefix(eventName, "0x") {
-		// This is a signature hash, check if it's a known NFT transfer signature
-		if _, isKnownNFT := knownNFTSignatures[eventName]; !isKnownNFT {
-			return false
-		}
+	// ERC1155 TransferSingle pattern: operator, from, to, id, value parameters
+	_, hasOperator := event.Parameters["operator"]
+	_, hasFrom := event.Parameters["from"]
+	_, hasTo := event.Parameters["to"]
+	_, hasId := event.Parameters["id"]
+	_, hasValue := event.Parameters["value"]
+
+	return hasOperator && hasFrom && hasTo && hasId && hasValue
+}
+
+// looksLikeERC1155Batch detects ERC1155 TransferBatch pattern based on parameters
+func (n *NFTDecoder) looksLikeERC1155Batch(event models.Event) bool {
+	if event.Parameters == nil {
+		return false
 	}
 
-	return true
+	// ERC1155 TransferBatch pattern: operator, from, to parameters
+	// (ids and values are in data field as arrays, harder to detect)
+	_, hasOperator := event.Parameters["operator"]
+	_, hasFrom := event.Parameters["from"]
+	_, hasTo := event.Parameters["to"]
+
+	// Check for batch indicators
+	_, hasBatchTransfer := event.Parameters["batch_transfer"]
+	_, hasRawData := event.Parameters["raw_data"]
+
+	return hasOperator && hasFrom && hasTo && (hasBatchTransfer || hasRawData)
 }
 
 // isValidAddress validates that a string is a valid Ethereum address
@@ -326,19 +320,19 @@ func (n *NFTDecoder) isValidAddress(address string) bool {
 	if address == "" {
 		return false
 	}
-	
+
 	// Must start with 0x and be exactly 42 characters (0x + 40 hex chars)
 	if !strings.HasPrefix(address, "0x") || len(address) != 42 {
 		return false
 	}
-	
+
 	// Check if the remaining characters are valid hex
 	for _, char := range address[2:] {
 		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -347,12 +341,12 @@ func (n *NFTDecoder) cleanAddress(address string) string {
 	if address == "" {
 		return ""
 	}
-	
+
 	// If it's a padded address (64 chars after 0x), extract the last 40 chars
 	if strings.HasPrefix(address, "0x") && len(address) == 66 {
 		return "0x" + address[26:] // Take last 40 characters
 	}
-	
+
 	return address
 }
 
@@ -361,14 +355,14 @@ func (n *NFTDecoder) cleanTokenID(tokenID string) string {
 	if tokenID == "" {
 		return "0"
 	}
-	
+
 	// Convert hex to decimal for cleaner display
 	if strings.HasPrefix(tokenID, "0x") {
 		if id, err := strconv.ParseUint(tokenID[2:], 16, 64); err == nil {
 			return fmt.Sprintf("%d", id)
 		}
 	}
-	
+
 	return tokenID
 }
 
@@ -377,14 +371,14 @@ func (n *NFTDecoder) formatAmount(amount string) string {
 	if amount == "" {
 		return "1"
 	}
-	
+
 	// Convert hex to decimal for cleaner display
 	if strings.HasPrefix(amount, "0x") {
 		if amt, err := strconv.ParseUint(amount[2:], 16, 64); err == nil {
 			return fmt.Sprintf("%d", amt)
 		}
 	}
-	
+
 	return amount
 }
 
@@ -403,7 +397,7 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 	// Group transfers by type for better organization
 	erc721Transfers := []NFTTransfer{}
 	erc1155Transfers := []NFTTransfer{}
-	
+
 	for _, transfer := range nftTransfers {
 		if transfer.Type == "ERC721" {
 			erc721Transfers = append(erc721Transfers, transfer)
@@ -433,7 +427,7 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 			transferInfo := fmt.Sprintf("\nERC-1155 Transfer #%d:", i+1)
 			transferInfo += fmt.Sprintf("\n- Collection: %s", n.getDisplayName(transfer))
 			transferInfo += fmt.Sprintf("\n- Token ID: %s", transfer.TokenID)
-			
+
 			// Enhanced amount formatting
 			amount := transfer.Amount
 			if amt, err := strconv.Atoi(amount); err == nil {
@@ -445,7 +439,7 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 			} else {
 				transferInfo += fmt.Sprintf("\n- Amount: %s", amount)
 			}
-			
+
 			transferInfo += fmt.Sprintf("\n- From: %s", transfer.From)
 			transferInfo += fmt.Sprintf("\n- To: %s (NFT RECIPIENT)", transfer.To)
 			transferInfo += fmt.Sprintf("\n- Contract: %s", transfer.Contract)
@@ -456,7 +450,7 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 	// Add detailed recipient summary for final explanation
 	if len(nftTransfers) > 0 {
 		contextParts = append(contextParts, "\n\n#### Recipient Summary for Final Explanation:")
-		
+
 		// Group by token ID and collection for cleaner summary
 		recipientSummary := n.buildRecipientSummary(nftTransfers)
 		for _, summary := range recipientSummary {
@@ -466,7 +460,7 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 
 	// Add classification hint for LLM
 	var classificationHints []string
-	
+
 	// Check if NFTs are being minted (from zero address)
 	mintCount := 0
 	var recipients []string
@@ -476,19 +470,19 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 			recipients = append(recipients, transfer.To)
 		}
 	}
-	
+
 	if mintCount > 0 {
 		classificationHints = append(classificationHints, fmt.Sprintf("- %d NFT(s) were MINTED (from zero address) to %d recipients", mintCount, len(n.uniqueAddresses(recipients))))
 		classificationHints = append(classificationHints, "- This is a MINTING transaction, not a purchase/transfer")
 		classificationHints = append(classificationHints, "- CRITICAL: Show specific recipient addresses and amounts in final explanation")
-		
+
 		// List unique recipients
 		uniqueRecipients := n.uniqueAddresses(recipients)
 		if len(uniqueRecipients) > 1 {
 			classificationHints = append(classificationHints, fmt.Sprintf("- NFTs minted to multiple recipients: %v", uniqueRecipients))
 		}
 	}
-	
+
 	// Check for large amounts suggesting fungible-style usage
 	for _, transfer := range erc1155Transfers {
 		if amt, err := strconv.Atoi(transfer.Amount); err == nil && amt >= 100 {
@@ -509,18 +503,18 @@ func (n *NFTDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 // buildRecipientSummary creates a detailed summary of recipients and amounts for the LLM
 func (n *NFTDecoder) buildRecipientSummary(transfers []NFTTransfer) []string {
 	var summaries []string
-	
+
 	// Group transfers by collection and token ID
 	groups := make(map[string][]NFTTransfer)
 	for _, transfer := range transfers {
 		key := fmt.Sprintf("%s_ID_%s", n.getDisplayName(transfer), transfer.TokenID)
 		groups[key] = append(groups[key], transfer)
 	}
-	
+
 	for groupKey, groupTransfers := range groups {
 		if len(groupTransfers) == 1 {
 			transfer := groupTransfers[0]
-			summary := fmt.Sprintf("\n- %s amount %s → %s", 
+			summary := fmt.Sprintf("\n- %s amount %s → %s",
 				groupKey, transfer.Amount, transfer.To)
 			summaries = append(summaries, summary)
 		} else {
@@ -532,13 +526,13 @@ func (n *NFTDecoder) buildRecipientSummary(transfers []NFTTransfer) []string {
 			summaries = append(summaries, summary)
 		}
 	}
-	
+
 	// Add total summary
 	if len(transfers) > 1 {
 		totalRecipients := len(n.uniqueAddresses(n.extractRecipients(transfers)))
 		summaries = append(summaries, fmt.Sprintf("\n- Total: %d transfers to %d unique recipients", len(transfers), totalRecipients))
 	}
-	
+
 	return summaries
 }
 
@@ -571,7 +565,7 @@ func (n *NFTDecoder) formatLargeNumber(num int) string {
 	if len(str) <= 3 {
 		return str
 	}
-	
+
 	// Add commas for thousands separator
 	var result strings.Builder
 	for i, char := range str {
@@ -587,14 +581,14 @@ func (n *NFTDecoder) formatLargeNumber(num int) string {
 func (n *NFTDecoder) uniqueAddresses(addresses []string) []string {
 	seen := make(map[string]bool)
 	var unique []string
-	
+
 	for _, addr := range addresses {
 		if !seen[addr] {
 			seen[addr] = true
 			unique = append(unique, addr)
 		}
 	}
-	
+
 	return unique
 }
 
@@ -604,4 +598,4 @@ func GetNFTTransfers(baggage map[string]interface{}) ([]NFTTransfer, bool) {
 		return transfers, true
 	}
 	return nil, false
-} 
+}

@@ -16,7 +16,7 @@ import (
 type ProtocolResolver struct {
 	llm                 llms.Model
 	verbose             bool
-	confidenceThreshold float64 // Minimum confidence to include a protocol
+	confidenceThreshold float64             // Minimum confidence to include a protocol
 	protocolKnowledge   []ProtocolKnowledge // RAG data from protocols.csv
 }
 
@@ -31,14 +31,14 @@ type ProtocolKnowledge struct {
 
 // ProbabilisticProtocol represents a protocol detection with confidence
 type ProbabilisticProtocol struct {
-	Name        string    `json:"name"`
-	Type        string    `json:"type"`        // DEX, Aggregator, Lending, etc.
-	Version     string    `json:"version"`     // v2, v3, etc.
-	Confidence  float64   `json:"confidence"`  // 0.0 to 1.0
-	Evidence    []string  `json:"evidence"`    // Reasons for this identification
-	Contracts   []string  `json:"contracts"`   // Related contract addresses
-	Website     string    `json:"website,omitempty"`
-	Category    string    `json:"category,omitempty"` // DeFi, NFT, Gaming, etc.
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`       // DEX, Aggregator, Lending, etc.
+	Version    string   `json:"version"`    // v2, v3, etc.
+	Confidence float64  `json:"confidence"` // 0.0 to 1.0
+	Evidence   []string `json:"evidence"`   // Reasons for this identification
+	Contracts  []string `json:"contracts"`  // Related contract addresses
+	Website    string   `json:"website,omitempty"`
+	Category   string   `json:"category,omitempty"` // DeFi, NFT, Gaming, etc.
 }
 
 // NewProtocolResolver creates a new probabilistic protocol resolver
@@ -49,7 +49,7 @@ func NewProtocolResolver(llm llms.Model) *ProtocolResolver {
 		confidenceThreshold: 0.6, // 60% minimum confidence
 		protocolKnowledge:   []ProtocolKnowledge{},
 	}
-	
+
 	// Load protocol knowledge from CSV for RAG
 	if err := resolver.loadProtocolKnowledge(); err != nil {
 		// Log error but don't fail - AI can still work without CSV data
@@ -57,7 +57,7 @@ func NewProtocolResolver(llm llms.Model) *ProtocolResolver {
 			fmt.Printf("Warning: Failed to load protocol knowledge from CSV: %v\n", err)
 		}
 	}
-	
+
 	return resolver
 }
 
@@ -90,13 +90,13 @@ func (p *ProtocolResolver) Dependencies() []string {
 func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
 	// Gather transaction context for AI analysis
 	contextData := p.buildTransactionContext(baggage)
-	
+
 	if p.verbose {
 		fmt.Println("=== PROTOCOL RESOLVER: TRANSACTION CONTEXT ===")
 		fmt.Printf("Context: %s\n", contextData)
 		fmt.Println("=== END CONTEXT ===")
 		fmt.Println()
-}
+	}
 
 	// Use AI to identify protocols
 	protocols, err := p.identifyProtocolsWithAI(ctx, contextData)
@@ -113,14 +113,14 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 	for _, protocol := range protocols {
 		if protocol.Confidence >= p.confidenceThreshold {
 			highConfidenceProtocols = append(highConfidenceProtocols, protocol)
-					}
-				}
+		}
+	}
 
 	if p.verbose {
-		fmt.Printf("Protocol Resolver: Found %d protocols above %.1f%% confidence\n", 
+		fmt.Printf("Protocol Resolver: Found %d protocols above %.1f%% confidence\n",
 			len(highConfidenceProtocols), p.confidenceThreshold*100)
 		for i, protocol := range highConfidenceProtocols {
-			fmt.Printf("  Protocol[%d]: %s (%s) - %.1f%% confidence\n", 
+			fmt.Printf("  Protocol[%d]: %s (%s) - %.1f%% confidence\n",
 				i, protocol.Name, protocol.Type, protocol.Confidence*100)
 		}
 	}
@@ -138,11 +138,11 @@ func (p *ProtocolResolver) loadProtocolKnowledge() error {
 		"./data/protocols.csv",
 		"../data/protocols.csv",
 	}
-	
+
 	var csvPath string
 	var csvFile *os.File
 	var err error
-	
+
 	// Find the CSV file
 	for _, path := range csvPaths {
 		if csvFile, err = os.Open(path); err == nil {
@@ -150,22 +150,22 @@ func (p *ProtocolResolver) loadProtocolKnowledge() error {
 			break
 		}
 	}
-	
+
 	if csvFile == nil {
 		return fmt.Errorf("could not find protocols.csv in any of the expected locations: %v", csvPaths)
 	}
 	defer csvFile.Close()
-	
+
 	if p.verbose {
 		fmt.Printf("Loading protocol knowledge from: %s\n", csvPath)
 	}
-	
+
 	reader := csv.NewReader(csvFile)
 	records, err := reader.ReadAll()
 	if err != nil {
 		return fmt.Errorf("failed to read CSV: %w", err)
 	}
-	
+
 	if len(records) == 0 {
 		return fmt.Errorf("empty CSV file")
 	}
@@ -176,31 +176,29 @@ func (p *ProtocolResolver) loadProtocolKnowledge() error {
 	websiteIndex := findColumnIndex(header, "website_url")
 	descriptionIndex := findColumnIndex(header, "description")
 	iconIndex := findColumnIndex(header, "icon_url")
-	
+
 	if nameIndex == -1 || websiteIndex == -1 || descriptionIndex == -1 {
 		return fmt.Errorf("CSV missing required columns (name, website_url, description)")
 	}
-	
+
 	// Parse data rows
 	for _, record := range records[1:] {
 		if len(record) <= nameIndex || len(record) <= websiteIndex || len(record) <= descriptionIndex {
 			continue // Skip incomplete rows
 		}
-		
+
 		knowledge := ProtocolKnowledge{
 			Name:        strings.TrimSpace(record[nameIndex]),
 			Website:     strings.TrimSpace(record[websiteIndex]),
 			Description: strings.TrimSpace(record[descriptionIndex]),
+			Type:        "DeFi", // Generic default - let LLM classify based on description
 		}
-		
-		// Infer type from description or name
-		knowledge.Type = p.inferProtocolType(knowledge.Name, knowledge.Description)
-		
+
 		// Add icon URL if available
 		if iconIndex != -1 && len(record) > iconIndex {
 			knowledge.IconURL = strings.TrimSpace(record[iconIndex])
 		}
-		
+
 		if knowledge.Name != "" {
 			p.protocolKnowledge = append(p.protocolKnowledge, knowledge)
 		}
@@ -223,29 +221,8 @@ func findColumnIndex(headers []string, columnName string) int {
 	return -1
 }
 
-// inferProtocolType attempts to infer protocol type from name and description
-func (p *ProtocolResolver) inferProtocolType(name, description string) string {
-	nameDesc := strings.ToLower(name + " " + description)
-	
-	if strings.Contains(nameDesc, "dex") || strings.Contains(nameDesc, "exchange") || 
-	   strings.Contains(nameDesc, "swap") || strings.Contains(nameDesc, "liquidity") {
-		return "DEX"
-	}
-	if strings.Contains(nameDesc, "aggregator") || strings.Contains(nameDesc, "routing") {
-		return "Aggregator"
-	}
-	if strings.Contains(nameDesc, "lending") || strings.Contains(nameDesc, "borrow") {
-		return "Lending"
-	}
-	if strings.Contains(nameDesc, "yield") || strings.Contains(nameDesc, "farm") {
-		return "Yield"
-		}
-	if strings.Contains(nameDesc, "oracle") || strings.Contains(nameDesc, "price") {
-		return "Oracle"
-	}
-	
-	return "DeFi" // Default category
-}
+// NOTE: Removed inferProtocolType method - protocol classification should be handled by LLM
+// based on protocol names, descriptions, and transaction patterns rather than hardcoded keywords.
 
 // buildTransactionContext creates context for AI analysis
 func (p *ProtocolResolver) buildTransactionContext(baggage map[string]interface{}) string {
@@ -286,47 +263,62 @@ func (p *ProtocolResolver) buildTransactionContext(baggage map[string]interface{
 		}
 	}
 
-	// Add events context with special handling for Approval events
+	// Add events context with complete parameter information
 	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
 		contextParts = append(contextParts, "\nEVENTS:")
 		for _, event := range events {
-			eventInfo := fmt.Sprintf("%s on %s", event.Name, event.Contract)
-			
-			// Extract spender from Approval events as potential protocol contracts
-			if event.Name == "Approval" && event.Parameters != nil {
-				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
-					eventInfo += fmt.Sprintf(" (spender: %s - potential protocol contract)", spender)
+			eventInfo := fmt.Sprintf("- %s on %s", event.Name, event.Contract)
+
+			// Include ALL event parameters for comprehensive protocol classification
+			if event.Parameters != nil {
+				var paramDetails []string
+
+				// Include ALL parameters from the event - let LLM decide what's meaningful for protocol classification
+				for paramName, paramValue := range event.Parameters {
+					paramDetails = append(paramDetails, fmt.Sprintf("%s: %v", paramName, paramValue))
+				}
+
+				if len(paramDetails) > 0 {
+					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramDetails, ", "))
 				}
 			}
-			
-			contextParts = append(contextParts, fmt.Sprintf("- %s", eventInfo))
+
+			contextParts = append(contextParts, eventInfo)
 		}
 	}
 
-	// Extract spender addresses as potential protocol contracts
-	var spenderAddresses []string
+	// Extract potential protocol contract addresses from ALL events generically
+	var protocolCandidates []string
 	if events, ok := baggage["events"].([]models.Event); ok {
+		addressMap := make(map[string]bool)
 		for _, event := range events {
-			if event.Name == "Approval" && event.Parameters != nil {
-				if spender, ok := event.Parameters["spender"].(string); ok && spender != "" {
-					// Clean up the spender address (remove padding)
-					cleanSpender := strings.TrimPrefix(spender, "0x000000000000000000000000")
-					if cleanSpender != spender && len(cleanSpender) == 40 {
-						cleanSpender = "0x" + cleanSpender
-					} else {
-						cleanSpender = spender
+			if event.Parameters != nil {
+				// Extract ALL address-like parameters that could be protocol contracts
+				for paramName, paramValue := range event.Parameters {
+					if addressStr, ok := paramValue.(string); ok && addressStr != "" {
+						// Common parameter names that often contain protocol addresses
+						if p.isLikelyProtocolParameter(paramName) {
+							cleanAddress := p.cleanAddress(addressStr)
+							if cleanAddress != "" && cleanAddress != "0x" {
+								addressMap[cleanAddress] = true
+							}
+						}
 					}
-					spenderAddresses = append(spenderAddresses, cleanSpender)
 				}
 			}
 		}
-	}
-	
-	if len(spenderAddresses) > 0 {
-		contextParts = append(contextParts, "\nAPPROVAL SPENDERS (potential protocol contracts):")
-		for _, spender := range spenderAddresses {
-			contextParts = append(contextParts, fmt.Sprintf("- %s", spender))
+
+		for address := range addressMap {
+			protocolCandidates = append(protocolCandidates, address)
 		}
+	}
+
+	if len(protocolCandidates) > 0 {
+		contextParts = append(contextParts, "\nPOTENTIAL PROTOCOL CONTRACTS (extracted from event parameters):")
+		for _, address := range protocolCandidates {
+			contextParts = append(contextParts, fmt.Sprintf("- %s", address))
+		}
+		contextParts = append(contextParts, "(Note: These addresses extracted from event parameters are potential protocol contracts)")
 	}
 
 	// Add raw transaction context
@@ -341,7 +333,67 @@ func (p *ProtocolResolver) buildTransactionContext(baggage map[string]interface{
 	return strings.Join(contextParts, "\n")
 }
 
-// identifyProtocolsWithAI uses LLM to identify protocols from context
+// isLikelyProtocolParameter checks if a parameter name commonly contains protocol addresses
+func (p *ProtocolResolver) isLikelyProtocolParameter(paramName string) bool {
+	// Common parameter names that often contain protocol contract addresses
+	protocolParams := map[string]bool{
+		"spender":    true, // Approval events
+		"operator":   true, // ERC1155 events
+		"router":     true, // Router addresses
+		"pool":       true, // Pool addresses
+		"vault":      true, // Vault addresses
+		"proxy":      true, // Proxy addresses
+		"contract":   true, // Generic contract references
+		"handler":    true, // Handler contracts
+		"manager":    true, // Manager contracts
+		"controller": true, // Controller contracts
+		"gateway":    true, // Gateway contracts
+	}
+
+	// Check exact match first
+	if protocolParams[strings.ToLower(paramName)] {
+		return true
+	}
+
+	// Check if parameter name contains protocol-related keywords
+	lowerParam := strings.ToLower(paramName)
+	for keyword := range protocolParams {
+		if strings.Contains(lowerParam, keyword) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// cleanAddress removes padding from addresses and validates format
+func (p *ProtocolResolver) cleanAddress(address string) string {
+	if address == "" {
+		return ""
+	}
+
+	// Remove 0x prefix for processing
+	addr := address
+	hasPrefix := strings.HasPrefix(addr, "0x")
+	if hasPrefix {
+		addr = addr[2:]
+	}
+
+	// If it's a padded 64-character address, extract the last 40 characters
+	if len(addr) == 64 {
+		addr = addr[24:] // Remove padding, keep last 40 chars
+	}
+
+	// Validate it's a proper hex address (40 characters)
+	if len(addr) != 40 {
+		return ""
+	}
+
+	// Re-add prefix and return
+	return "0x" + addr
+}
+
+// identifyProtocolsWithAI uses AI to identify protocols from transaction context
 func (p *ProtocolResolver) identifyProtocolsWithAI(ctx context.Context, contextData string) ([]ProbabilisticProtocol, error) {
 	prompt := p.buildProtocolAnalysisPrompt(contextData)
 
@@ -381,7 +433,7 @@ func (p *ProtocolResolver) identifyProtocolsWithAI(ctx context.Context, contextD
 	protocols, err := p.parseProtocolResponse(responseText)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse protocol response: %w", err)
-		}
+	}
 
 	return protocols, nil
 }
@@ -391,9 +443,9 @@ func (p *ProtocolResolver) buildProtocolAnalysisPrompt(contextData string) strin
 	// Build RAG context from CSV knowledge
 	var knowledgeContext strings.Builder
 	knowledgeContext.WriteString("CURATED PROTOCOL KNOWLEDGE (use as reference):\n")
-	
+
 	for _, knowledge := range p.protocolKnowledge {
-		knowledgeContext.WriteString(fmt.Sprintf("- %s (%s): %s [Website: %s]\n", 
+		knowledgeContext.WriteString(fmt.Sprintf("- %s (%s): %s [Website: %s]\n",
 			knowledge.Name, knowledge.Type, knowledge.Description, knowledge.Website))
 	}
 
@@ -515,23 +567,23 @@ PRIORITY: Use verified contract names as your PRIMARY classification source. If 
 func (p *ProtocolResolver) parseProtocolResponse(response string) ([]ProbabilisticProtocol, error) {
 	// Clean up response - extract JSON
 	response = strings.TrimSpace(response)
-	
+
 	// Look for JSON array
 	jsonStart := strings.Index(response, "[")
 	jsonEnd := strings.LastIndex(response, "]")
-	
+
 	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
 		return nil, fmt.Errorf("no valid JSON array found in response")
 	}
-	
+
 	jsonStr := response[jsonStart : jsonEnd+1]
-	
+
 	// Parse JSON
 	var protocols []ProbabilisticProtocol
 	if err := json.Unmarshal([]byte(jsonStr), &protocols); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
-	
+
 	// Validate and clean up protocols
 	var validProtocols []ProbabilisticProtocol
 	for _, protocol := range protocols {
@@ -539,7 +591,7 @@ func (p *ProtocolResolver) parseProtocolResponse(response string) ([]Probabilist
 		if protocol.Name == "" || protocol.Type == "" {
 			continue
 		}
-		
+
 		// Ensure confidence is in valid range
 		if protocol.Confidence < 0 {
 			protocol.Confidence = 0
@@ -547,13 +599,13 @@ func (p *ProtocolResolver) parseProtocolResponse(response string) ([]Probabilist
 		if protocol.Confidence > 1 {
 			protocol.Confidence = 1
 		}
-		
+
 		// Clean up fields
 		protocol.Name = strings.TrimSpace(protocol.Name)
 		protocol.Type = strings.TrimSpace(protocol.Type)
 		protocol.Version = strings.TrimSpace(protocol.Version)
 		protocol.Category = strings.TrimSpace(protocol.Category)
-		
+
 		validProtocols = append(validProtocols, protocol)
 	}
 
@@ -577,18 +629,18 @@ func (p *ProtocolResolver) GetPromptContext(ctx context.Context, baggage map[str
 			protocolInfo += fmt.Sprintf(" %s", protocol.Version)
 		}
 		protocolInfo += fmt.Sprintf("\n- Confidence: %.1f%%", protocol.Confidence*100)
-		
+
 		if len(protocol.Evidence) > 0 {
 			protocolInfo += "\n- Evidence:"
 			for _, evidence := range protocol.Evidence {
 				protocolInfo += fmt.Sprintf("\n  • %s", evidence)
 			}
 		}
-		
+
 		if protocol.Website != "" {
 			protocolInfo += fmt.Sprintf("\n- Website: %s", protocol.Website)
 		}
-		
+
 		contextParts = append(contextParts, protocolInfo)
 	}
 
@@ -642,4 +694,3 @@ func (p *ProtocolResolver) GetAnnotationContext(ctx context.Context, baggage map
 
 	return annotationContext
 }
-

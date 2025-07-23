@@ -12,10 +12,10 @@ import (
 
 // IconResolver discovers token icons from TrustWallet's GitHub repository
 type IconResolver struct {
-	httpClient          *http.Client
+	httpClient            *http.Client
 	staticContextProvider *StaticContextProvider
-	discoveredIcons     map[string]string // address -> icon URL
-	verbose             bool
+	discoveredIcons       map[string]string // address -> icon URL
+	verbose               bool
 }
 
 // NewIconResolver creates a new icon resolver
@@ -25,8 +25,8 @@ func NewIconResolver(staticContextProvider *StaticContextProvider) *IconResolver
 			Timeout: 10 * time.Second,
 		},
 		staticContextProvider: staticContextProvider,
-		discoveredIcons:      make(map[string]string),
-		verbose:              false,
+		discoveredIcons:       make(map[string]string),
+		verbose:               false,
 	}
 }
 
@@ -118,7 +118,7 @@ func (ir *IconResolver) hasIconInCSV(address string) bool {
 	if ir.staticContextProvider == nil {
 		return false
 	}
-	
+
 	tokenInfo, exists := ir.staticContextProvider.GetTokenInfo(address)
 	return exists && tokenInfo.Icon != ""
 }
@@ -135,7 +135,7 @@ func (ir *IconResolver) toChecksumAddress(address string) string {
 	if strings.HasPrefix(addr, "0x") {
 		addr = addr[2:]
 	}
-	
+
 	// Simple checksum implementation (basic version)
 	// For production, you might want to use a proper Ethereum utils library
 	checksum := ""
@@ -151,7 +151,7 @@ func (ir *IconResolver) toChecksumAddress(address string) string {
 			}
 		}
 	}
-	
+
 	return "0x" + checksum
 }
 
@@ -256,10 +256,10 @@ func (ir *IconResolver) GetPromptContext(ctx context.Context, baggage map[string
 
 	var contextParts []string
 	contextParts = append(contextParts, "Discovered Token Icons:")
-	
+
 	for address, iconURL := range discoveredIcons {
 		contextParts = append(contextParts, fmt.Sprintf("- %s: %s", address, iconURL))
 	}
 
 	return strings.Join(contextParts, "\n")
-} 
+}

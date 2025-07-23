@@ -184,29 +184,29 @@ func (c *Client) TraceTransaction(ctx context.Context, txHash string) (map[strin
 // This generic approach works with any RPC without hardcoding specific chain IDs
 func (c *Client) detectTraceMethod(txHash string) (string, interface{}, error) {
 	ctx := context.Background()
-	
+
 	// Try standard debug_traceTransaction first (most common)
 	testMethod := "debug_traceTransaction"
 	testParams := []interface{}{txHash, map[string]interface{}{
 		"tracer": "callTracer",
 	}}
-	
+
 	// Test if the method is available by making a lightweight call
 	// If it fails, we'll try alternative methods
 	_, err := c.call(ctx, testMethod, testParams)
 	if err == nil {
 		return testMethod, testParams, nil
 	}
-	
+
 	// Fallback: Try arbtrace_transaction (used by some L2s like Arbitrum)
-	testMethod = "arbtrace_transaction" 
+	testMethod = "arbtrace_transaction"
 	testParams2 := []string{txHash}
-	
+
 	_, err2 := c.call(ctx, testMethod, testParams2)
 	if err2 == nil {
 		return testMethod, testParams2, nil
 	}
-	
+
 	// If both methods fail, return the more standard one with original error
 	// This allows graceful degradation - the calling code can handle the error
 	return "debug_traceTransaction", []interface{}{txHash, map[string]interface{}{

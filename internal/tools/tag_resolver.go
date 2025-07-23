@@ -17,26 +17,26 @@ import (
 type TagResolver struct {
 	llm                 llms.Model
 	verbose             bool
-	confidenceThreshold float64 // Minimum confidence to include a tag
+	confidenceThreshold float64        // Minimum confidence to include a tag
 	tagKnowledge        []TagKnowledge // RAG data from tags.csv
 }
 
 // TagKnowledge represents tag information from CSV for RAG
 type TagKnowledge struct {
-	Tag             string  `json:"tag"`
-	Category        string  `json:"category"`
-	Description     string  `json:"description"`
-	Patterns        string  `json:"patterns"`
+	Tag              string  `json:"tag"`
+	Category         string  `json:"category"`
+	Description      string  `json:"description"`
+	Patterns         string  `json:"patterns"`
 	ConfidenceWeight float64 `json:"confidence_weight"`
 }
 
 // ProbabilisticTag represents a tag detection with confidence
 type ProbabilisticTag struct {
-	Tag        string   `json:"tag"`
-	Category   string   `json:"category"`
-	Confidence float64  `json:"confidence"` // 0.0 to 1.0
-	Evidence   []string `json:"evidence"`   // Reasons for this identification
-	Description string  `json:"description,omitempty"`
+	Tag         string   `json:"tag"`
+	Category    string   `json:"category"`
+	Confidence  float64  `json:"confidence"` // 0.0 to 1.0
+	Evidence    []string `json:"evidence"`   // Reasons for this identification
+	Description string   `json:"description,omitempty"`
 }
 
 // NewTagResolver creates a new probabilistic tag resolver
@@ -47,7 +47,7 @@ func NewTagResolver(llm llms.Model) *TagResolver {
 		confidenceThreshold: 0.6, // 60% minimum confidence
 		tagKnowledge:        []TagKnowledge{},
 	}
-	
+
 	// Load tag knowledge from CSV for RAG
 	if err := resolver.loadTagKnowledge(); err != nil {
 		// Log error but don't fail - AI can still work without CSV data
@@ -55,7 +55,7 @@ func NewTagResolver(llm llms.Model) *TagResolver {
 			fmt.Printf("Warning: Failed to load tag knowledge from CSV: %v\n", err)
 		}
 	}
-	
+
 	return resolver
 }
 
@@ -88,7 +88,7 @@ func (t *TagResolver) Dependencies() []string {
 func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
 	// Gather transaction context for AI analysis
 	contextData := t.buildTransactionContext(baggage)
-	
+
 	if t.verbose {
 		fmt.Println("=== TAG RESOLVER: TRANSACTION CONTEXT ===")
 		fmt.Printf("Context: %s\n", contextData)
@@ -115,10 +115,10 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 	}
 
 	if t.verbose {
-		fmt.Printf("Tag Resolver: Found %d tags above %.1f%% confidence\n", 
+		fmt.Printf("Tag Resolver: Found %d tags above %.1f%% confidence\n",
 			len(highConfidenceTags), t.confidenceThreshold*100)
 		for i, tag := range highConfidenceTags {
-			fmt.Printf("  Tag[%d]: %s (%s) - %.1f%% confidence\n", 
+			fmt.Printf("  Tag[%d]: %s (%s) - %.1f%% confidence\n",
 				i, tag.Tag, tag.Category, tag.Confidence*100)
 		}
 	}
@@ -130,7 +130,7 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 	}
 
 	// Store results in baggage
-	baggage["tags"] = tagStrings // For backward compatibility
+	baggage["tags"] = tagStrings                       // For backward compatibility
 	baggage["probabilistic_tags"] = highConfidenceTags // Detailed information
 	return nil
 }
@@ -143,11 +143,11 @@ func (t *TagResolver) loadTagKnowledge() error {
 		"./data/tags.csv",
 		"../data/tags.csv",
 	}
-	
+
 	var csvPath string
 	var csvFile *os.File
 	var err error
-	
+
 	// Find the CSV file
 	for _, path := range csvPaths {
 		if csvFile, err = os.Open(path); err == nil {
@@ -155,26 +155,26 @@ func (t *TagResolver) loadTagKnowledge() error {
 			break
 		}
 	}
-	
+
 	if csvFile == nil {
 		return fmt.Errorf("could not find tags.csv in any of the expected locations: %v", csvPaths)
 	}
 	defer csvFile.Close()
-	
+
 	if t.verbose {
 		fmt.Printf("Loading tag knowledge from: %s\n", csvPath)
 	}
-	
+
 	reader := csv.NewReader(csvFile)
 	records, err := reader.ReadAll()
 	if err != nil {
 		return fmt.Errorf("failed to read CSV: %w", err)
 	}
-	
+
 	if len(records) == 0 {
 		return fmt.Errorf("empty CSV file")
 	}
-	
+
 	// Parse CSV (expecting header row)
 	header := records[0]
 	tagIndex := findColumnIndex(header, "tag")
@@ -182,41 +182,41 @@ func (t *TagResolver) loadTagKnowledge() error {
 	descriptionIndex := findColumnIndex(header, "description")
 	patternsIndex := findColumnIndex(header, "patterns")
 	confidenceIndex := findColumnIndex(header, "confidence_weight")
-	
+
 	if tagIndex == -1 || categoryIndex == -1 || descriptionIndex == -1 || patternsIndex == -1 {
 		return fmt.Errorf("CSV missing required columns (tag, category, description, patterns)")
 	}
-	
+
 	// Parse data rows
 	for _, record := range records[1:] {
 		if len(record) <= tagIndex || len(record) <= categoryIndex || len(record) <= descriptionIndex || len(record) <= patternsIndex {
 			continue // Skip incomplete rows
 		}
-		
+
 		knowledge := TagKnowledge{
-			Tag:         strings.TrimSpace(record[tagIndex]),
-			Category:    strings.TrimSpace(record[categoryIndex]),
-			Description: strings.TrimSpace(record[descriptionIndex]),
-			Patterns:    strings.TrimSpace(record[patternsIndex]),
+			Tag:              strings.TrimSpace(record[tagIndex]),
+			Category:         strings.TrimSpace(record[categoryIndex]),
+			Description:      strings.TrimSpace(record[descriptionIndex]),
+			Patterns:         strings.TrimSpace(record[patternsIndex]),
 			ConfidenceWeight: 0.8, // Default weight
 		}
-		
+
 		// Parse confidence weight if available
 		if confidenceIndex != -1 && len(record) > confidenceIndex {
 			if weight, err := strconv.ParseFloat(strings.TrimSpace(record[confidenceIndex]), 64); err == nil {
 				knowledge.ConfidenceWeight = weight
 			}
 		}
-		
+
 		if knowledge.Tag != "" {
 			t.tagKnowledge = append(t.tagKnowledge, knowledge)
 		}
 	}
-	
+
 	if t.verbose {
 		fmt.Printf("Loaded %d tags from CSV for RAG context\n", len(t.tagKnowledge))
 	}
-	
+
 	return nil
 }
 
@@ -250,21 +250,14 @@ func (t *TagResolver) buildTransactionContext(baggage map[string]interface{}) st
 		for _, event := range events {
 			eventInfo := fmt.Sprintf("- %s on %s", event.Name, event.Contract)
 			if event.Parameters != nil {
-				// Add ALL event parameters generically - no hardcoded parameter names
+				// Add ALL event parameters generically - no hardcoded filtering
 				var paramDetails []string
-				
-				// Include ALL parameters from the event without filtering
+
+				// Include ALL parameters from the event - let LLM decide what's meaningful
 				for paramName, paramValue := range event.Parameters {
-					// Skip only internal technical fields
-					if paramName == "raw_data" || paramName == "signature" || 
-					   strings.HasPrefix(paramName, "topic_") && len(paramName) > 10 {
-						continue
-					}
-					
-					// Include ALL meaningful parameters
 					paramDetails = append(paramDetails, fmt.Sprintf("%s: %v", paramName, paramValue))
 				}
-				
+
 				if len(paramDetails) > 0 {
 					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramDetails, ", "))
 				}
@@ -380,17 +373,17 @@ func (t *TagResolver) buildTagAnalysisPrompt(contextData string) string {
 	// Build RAG context from CSV knowledge
 	var knowledgeContext strings.Builder
 	knowledgeContext.WriteString("CURATED TAG KNOWLEDGE (use as reference):\n\n")
-	
+
 	// Group by category for better organization
 	categories := make(map[string][]TagKnowledge)
 	for _, knowledge := range t.tagKnowledge {
 		categories[knowledge.Category] = append(categories[knowledge.Category], knowledge)
 	}
-	
+
 	for category, tags := range categories {
 		knowledgeContext.WriteString(fmt.Sprintf("%s:\n", category))
 		for _, tag := range tags {
-			knowledgeContext.WriteString(fmt.Sprintf("- %s: %s (patterns: %s) [weight: %.2f]\n", 
+			knowledgeContext.WriteString(fmt.Sprintf("- %s: %s (patterns: %s) [weight: %.2f]\n",
 				tag.Tag, tag.Description, tag.Patterns, tag.ConfidenceWeight))
 		}
 		knowledgeContext.WriteString("\n")
@@ -471,23 +464,23 @@ Analyze the transaction context and return tags with reasonable confidence (> 0.
 func (t *TagResolver) parseTagResponse(response string) ([]ProbabilisticTag, error) {
 	// Clean up response - extract JSON
 	response = strings.TrimSpace(response)
-	
+
 	// Look for JSON array
 	jsonStart := strings.Index(response, "[")
 	jsonEnd := strings.LastIndex(response, "]")
-	
+
 	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
 		return nil, fmt.Errorf("no valid JSON array found in response")
 	}
-	
+
 	jsonStr := response[jsonStart : jsonEnd+1]
-	
+
 	// Parse JSON
 	var tags []ProbabilisticTag
 	if err := json.Unmarshal([]byte(jsonStr), &tags); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
-	
+
 	// Validate and clean up tags
 	var validTags []ProbabilisticTag
 	for _, tag := range tags {
@@ -495,7 +488,7 @@ func (t *TagResolver) parseTagResponse(response string) ([]ProbabilisticTag, err
 		if tag.Tag == "" || tag.Category == "" {
 			continue
 		}
-		
+
 		// Ensure confidence is in valid range
 		if tag.Confidence < 0 {
 			tag.Confidence = 0
@@ -503,15 +496,15 @@ func (t *TagResolver) parseTagResponse(response string) ([]ProbabilisticTag, err
 		if tag.Confidence > 1 {
 			tag.Confidence = 1
 		}
-		
+
 		// Clean up fields
 		tag.Tag = strings.TrimSpace(tag.Tag)
 		tag.Category = strings.TrimSpace(tag.Category)
 		tag.Description = strings.TrimSpace(tag.Description)
-		
+
 		validTags = append(validTags, tag)
 	}
-	
+
 	return validTags, nil
 }
 
@@ -529,18 +522,18 @@ func (t *TagResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 		tagInfo := fmt.Sprintf("\nTag #%d:", i+1)
 		tagInfo += fmt.Sprintf("\n- Name: %s (%s)", tag.Tag, tag.Category)
 		tagInfo += fmt.Sprintf("\n- Confidence: %.1f%%", tag.Confidence*100)
-		
+
 		if len(tag.Evidence) > 0 {
 			tagInfo += "\n- Evidence:"
 			for _, evidence := range tag.Evidence {
 				tagInfo += fmt.Sprintf("\n  • %s", evidence)
 			}
 		}
-		
+
 		if tag.Description != "" {
 			tagInfo += fmt.Sprintf("\n- Description: %s", tag.Description)
 		}
-		
+
 		contextParts = append(contextParts, tagInfo)
 	}
 
@@ -572,9 +565,9 @@ func (t *TagResolver) GetAnnotationContext(ctx context.Context, baggage map[stri
 			Name:        tag.Tag,
 			Description: description,
 			Metadata: map[string]interface{}{
-				"category":    tag.Category,
-				"confidence":  tag.Confidence,
-				"evidence":    tag.Evidence,
+				"category":        tag.Category,
+				"confidence":      tag.Confidence,
+				"evidence":        tag.Evidence,
 				"tag_description": tag.Description,
 			},
 		}
@@ -584,5 +577,3 @@ func (t *TagResolver) GetAnnotationContext(ctx context.Context, baggage map[stri
 
 	return annotationContext
 }
-
- 

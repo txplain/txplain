@@ -13,14 +13,14 @@ import (
 
 // CoinMarketCapNetwork represents a network/blockchain platform
 type CoinMarketCapNetwork struct {
-	ID           int    `json:"id"`
-	Name         string `json:"name"`
-	Symbol       string `json:"symbol"`
-	Slug         string `json:"slug"`
-	IsActive     int    `json:"is_active"`
-	FirstBlock   int    `json:"first_block,omitempty"`
-	LastBlock    int    `json:"last_block,omitempty"`
-	Platform     struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Symbol     string `json:"symbol"`
+	Slug       string `json:"slug"`
+	IsActive   int    `json:"is_active"`
+	FirstBlock int    `json:"first_block,omitempty"`
+	LastBlock  int    `json:"last_block,omitempty"`
+	Platform   struct {
 		ID           int    `json:"id"`
 		Name         string `json:"name"`
 		Symbol       string `json:"symbol"`
@@ -43,12 +43,12 @@ type CoinMarketCapNetworkResponse struct {
 
 // NetworkMapper handles CoinMarketCap network mappings
 type NetworkMapper struct {
-	apiKey         string
-	httpClient     *http.Client
-	networksCache  map[int64]string // networkID -> CoinMarketCap slug
-	cacheFile      string
-	lastFetchTime  time.Time
-	cacheDuration  time.Duration
+	apiKey        string
+	httpClient    *http.Client
+	networksCache map[int64]string // networkID -> CoinMarketCap slug
+	cacheFile     string
+	lastFetchTime time.Time
+	cacheDuration time.Duration
 }
 
 // NewNetworkMapper creates a new network mapper utility
@@ -128,7 +128,7 @@ func (nm *NetworkMapper) loadFromCache() error {
 	if networks, exists := cacheData["networks"]; exists {
 		// New format: {"networks": {"1": "ethereum", ...}, "timestamp": "..."}
 		nm.networksCache = make(map[int64]string)
-		
+
 		if networkMap, ok := networks.(map[string]interface{}); ok {
 			for idStr, slug := range networkMap {
 				if networkID, err := strconv.ParseInt(idStr, 10, 64); err == nil {
@@ -173,7 +173,7 @@ func (nm *NetworkMapper) fetchFromAPI() error {
 	// Use the correct networks endpoint from CoinMarketCap API documentation
 	// Reference: https://coinmarketcap.com/api/documentation/v1/#operation/getNetworks
 	networkURL := "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?listing_status=active&limit=5000"
-	
+
 	req, err := http.NewRequest("GET", networkURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -201,14 +201,14 @@ func (nm *NetworkMapper) fetchFromAPI() error {
 	// For now, let's create a static mapping since we know the DEX API needs specific slugs
 	// This will be updated once we find the correct endpoint
 	nm.networksCache = map[int64]string{
-		1:     "ethereum",      // Ethereum mainnet
-		56:    "binance-smart-chain", // BSC mainnet  
-		137:   "polygon",       // Polygon mainnet
-		43114: "avalanche",     // Avalanche C-Chain
-		250:   "fantom",        // Fantom mainnet
-		25:    "cronos",        // Cronos mainnet
-		42220: "celo",          // Celo mainnet
-		1285:  "moonriver",     // Moonriver
+		1:     "ethereum",            // Ethereum mainnet
+		56:    "binance-smart-chain", // BSC mainnet
+		137:   "polygon",             // Polygon mainnet
+		43114: "avalanche",           // Avalanche C-Chain
+		250:   "fantom",              // Fantom mainnet
+		25:    "cronos",              // Cronos mainnet
+		42220: "celo",                // Celo mainnet
+		1285:  "moonriver",           // Moonriver
 	}
 
 	// Save a simple cache file for now
@@ -216,13 +216,13 @@ func (nm *NetworkMapper) fetchFromAPI() error {
 		"networks":  make(map[string]string), // Use string keys for JSON compatibility
 		"timestamp": time.Now().Format(time.RFC3339),
 	}
-	
+
 	// Convert int64 keys to strings for JSON serialization
 	networks := cacheData["networks"].(map[string]string)
 	for networkID, slug := range nm.networksCache {
 		networks[fmt.Sprintf("%d", networkID)] = slug
 	}
-	
+
 	jsonData, _ := json.MarshalIndent(cacheData, "", "  ")
 	if err := nm.saveToCache(jsonData); err != nil {
 		fmt.Printf("Warning: failed to save network cache: %v\n", err)
@@ -287,4 +287,4 @@ func (nm *NetworkMapper) GetAllNetworks() (map[int64]string, error) {
 		return nil, err
 	}
 	return nm.networksCache, nil
-} 
+}

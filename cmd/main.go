@@ -146,7 +146,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		// Show baggage contents (metadata)
 		if result.Metadata != nil {
 			if baggage, ok := result.Metadata["pipeline_baggage"].(map[string]interface{}); ok {
-				
+
 				// First, display formatted debug information if available
 				if debugInfo, ok := baggage["debug_info"].(map[string]interface{}); ok {
 					// Display token metadata debug
@@ -175,7 +175,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 						}
 						fmt.Println()
 					}
-					
+
 					// Display transfer enrichment debug
 					if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
 						fmt.Println("=== TRANSFER ENRICHMENT DEBUG ===")
@@ -390,7 +390,7 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 // debugTokenContract debugs a specific token contract
 func debugTokenContract(contractAddress string, networkID int64) {
 	ctx := context.Background()
-	
+
 	fmt.Printf("=== DEBUGGING TOKEN CONTRACT ===\n")
 	fmt.Printf("Contract: %s\n", contractAddress)
 	fmt.Printf("Network: %d\n", networkID)
@@ -418,7 +418,7 @@ func debugTokenContract(contractAddress string, networkID int64) {
 	fmt.Printf("Symbol: %s\n", contractInfo.Symbol)
 	fmt.Printf("Decimals: %d\n", contractInfo.Decimals)
 	fmt.Printf("Total Supply: %s\n", contractInfo.TotalSupply)
-	
+
 	if len(contractInfo.Metadata) > 0 {
 		fmt.Printf("Metadata:\n")
 		for key, value := range contractInfo.Metadata {
