@@ -176,26 +176,17 @@ type CoinMarketCapDEXQuoteResponse struct {
 }
 
 // NewERC20PriceLookup creates a new ERC20 price lookup tool
-func NewERC20PriceLookup(apiKey string) *ERC20PriceLookup {
+func NewERC20PriceLookup(apiKey string, cache Cache, verbose bool) *ERC20PriceLookup {
+	networkMapper := NewNetworkMapper(apiKey, cache)
 	return &ERC20PriceLookup{
 		apiKey: apiKey,
 		httpClient: &http.Client{
 			Timeout: 300 * time.Second, // 5 minutes for price API calls
 		},
-		networkMapper: NewNetworkMapper(apiKey),
-		verbose:       false,
-		cache:         nil, // Set via SetCache
+		networkMapper: networkMapper,
+		verbose:       verbose,
+		cache:         cache,
 	}
-}
-
-// SetCache sets the cache instance for the price lookup
-func (t *ERC20PriceLookup) SetCache(cache Cache) {
-	t.cache = cache
-}
-
-// SetVerbose enables or disables verbose logging
-func (t *ERC20PriceLookup) SetVerbose(verbose bool) {
-	t.verbose = verbose
 }
 
 // Name returns the tool name
@@ -893,14 +884,14 @@ func (t *ERC20PriceLookup) findToken(ctx context.Context, symbol, name, contract
 
 	// Check cache first if available
 	if t.cache != nil {
-		// Create cache key based on search parameters
-		cacheKeyParams := fmt.Sprintf("%s:%s:%s", symbol, name, contractAddress)
+		// Create cache key based on search parameters (lowercase address for consistency)
+		cacheKeyParams := fmt.Sprintf("%s:%s:%s", symbol, name, strings.ToLower(contractAddress))
 		cacheKey := fmt.Sprintf(CMCMappingKeyPattern, 0, cacheKeyParams) // Use 0 for network-agnostic mapping
-		
+
 		if t.verbose {
 			fmt.Printf("  Checking cache for token mapping with key: %s\n", cacheKey)
 		}
-		
+
 		var cachedTokenID int
 		if err := t.cache.GetJSON(ctx, cacheKey, &cachedTokenID); err == nil {
 			if t.verbose {
@@ -969,9 +960,9 @@ func (t *ERC20PriceLookup) findToken(ctx context.Context, symbol, name, contract
 
 	// Cache successful result if cache is available
 	if t.cache != nil {
-		cacheKeyParams := fmt.Sprintf("%s:%s:%s", symbol, name, contractAddress)
+		cacheKeyParams := fmt.Sprintf("%s:%s:%s", symbol, name, strings.ToLower(contractAddress))
 		cacheKey := fmt.Sprintf(CMCMappingKeyPattern, 0, cacheKeyParams)
-		
+
 		// Cache token mapping with metadata TTL (60 days)
 		if err := t.cache.SetJSON(ctx, cacheKey, tokenID, &MetadataTTLDuration); err != nil {
 			if t.verbose {
@@ -1075,11 +1066,11 @@ func (t *ERC20PriceLookup) getTokenPrice(ctx context.Context, tokenID int, conve
 	// Check cache first if available
 	if t.cache != nil {
 		cacheKey := fmt.Sprintf(TokenPriceKeyPattern, 0, fmt.Sprintf("id:%d:%s", tokenID, convert))
-		
+
 		if t.verbose {
 			fmt.Printf("  Checking cache for token price with key: %s\n", cacheKey)
 		}
-		
+
 		var cachedPrice TokenPrice
 		if err := t.cache.GetJSON(ctx, cacheKey, &cachedPrice); err == nil {
 			if t.verbose {
@@ -1168,7 +1159,7 @@ func (t *ERC20PriceLookup) getTokenPrice(ctx context.Context, tokenID int, conve
 	// Cache successful result if cache is available - use 1 hour TTL for prices
 	if t.cache != nil {
 		cacheKey := fmt.Sprintf(TokenPriceKeyPattern, 0, fmt.Sprintf("id:%d:%s", tokenID, convert))
-		
+
 		if err := t.cache.SetJSON(ctx, cacheKey, result, &PriceTTLDuration); err != nil {
 			if t.verbose {
 				fmt.Printf("  ⚠️  Failed to cache token price ID %d: %v\n", tokenID, err)

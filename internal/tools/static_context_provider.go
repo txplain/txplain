@@ -26,7 +26,7 @@ type StaticContextProvider struct {
 }
 
 // NewStaticContextProvider creates a new static context provider
-func NewStaticContextProvider() *StaticContextProvider {
+func NewStaticContextProvider(verbose bool) *StaticContextProvider {
 	provider := &StaticContextProvider{
 		tokens:    make(map[string]models.AnnotationContextItem),
 		protocols: make(map[string]models.AnnotationContextItem),
@@ -37,7 +37,7 @@ func NewStaticContextProvider() *StaticContextProvider {
 		ragProtocols: make(map[string]RagContextItem),
 		ragAddresses: make(map[string]RagContextItem),
 
-		verbose: false,
+		verbose: verbose,
 	}
 
 	// Load data from CSV files on initialization
@@ -46,11 +46,6 @@ func NewStaticContextProvider() *StaticContextProvider {
 	provider.loadAddresses()
 
 	return provider
-}
-
-// SetVerbose enables or disables verbose logging
-func (scp *StaticContextProvider) SetVerbose(verbose bool) {
-	scp.verbose = verbose
 }
 
 // Name returns the processor name

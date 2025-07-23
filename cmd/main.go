@@ -12,12 +12,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/joho/godotenv"
+	"github.com/rs/zerolog"
 	"github.com/txplain/txplain/internal/agent"
 	"github.com/txplain/txplain/internal/api"
+	"github.com/txplain/txplain/internal/data"
 	"github.com/txplain/txplain/internal/mcp"
 	"github.com/txplain/txplain/internal/models"
 	"github.com/txplain/txplain/internal/rpc"
+	"github.com/txplain/txplain/internal/tools"
 )
 
 func main() {
@@ -59,19 +63,44 @@ func main() {
 		return
 	}
 
+	// Initialize cache from DATABASE_URL
+	var cache tools.Cache
+	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+		logger := zerolog.New(os.Stdout)
+
+		// Create PostgreSQL config
+		cfg := &common.PostgreSQLConnectorConfig{
+			ConnectionUri: databaseURL,
+			Table:         "cache_data",
+			MinConns:      1,
+			MaxConns:      10,
+			InitTimeout:   common.Duration(time.Second * 30),
+			GetTimeout:    common.Duration(time.Second * 5),
+			SetTimeout:    common.Duration(time.Second * 5),
+		}
+
+		connector, err := data.NewPostgreSQLConnector(context.Background(), &logger, "cache", cfg)
+		if err != nil {
+			log.Printf("Warning: Failed to initialize PostgreSQL cache: %v", err)
+			cache = nil // Continue without cache
+		} else {
+			cache = tools.NewSimpleCache(connector, "txplain", &tools.MetadataTTLDuration)
+		}
+	}
+
 	// Check if transaction hash is provided
 	if *txHash != "" {
 		// Transaction explanation mode
-		explainTransaction(*txHash, *networkID, *openaiKey, *coinMarketKey, *verbose)
+		explainTransaction(*txHash, *networkID, *openaiKey, *coinMarketKey, cache, *verbose)
 		return
 	}
 
 	// Server mode (original functionality)
-	runServers(*httpAddr, *mcpAddr, *openaiKey, *coinMarketKey, *enableHTTP, *enableMCP)
+	runServers(*httpAddr, *mcpAddr, *openaiKey, *coinMarketKey, *enableHTTP, *enableMCP, cache, *verbose)
 }
 
 // explainTransaction processes a single transaction and prints the explanation
-func explainTransaction(txHash string, networkID int64, openaiKey string, coinMarketKey string, verbose bool) {
+func explainTransaction(txHash string, networkID int64, openaiKey string, coinMarketKey string, cache tools.Cache, verbose bool) {
 	// Validate transaction hash format
 	if !strings.HasPrefix(txHash, "0x") || len(txHash) != 66 {
 		log.Fatal("Invalid transaction hash format. Expected format: 0x followed by 64 hex characters")
@@ -107,14 +136,9 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 	}
 
 	// Create the agent
-	txAgent, err := agent.NewTxplainAgent(apiKey, cmcKey)
+	txAgent, err := agent.NewTxplainAgent(apiKey, cmcKey, cache, verbose)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
-	}
-
-	// Enable verbose mode if requested
-	if verbose {
-		txAgent.SetVerbose(true)
 	}
 
 	// Create transaction request
@@ -283,7 +307,7 @@ func formatNumber(n uint64) string {
 }
 
 // runServers runs the original server functionality
-func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, enableMCP bool) {
+func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, enableMCP bool, cache tools.Cache, verbose bool) {
 	// Get OpenAI API key
 	apiKey := openaiKey
 	if apiKey == "" {
@@ -312,7 +336,7 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 
 	// Start HTTP API server if enabled
 	if enableHTTP {
-		server, err := api.NewServer(httpAddr, apiKey, cmcKey)
+		server, err := api.NewServer(httpAddr, apiKey, cmcKey, cache, verbose)
 		if err != nil {
 			log.Fatalf("Failed to create HTTP server: %v", err)
 		}
@@ -328,7 +352,7 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 
 	// Start MCP server if enabled
 	if enableMCP {
-		server, err := mcp.NewServer(mcpAddr, apiKey, cmcKey)
+		server, err := mcp.NewServer(mcpAddr, apiKey, cmcKey, cache, verbose)
 		if err != nil {
 			log.Fatalf("Failed to create MCP server: %v", err)
 		}

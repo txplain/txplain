@@ -48,24 +48,14 @@ type ResolvedSignature struct {
 }
 
 // NewSignatureResolver creates a new signature resolver
-func NewSignatureResolver() *SignatureResolver {
+func NewSignatureResolver(cache Cache, verbose bool) *SignatureResolver {
 	return &SignatureResolver{
 		httpClient: &http.Client{
 			Timeout: 300 * time.Second, // 5 minutes for signature lookups
 		},
-		verbose: false,
-		cache:   nil, // Set via SetCache
+		verbose: verbose,
+		cache:   cache,
 	}
-}
-
-// SetCache sets the cache instance for the signature resolver
-func (s *SignatureResolver) SetCache(cache Cache) {
-	s.cache = cache
-}
-
-// SetVerbose enables or disables verbose logging
-func (s *SignatureResolver) SetVerbose(verbose bool) {
-	s.verbose = verbose
 }
 
 // Name returns the tool name
@@ -239,7 +229,7 @@ func (s *SignatureResolver) lookupEventSignature(ctx context.Context, hexSignatu
 		if s.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("  Checking cache for event signature %s with key: %s\n", hexSignature, cacheKey)
 		}
-		
+
 		var cachedSig ResolvedSignature
 		if err := s.cache.GetJSON(ctx, cacheKey, &cachedSig); err == nil {
 			if s.verbose || os.Getenv("DEBUG") == "true" {
@@ -328,7 +318,7 @@ func (s *SignatureResolver) lookupFunctionSignature(ctx context.Context, hexSign
 		if s.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("  Checking cache for function signature %s with key: %s\n", hexSignature, cacheKey)
 		}
-		
+
 		var cachedSig ResolvedSignature
 		if err := s.cache.GetJSON(ctx, cacheKey, &cachedSig); err == nil {
 			if s.verbose || os.Getenv("DEBUG") == "true" {

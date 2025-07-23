@@ -19,21 +19,12 @@ type AddressRoleResolver struct {
 }
 
 // NewAddressRoleResolver creates a new address role resolver
-func NewAddressRoleResolver(llm llms.Model) *AddressRoleResolver {
+func NewAddressRoleResolver(llm llms.Model, verbose bool, rpcClient *rpc.Client) *AddressRoleResolver {
 	return &AddressRoleResolver{
-		llm:     llm,
-		verbose: false,
+		llm:       llm,
+		rpcClient: rpcClient,
+		verbose:   verbose,
 	}
-}
-
-// SetRPCClient sets the RPC client for address type detection
-func (a *AddressRoleResolver) SetRPCClient(client *rpc.Client) {
-	a.rpcClient = client
-}
-
-// SetVerbose enables or disables verbose logging
-func (a *AddressRoleResolver) SetVerbose(verbose bool) {
-	a.verbose = verbose
 }
 
 // Name returns the tool name

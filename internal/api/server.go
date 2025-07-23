@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/txplain/txplain/internal/agent"
 	"github.com/txplain/txplain/internal/models"
+	"github.com/txplain/txplain/internal/tools"
 )
 
 // Server represents the API server
@@ -24,9 +25,9 @@ type Server struct {
 }
 
 // NewServer creates a new API server
-func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string) (*Server, error) {
+func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string, cache tools.Cache, verbose bool) (*Server, error) {
 	// Initialize the Txplain agent
-	txAgent, err := agent.NewTxplainAgent(openaiAPIKey, coinMarketCapAPIKey)
+	txAgent, err := agent.NewTxplainAgent(openaiAPIKey, coinMarketCapAPIKey, cache, verbose)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize agent: %w", err)
 	}
@@ -216,11 +217,11 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	fmt.Fprintf(w, ": connection-established-%d %s\n\n", timestamp, largePadding)
 	forceFlushWithPadding()
 	time.Sleep(50 * time.Millisecond)
-	
+
 	fmt.Fprintf(w, ": anti-buffer-ping-%d %s\n\n", time.Now().UnixNano(), largePadding)
 	forceFlushWithPadding()
 	time.Sleep(50 * time.Millisecond)
-	
+
 	fmt.Fprintf(w, ": ready-for-events-%d %s\n\n", time.Now().UnixNano(), largePadding)
 	forceFlushWithPadding()
 
@@ -270,12 +271,12 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	// Start aggressive anti-buffer goroutine
 	antiBufferCtx, antiBufferCancel := context.WithCancel(r.Context())
 	defer antiBufferCancel()
-	
+
 	go func() {
 		ticker := time.NewTicker(200 * time.Millisecond) // Very frequent
 		defer ticker.Stop()
 		counter := 0
-		
+
 		for {
 			select {
 			case <-antiBufferCtx.Done():
@@ -313,23 +314,23 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	// Stream progress updates with immediate flushing and server-side logging
 	firstRealUpdate := true
 	eventCount := 0
-	
+
 	for event := range progressChan {
 		eventCount++
 		serverTime := time.Now()
-		
+
 		// Log server-side timing for debugging
 		log.Printf("[SSE-DEBUG] Sending event %d at %v: %s", eventCount, serverTime, event.Type)
-		
+
 		// Mark request_received and pipeline_setup as complete on first real component update
-		if firstRealUpdate && event.Type == "component_update" && event.Component != nil && 
-		   event.Component.ID != "request_received" && event.Component.ID != "pipeline_setup" {
-			
+		if firstRealUpdate && event.Type == "component_update" && event.Component != nil &&
+			event.Component.ID != "request_received" && event.Component.ID != "pipeline_setup" {
+
 			// Calculate durations
 			currentTime := time.Now()
 			requestDuration := currentTime.Sub(requestStartTime)
 			pipelineDuration := currentTime.Sub(pipelineStartTime)
-			
+
 			// Send completion for request_received with immediate flush
 			requestCompleteEvent := models.ProgressEvent{
 				Type:      "component_update",
@@ -350,12 +351,12 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 			fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", requestCompleteData)
 			forceFlushWithPadding()
 
-			// Complete pipeline initialization with immediate flush
+			// Complete pipeline setup with immediate flush
 			pipelineCompleteEvent := models.ProgressEvent{
 				Type:      "component_update",
 				Timestamp: currentTime,
 				Component: &models.ComponentUpdate{
-					ID:          "pipeline_init",
+					ID:          "pipeline_setup",
 					Group:       models.ComponentGroupData,
 					Title:       "Setting up processing pipeline",
 					Status:      models.ComponentStatusFinished,
@@ -384,7 +385,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 
 		// Send a duplicate event with slight variation to force network transmission
 		if event.Type == "component_update" {
-			duplicateData := fmt.Sprintf(`{"duplicate":true,"original_time":"%v","server_time":"%v","event_data":%s}`, 
+			duplicateData := fmt.Sprintf(`{"duplicate":true,"original_time":"%v","server_time":"%v","event_data":%s}`,
 				event.Timestamp, serverTime, string(eventData))
 			fmt.Fprintf(w, ": duplicate-%d %s\n\n", eventCount, duplicateData)
 			if flusher, ok := w.(http.Flusher); ok {
@@ -631,7 +632,7 @@ func (s *Server) Start() error {
 		WriteTimeout:      300 * time.Second, // Long timeout for AI processing
 		IdleTimeout:       300 * time.Second, // 5 minutes idle timeout
 		ReadHeaderTimeout: 30 * time.Second,  // Prevent slow header attacks
-		
+
 		// Disable HTTP/2 for better SSE compatibility if needed
 		// TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 	}

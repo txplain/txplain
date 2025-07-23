@@ -27,27 +27,12 @@ type TokenMetadata struct {
 }
 
 // NewTokenMetadataEnricher creates a new token metadata enricher
-func NewTokenMetadataEnricher() *TokenMetadataEnricher {
+func NewTokenMetadataEnricher(cache Cache, verbose bool, rpcClient *rpc.Client) *TokenMetadataEnricher {
 	return &TokenMetadataEnricher{
-		rpcClient: nil, // Set by SetRPCClient when needed
-		verbose:   false,
-		cache:     nil, // Set via SetCache
+		rpcClient: rpcClient,
+		verbose:   verbose,
+		cache:     cache,
 	}
-}
-
-// SetRPCClient sets the RPC client for network-specific operations
-func (t *TokenMetadataEnricher) SetRPCClient(client *rpc.Client) {
-	t.rpcClient = client
-}
-
-// SetCache sets the cache instance for the metadata enricher
-func (t *TokenMetadataEnricher) SetCache(cache Cache) {
-	t.cache = cache
-}
-
-// SetVerbose enables or disables verbose logging
-func (t *TokenMetadataEnricher) SetVerbose(verbose bool) {
-	t.verbose = verbose
 }
 
 // Name returns the processor name
@@ -165,7 +150,7 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 					networkID = int64(nid)
 				}
 			}
-			
+
 			cacheKey := fmt.Sprintf(TokenMetadataKeyPattern, networkID, strings.ToLower(address))
 			if err := t.cache.GetJSON(ctx, cacheKey, &rpcInfo); err == nil {
 				if t.verbose {

@@ -16,15 +16,10 @@ import (
 )
 
 // NewLogDecoder creates a new log decoder
-func NewLogDecoder() *LogDecoder {
+func NewLogDecoder(verbose bool) *LogDecoder {
 	return &LogDecoder{
-		verbose: false,
+		verbose: verbose,
 	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (t *LogDecoder) SetVerbose(verbose bool) {
-	t.verbose = verbose
 }
 
 // NewLogDecoderWithRPC creates a LogDecoder with RPC capabilities

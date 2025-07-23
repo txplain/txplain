@@ -21,20 +21,12 @@ type TransactionExplainer struct {
 }
 
 // NewTransactionExplainer creates a new transaction explainer with TRUE RAG capabilities
-func NewTransactionExplainer(llm llms.Model, staticProvider *StaticContextProvider) *TransactionExplainer {
-	ragService := NewRAGSearchService(staticProvider)
+func NewTransactionExplainer(llm llms.Model, staticProvider *StaticContextProvider, verbose bool) *TransactionExplainer {
+	ragService := NewRAGSearchService(staticProvider, verbose)
 	return &TransactionExplainer{
 		llm:        llm,
 		ragService: ragService,
-		verbose:    false,
-	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (t *TransactionExplainer) SetVerbose(verbose bool) {
-	t.verbose = verbose
-	if t.ragService != nil {
-		t.ragService.SetVerbose(verbose)
+		verbose:    verbose,
 	}
 }
 

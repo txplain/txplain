@@ -19,7 +19,7 @@ import (
 type ABIResolver struct {
 	httpClient *http.Client
 	apiKey     string
-	verbose    bool // Added for debug logging
+	verbose    bool  // Added for debug logging
 	cache      Cache // Cache for ABI data
 }
 
@@ -326,7 +326,7 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 		if a.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("  Checking cache for contract %s with key: %s\n", address, cacheKey)
 		}
-		
+
 		var cachedInfo ContractInfo
 		if err := a.cache.GetJSON(ctx, cacheKey, &cachedInfo); err == nil {
 			if a.verbose || os.Getenv("DEBUG") == "true" {

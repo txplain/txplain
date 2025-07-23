@@ -11,15 +11,10 @@ type TransactionContextProvider struct {
 }
 
 // NewTransactionContextProvider creates a new transaction context provider
-func NewTransactionContextProvider() *TransactionContextProvider {
+func NewTransactionContextProvider(verbose bool) *TransactionContextProvider {
 	return &TransactionContextProvider{
-		verbose: false,
+		verbose: verbose,
 	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (t *TransactionContextProvider) SetVerbose(verbose bool) {
-	t.verbose = verbose
 }
 
 // Name returns the tool name

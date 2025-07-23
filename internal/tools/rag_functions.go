@@ -15,16 +15,11 @@ type RAGSearchService struct {
 }
 
 // NewRAGSearchService creates a new RAG search service
-func NewRAGSearchService(staticProvider *StaticContextProvider) *RAGSearchService {
+func NewRAGSearchService(staticProvider *StaticContextProvider, verbose bool) *RAGSearchService {
 	return &RAGSearchService{
 		staticProvider: staticProvider,
-		verbose:        false,
+		verbose:        verbose,
 	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (r *RAGSearchService) SetVerbose(verbose bool) {
-	r.verbose = verbose
 }
 
 // SearchProtocolsResult represents the result of a protocol search

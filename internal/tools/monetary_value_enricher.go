@@ -40,25 +40,16 @@ type EnrichedAmount struct {
 }
 
 // NewMonetaryValueEnricher creates a new monetary value enricher
-func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string) *MonetaryValueEnricher {
+func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string, cache Cache, verbose bool) *MonetaryValueEnricher {
+	networkMapper := NewNetworkMapper(coinMarketCapAPIKey, cache)
 	return &MonetaryValueEnricher{
 		llm:           llm,
 		apiKey:        coinMarketCapAPIKey,
 		httpClient:    &http.Client{Timeout: 300 * time.Second}, // 5 minutes for price lookups
-		networkMapper: NewNetworkMapper(coinMarketCapAPIKey),
-		verbose:       false,
-		cache:         nil, // Set via SetCache
+		networkMapper: networkMapper,
+		verbose:       verbose,
+		cache:         cache,
 	}
-}
-
-// SetCache sets the cache instance for the monetary value enricher
-func (m *MonetaryValueEnricher) SetCache(cache Cache) {
-	m.cache = cache
-}
-
-// SetVerbose enables or disables verbose logging
-func (m *MonetaryValueEnricher) SetVerbose(verbose bool) {
-	m.verbose = verbose
 }
 
 // Name returns the tool name
@@ -426,7 +417,7 @@ func (m *MonetaryValueEnricher) fetchNativeTokenPrice(ctx context.Context, symbo
 	// Check cache first if available
 	if m.cache != nil {
 		cacheKey := fmt.Sprintf("native-token-price:%s:USD", strings.ToUpper(symbol))
-		
+
 		var cachedPrice float64
 		if err := m.cache.GetJSON(ctx, cacheKey, &cachedPrice); err == nil {
 			if m.verbose {
