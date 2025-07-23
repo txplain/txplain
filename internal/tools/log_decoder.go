@@ -59,17 +59,35 @@ func (t *LogDecoder) Dependencies() []string {
 
 // Process processes logs and adds decoded events to baggage
 func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.verbose {
+		fmt.Println("\n" + strings.Repeat("📜", 60))
+		fmt.Println("🔍 LOG DECODER: Starting transaction log decoding")
+		fmt.Println(strings.Repeat("📜", 60))
+	}
+
 	// Extract raw log data from baggage
 	rawData, ok := baggage["raw_data"].(map[string]interface{})
 	if !ok {
+		if t.verbose {
+			fmt.Println("❌ Missing raw_data in baggage")
+			fmt.Println(strings.Repeat("📜", 60) + "\n")
+		}
 		return fmt.Errorf("missing raw_data in baggage")
 	}
 
 	logsData, ok := rawData["logs"].([]interface{})
 	if !ok || logsData == nil {
+		if t.verbose {
+			fmt.Println("⚠️  No logs found in transaction, adding empty events")
+			fmt.Println(strings.Repeat("📜", 60) + "\n")
+		}
 		// No logs, add empty events to baggage
 		baggage["events"] = []models.Event{}
 		return nil
+	}
+
+	if t.verbose {
+		fmt.Printf("📊 Found %d logs to decode\n", len(logsData))
 	}
 
 	networkID := int64(1) // Default to Ethereum
@@ -77,19 +95,64 @@ func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		networkID = int64(nid)
 	}
 
+	if t.verbose {
+		fmt.Printf("🌐 Network ID: %d\n", networkID)
+	}
+
 	// Set up RPC client and signature resolver if not already set
 	if t.rpcClient == nil {
+		if t.verbose {
+			fmt.Println("🔧 Setting up RPC client and signature resolver...")
+		}
 		var err error
 		t.rpcClient, err = rpc.NewClient(networkID)
 		if err != nil {
+			if t.verbose {
+				fmt.Printf("❌ Failed to create RPC client: %v\n", err)
+				fmt.Println(strings.Repeat("📜", 60) + "\n")
+			}
 			return fmt.Errorf("failed to create RPC client: %w", err)
 		}
 		t.signatureResolver = rpc.NewSignatureResolver(t.rpcClient, true)
+		if t.verbose {
+			fmt.Println("✅ RPC client and signature resolver ready")
+		}
+	}
+
+	if t.verbose {
+		fmt.Println("🔄 Decoding logs with RPC introspection...")
 	}
 
 	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID, baggage)
 	if err != nil {
+		if t.verbose {
+			fmt.Printf("❌ Failed to decode logs: %v\n", err)
+			fmt.Println(strings.Repeat("📜", 60) + "\n")
+		}
 		return fmt.Errorf("failed to decode logs: %w", err)
+	}
+
+	if t.verbose {
+		fmt.Printf("✅ Successfully decoded %d events\n", len(events))
+
+		// Show summary of decoded events
+		if len(events) > 0 {
+			fmt.Println("\n📋 DECODED EVENTS SUMMARY:")
+			for i, event := range events {
+				eventDisplay := fmt.Sprintf("   %d. %s", i+1, event.Name)
+				if event.Contract != "" {
+					eventDisplay += fmt.Sprintf(" (contract: %s)", event.Contract[:10]+"...")
+				}
+				if len(event.Parameters) > 0 {
+					eventDisplay += fmt.Sprintf(" [%d params]", len(event.Parameters))
+				}
+				fmt.Println(eventDisplay)
+			}
+		}
+
+		fmt.Println("\n" + strings.Repeat("📜", 60))
+		fmt.Println("✅ LOG DECODER: Completed successfully")
+		fmt.Println(strings.Repeat("📜", 60) + "\n")
 	}
 
 	// Add decoded events to baggage
@@ -277,19 +340,19 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 			if t.verbose || os.Getenv("DEBUG") == "true" {
 				fmt.Printf("Found %d resolved contracts in baggage\n", len(resolvedContracts))
 			}
-			
+
 			if contractInfo, exists := resolvedContracts[strings.ToLower(contractAddress)]; exists && contractInfo.IsVerified {
 				if t.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("Contract %s is verified with %d ABI methods\n", contractAddress, len(contractInfo.ParsedABI))
 				}
-				
+
 				// Look for matching event in parsed ABI
 				for i, method := range contractInfo.ParsedABI {
 					if method.Type == "event" && method.Hash == eventSig {
 						eventName = method.Name
 						signature = method.Signature
 						abiMethod = &contractInfo.ParsedABI[i]
-						
+
 						if t.verbose || os.Getenv("DEBUG") == "true" {
 							fmt.Printf("✅ Found matching ABI event: %s (%s)\n", method.Name, method.Signature)
 							fmt.Printf("Parameters from ABI: ")
@@ -301,25 +364,25 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 						break
 					}
 				}
-				
+
 				// If not found in proxy contract, check all resolved contracts (including implementation contracts)
 				if abiMethod == nil {
 					if t.verbose || os.Getenv("DEBUG") == "true" {
 						fmt.Printf("❌ Event not found in proxy contract, checking all resolved contracts...\n")
 					}
-					
+
 					for addr, info := range resolvedContracts {
 						if addr != strings.ToLower(contractAddress) && info.IsVerified {
 							if t.verbose || os.Getenv("DEBUG") == "true" {
 								fmt.Printf("Checking implementation contract %s with %d ABI methods\n", addr, len(info.ParsedABI))
 							}
-							
+
 							for i, method := range info.ParsedABI {
 								if method.Type == "event" && method.Hash == eventSig {
 									eventName = method.Name
 									signature = method.Signature
 									abiMethod = &info.ParsedABI[i]
-									
+
 									if t.verbose || os.Getenv("DEBUG") == "true" {
 										fmt.Printf("✅ Found matching ABI event in implementation: %s (%s)\n", method.Name, method.Signature)
 										fmt.Printf("Parameters from ABI: ")
@@ -337,7 +400,7 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 						}
 					}
 				}
-				
+
 				if abiMethod == nil && (t.verbose || os.Getenv("DEBUG") == "true") {
 					fmt.Printf("❌ No matching event found in any ABI. Available events:\n")
 					for _, method := range contractInfo.ParsedABI {
@@ -454,7 +517,7 @@ func (t *LogDecoder) parseEventBySignature(eventName string, topics []string, da
 			return
 		}
 	}
-	
+
 	// Fall back to generic parsing if signature parsing fails
 	t.parseGenericEvent(topics, data, parameters)
 }
@@ -464,16 +527,16 @@ func (t *LogDecoder) extractParameterTypesFromSignature(signature string) []stri
 	// Extract parameter types from signature like "UserRoleUpdated(address,uint8,bool)"
 	start := strings.Index(signature, "(")
 	end := strings.LastIndex(signature, ")")
-	
+
 	if start == -1 || end == -1 || end <= start {
 		return nil
 	}
-	
+
 	paramSection := signature[start+1 : end]
 	if paramSection == "" {
 		return []string{} // No parameters
 	}
-	
+
 	// Split by comma and clean up
 	types := strings.Split(paramSection, ",")
 	var cleanTypes []string
@@ -483,7 +546,7 @@ func (t *LogDecoder) extractParameterTypesFromSignature(signature string) []stri
 			cleanTypes = append(cleanTypes, cleanType)
 		}
 	}
-	
+
 	return cleanTypes
 }
 
@@ -492,20 +555,20 @@ func (t *LogDecoder) parseEventWithSignatureTypes(eventName string, topics []str
 	// topics[0] is the event signature hash
 	// topics[1...] are indexed parameters
 	// data contains non-indexed parameters
-	
+
 	topicIndex := 1 // Start from topics[1] (skip event signature)
 	dataOffset := 0 // Offset into the data hex string (after 0x)
-	
+
 	// Clean and prepare data for parsing
 	cleanData := strings.TrimPrefix(data, "0x")
-	
+
 	for i, paramType := range paramTypes {
 		// Use simple positional naming since we don't have ABI parameter names
 		paramName := fmt.Sprintf("param_%d", i+1)
-		
+
 		var paramValue interface{}
 		var paramSuffix string
-		
+
 		if topicIndex < len(topics) {
 			// Try parsing from topics first (indexed parameters)
 			paramValue = topics[topicIndex]
@@ -521,17 +584,17 @@ func (t *LogDecoder) parseEventWithSignatureTypes(eventName string, topics []str
 			// No more data available
 			break
 		}
-		
+
 		// Store the parameter with positional name
 		parameters[paramName] = paramValue
 		parameters[paramName+"_type"] = strings.TrimSpace(paramType) + paramSuffix
-		
+
 		// Add decoded formats for additional context
 		if hexValue, ok := paramValue.(string); ok {
 			t.addDecodedFormats(parameters, paramName, hexValue)
 		}
 	}
-	
+
 	// If we have leftover topics or data, add them with generic names
 	for topicIndex < len(topics) {
 		paramName := fmt.Sprintf("_extra_topic_%d", topicIndex)
@@ -606,11 +669,11 @@ func (t *LogDecoder) parseEventWithABI(topics []string, data string, abiMethod *
 		if paramName == "" {
 			paramName = fmt.Sprintf("param_%d", i+1)
 		}
-		
+
 		if t.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("Processing ABI parameter %d: name='%s', type='%s', indexed=%t\n", i, paramName, input.Type, input.Indexed)
 		}
-		
+
 		if input.Indexed {
 			// Parse indexed parameter from topics
 			if topicIndex < len(topics) {

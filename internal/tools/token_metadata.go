@@ -12,6 +12,7 @@ import (
 // TokenMetadataEnricher enriches ERC20 token addresses with metadata
 type TokenMetadataEnricher struct {
 	rpcClient *rpc.Client
+	verbose   bool
 }
 
 // TokenMetadata represents metadata for a token
@@ -27,12 +28,18 @@ type TokenMetadata struct {
 func NewTokenMetadataEnricher() *TokenMetadataEnricher {
 	return &TokenMetadataEnricher{
 		rpcClient: nil, // Set by SetRPCClient when needed
+		verbose:   false,
 	}
 }
 
 // SetRPCClient sets the RPC client for network-specific operations
 func (t *TokenMetadataEnricher) SetRPCClient(client *rpc.Client) {
 	t.rpcClient = client
+}
+
+// SetVerbose enables or disables verbose logging
+func (t *TokenMetadataEnricher) SetVerbose(verbose bool) {
+	t.verbose = verbose
 }
 
 // Name returns the processor name
@@ -52,10 +59,24 @@ func (t *TokenMetadataEnricher) Dependencies() []string {
 
 // Process enriches the baggage with token metadata by calling individual contract methods
 func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.verbose {
+		fmt.Println("\n" + strings.Repeat("🪙", 60))
+		fmt.Println("🔍 TOKEN METADATA ENRICHER: Starting token metadata enrichment")
+		fmt.Println(strings.Repeat("🪙", 60))
+	}
+
 	// Get contract addresses discovered by ABI resolver
 	contractAddresses, ok := baggage["contract_addresses"].([]string)
 	if !ok || len(contractAddresses) == 0 {
+		if t.verbose {
+			fmt.Println("⚠️  No contract addresses found, skipping token metadata enrichment")
+			fmt.Println(strings.Repeat("🪙", 60) + "\n")
+		}
 		return nil // No contracts to check
+	}
+
+	if t.verbose {
+		fmt.Printf("📊 Found %d contracts to analyze for token metadata\n", len(contractAddresses))
 	}
 
 	// Get resolved contracts data from ABI resolver for additional context
@@ -64,10 +85,18 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 	// Create comprehensive contract information map
 	contractMetadata := make(map[string]*TokenMetadata)
 	allContractInfo := make(map[string]map[string]interface{})
-	var debugInfo []string
+	tokenCount := 0
+
+	if t.verbose {
+		fmt.Println("🔄 Analyzing contracts for token properties...")
+	}
 
 	// Test each contract address individually
-	for _, address := range contractAddresses {
+	for i, address := range contractAddresses {
+		if t.verbose {
+			fmt.Printf("   [%d/%d] Analyzing %s...", i+1, len(contractAddresses), address)
+		}
+
 		contractInfo := make(map[string]interface{})
 		hasAnyTokenLikeData := false
 
@@ -81,7 +110,6 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		if abiContract != nil && abiContract.IsVerified {
 			if abiContract.ContractName != "" {
 				contractInfo["verified_name"] = abiContract.ContractName
-				debugInfo = append(debugInfo, fmt.Sprintf("%s: verified_name=%s", address, abiContract.ContractName))
 			}
 			if abiContract.CompilerVersion != "" {
 				contractInfo["compiler_version"] = abiContract.CompilerVersion
@@ -99,25 +127,24 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		// Get RPC contract information (method calls, etc.)
 		rpcInfo, err := t.getRPCContractInfo(ctx, address)
 		if err != nil {
-			debugInfo = append(debugInfo, fmt.Sprintf("%s: RPC_ERROR=%v", address, err))
+			if t.verbose {
+				fmt.Printf(" ❌ RPC call failed: %v\n", err)
+			}
 		} else {
 			// Extract RPC information
 			if rpcInfo.Name != "" {
 				contractInfo["rpc_name"] = rpcInfo.Name
 				hasAnyTokenLikeData = true
-				debugInfo = append(debugInfo, fmt.Sprintf("%s: rpc_name=%s", address, rpcInfo.Name))
 			}
 
 			if rpcInfo.Symbol != "" {
 				contractInfo["rpc_symbol"] = rpcInfo.Symbol
 				hasAnyTokenLikeData = true
-				debugInfo = append(debugInfo, fmt.Sprintf("%s: rpc_symbol=%s", address, rpcInfo.Symbol))
 			}
 
 			if rpcInfo.Decimals >= 0 {
 				contractInfo["rpc_decimals"] = rpcInfo.Decimals
 				hasAnyTokenLikeData = true
-				debugInfo = append(debugInfo, fmt.Sprintf("%s: rpc_decimals=%d", address, rpcInfo.Decimals))
 			}
 
 			if rpcInfo.TotalSupply != "" && rpcInfo.TotalSupply != "0" {
@@ -128,18 +155,28 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 			// Add supported interfaces from RPC metadata
 			if supportedInterfaces, ok := rpcInfo.Metadata["supported_interfaces"].([]string); ok && len(supportedInterfaces) > 0 {
 				contractInfo["supported_interfaces"] = supportedInterfaces
-				debugInfo = append(debugInfo, fmt.Sprintf("%s: supported_interfaces=%v", address, supportedInterfaces))
 			}
 
 			// Add available methods from RPC metadata
 			if availableMethods, ok := rpcInfo.Metadata["available_methods"].([]string); ok && len(availableMethods) > 0 {
 				contractInfo["available_methods"] = availableMethods
-				debugInfo = append(debugInfo, fmt.Sprintf("%s: available_methods=%v", address, availableMethods))
 			}
 
 			// Add RPC debug info
 			if rpcDebug, ok := rpcInfo.Metadata["rpc_debug"].(string); ok {
 				contractInfo["rpc_debug"] = rpcDebug
+			}
+
+			if t.verbose {
+				if hasAnyTokenLikeData {
+					fmt.Printf(" ✅ Token detected")
+					if rpcInfo.Symbol != "" {
+						fmt.Printf(" (%s)", rpcInfo.Symbol)
+					}
+					fmt.Println()
+				} else {
+					fmt.Printf(" ⚪ Not a token contract\n")
+				}
 			}
 		}
 
@@ -186,7 +223,13 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 				Decimals: bestDecimals,
 			}
 			contractMetadata[address] = metadata
+			tokenCount++
 		}
+	}
+
+	if t.verbose {
+		fmt.Printf("✅ Token metadata enrichment complete. Found %d token contracts.\n", tokenCount)
+		fmt.Println(strings.Repeat("🪙", 60) + "\n")
 	}
 
 	// Add to baggage
@@ -199,17 +242,6 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		// Add all contract information to baggage for debug purposes only
 		if len(allContractInfo) > 0 {
 			baggage["all_contract_info"] = allContractInfo
-		}
-
-		// Add debug information only in DEBUG mode
-		if len(debugInfo) > 0 {
-			if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
-				existingDebug["token_metadata_enricher"] = debugInfo
-			} else {
-				baggage["debug_info"] = map[string]interface{}{
-					"token_metadata_enricher": debugInfo,
-				}
-			}
 		}
 	}
 
@@ -318,7 +350,7 @@ func (t *TokenMetadataEnricher) getRPCContractInfo(ctx context.Context, address 
 // GetRagContext provides RAG context for token metadata information
 func (t *TokenMetadataEnricher) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
 	ragContext := NewRagContext()
-	
+
 	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
 	if !ok || len(tokenMetadata) == 0 {
 		return ragContext

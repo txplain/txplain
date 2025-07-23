@@ -18,6 +18,7 @@ type ERC20PriceLookup struct {
 	apiKey        string
 	httpClient    *http.Client
 	networkMapper *NetworkMapper
+	verbose       bool
 }
 
 // DEXPriceData represents DEX-specific pricing information
@@ -176,10 +177,16 @@ func NewERC20PriceLookup(apiKey string) *ERC20PriceLookup {
 	return &ERC20PriceLookup{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 300 * time.Second, // 5 minutes for price API calls
 		},
 		networkMapper: NewNetworkMapper(apiKey),
+		verbose:       false,
 	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (t *ERC20PriceLookup) SetVerbose(verbose bool) {
+	t.verbose = verbose
 }
 
 // Name returns the tool name
@@ -199,7 +206,18 @@ func (t *ERC20PriceLookup) Dependencies() []string {
 
 // Process adds token price information to baggage
 func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.verbose {
+		fmt.Println("\n" + strings.Repeat("💰", 60))
+		fmt.Println("🔍 ERC20 PRICE LOOKUP: Starting token price fetching")
+		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", t.apiKey != "")
+		fmt.Println(strings.Repeat("💰", 60))
+	}
+
 	if t.apiKey == "" {
+		if t.verbose {
+			fmt.Println("⚠️  No CoinMarketCap API key provided, skipping price lookup")
+			fmt.Println(strings.Repeat("💰", 60) + "\n")
+		}
 		return nil // No API key, skip price lookup
 	}
 
@@ -213,19 +231,85 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 
 	// Skip if no network ID provided
 	if networkID == 0 {
+		if t.verbose {
+			fmt.Println("⚠️  No network ID provided, skipping price lookup")
+			fmt.Println(strings.Repeat("💰", 60) + "\n")
+		}
 		return nil
+	}
+
+	if t.verbose {
+		fmt.Printf("🌐 Network ID: %d\n", networkID)
 	}
 
 	// Get token metadata from baggage
 	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
 	if !ok || len(tokenMetadata) == 0 {
+		if t.verbose {
+			fmt.Println("⚠️  No token metadata found, skipping price lookup")
+			fmt.Println(strings.Repeat("💰", 60) + "\n")
+		}
 		return nil // No token metadata, nothing to price
+	}
+
+	if t.verbose {
+		fmt.Printf("📊 Found %d tokens to price\n", len(tokenMetadata))
+
+		// Show tokens to be priced
+		erc20Count := 0
+		for _, metadata := range tokenMetadata {
+			if metadata.Type == "ERC20" || (metadata.Type == "Contract" && metadata.Decimals > 0) {
+				erc20Count++
+			}
+		}
+		fmt.Printf("💹 %d tokens eligible for pricing\n", erc20Count)
+		fmt.Println("🔄 Looking up token prices...")
 	}
 
 	// Look up prices for each token
 	tokenPrices := make(map[string]*TokenPrice)
+	successCount := 0
+
+	// First, check if we need to fetch native token price for gas fees
+	needsNativeTokenPrice := t.checkForNativeTokenNeeds(baggage, networkID)
+	if needsNativeTokenPrice {
+		nativeSymbol := t.networkMapper.GetNativeTokenSymbol(networkID)
+		if nativeSymbol != "" {
+			if t.verbose {
+				fmt.Printf("   Native %s (gas fees)...", nativeSymbol)
+			}
+
+			// Look up native token price by symbol
+			priceInput := map[string]interface{}{
+				"symbol":     nativeSymbol,
+				"network_id": networkID,
+			}
+
+			if price, err := t.lookupTokenPrice(ctx, priceInput); err == nil && price != nil {
+				// Store native token price using "native" as key for easy lookup
+				tokenPrices["native"] = &TokenPrice{
+					Symbol:      nativeSymbol,
+					Price:       price.Price,
+					PriceSource: price.PriceSource,
+				}
+				successCount++
+
+				if t.verbose {
+					fmt.Printf(" ✅ $%.6f\n", price.Price)
+				}
+			} else if t.verbose {
+				fmt.Printf(" ❌ Failed: %v\n", err)
+			}
+		}
+	}
+
+	// Then process regular ERC20 tokens
 	for address, metadata := range tokenMetadata {
 		if metadata.Type == "ERC20" {
+			if t.verbose {
+				fmt.Printf("   ERC20 %s (%s)...", metadata.Symbol, address[:10]+"...")
+			}
+
 			priceInput := map[string]interface{}{
 				"contract_address": address,
 				"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
@@ -239,9 +323,22 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 				if tokenData, ok := result["token"].(*TokenPrice); ok {
 					tokenData.Contract = address // Ensure contract address is set
 					tokenPrices[address] = tokenData
+					successCount++
+
+					if t.verbose {
+						fmt.Printf(" ✅ $%.6f\n", tokenData.Price)
+					}
+				} else if t.verbose {
+					fmt.Printf(" ❌ Invalid response format\n")
 				}
+			} else if t.verbose {
+				fmt.Printf(" ❌ %v\n", err)
 			}
 		} else if metadata.Type == "Contract" && metadata.Decimals > 0 {
+			if t.verbose {
+				fmt.Printf("   Contract %s (has decimals)...", address[:10]+"...")
+			}
+
 			// Try DEX pricing for contracts that might be tokens (have decimals but no name/symbol)
 			priceInput := map[string]interface{}{
 				"contract_address": address,
@@ -253,17 +350,160 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 				if tokenData, ok := result["token"].(*TokenPrice); ok {
 					tokenData.Contract = address // Ensure contract address is set
 					tokenPrices[address] = tokenData
+					successCount++
+
+					if t.verbose {
+						fmt.Printf(" ✅ $%.6f (DEX)\n", tokenData.Price)
+					}
+				} else if t.verbose {
+					fmt.Printf(" ❌ Invalid response format\n")
 				}
+			} else if t.verbose {
+				fmt.Printf(" ❌ %v\n", err)
 			}
 		}
+	}
+
+	if t.verbose {
+		fmt.Printf("✅ Successfully fetched prices for %d/%d eligible tokens\n", successCount, len(tokenMetadata))
 	}
 
 	// Calculate USD values for transfers if available
 	t.calculateTransferValues(baggage, tokenPrices, tokenMetadata)
 
+	if t.verbose {
+		fmt.Println("\n" + strings.Repeat("💰", 60))
+		fmt.Println("✅ ERC20 PRICE LOOKUP: Completed successfully")
+		fmt.Println(strings.Repeat("💰", 60) + "\n")
+	}
+
 	// Add token prices to baggage
 	baggage["token_prices"] = tokenPrices
 	return nil
+}
+
+// checkForNativeTokenNeeds determines if native token price needs to be fetched for gas fees
+func (t *ERC20PriceLookup) checkForNativeTokenNeeds(baggage map[string]interface{}, networkID int64) bool {
+	// Check if AmountsFinder detected any native token amounts (like gas fees)
+	detectedAmounts, ok := baggage["detected_amounts"].([]DetectedAmount)
+	if !ok {
+		return false
+	}
+
+	// Look for any detected amounts with token_contract="native"
+	for _, amount := range detectedAmounts {
+		if amount.TokenContract == "native" {
+			return true // Found native token usage, need to fetch price
+		}
+	}
+
+	return false
+}
+
+// lookupTokenPrice is a helper to fetch a single token price using the Run method
+func (t *ERC20PriceLookup) lookupTokenPrice(ctx context.Context, input map[string]interface{}) (*TokenPrice, error) {
+	// Extract search parameters from input
+	symbol, _ := input["symbol"].(string)
+	name, _ := input["name"].(string)
+	contractAddress, _ := input["contract_address"].(string)
+	convert, _ := input["convert"].(string) // Currency to convert to (default: USD)
+	networkIDFloat, _ := input["network_id"].(float64)
+	networkID := int64(networkIDFloat)
+	if networkID == 0 {
+		return nil, NewToolError("erc20_price_lookup", "network_id is required", "MISSING_NETWORK")
+	}
+
+	if convert == "" {
+		convert = "USD"
+	}
+
+	// Need at least one search parameter
+	if symbol == "" && name == "" && contractAddress == "" {
+		return nil, NewToolError("erc20_price_lookup", "must provide symbol, name, or contract_address", "MISSING_PARAMS")
+	}
+
+	var tokenPrice *TokenPrice
+
+	// Step 1: Try to get CEX price data (traditional CoinMarketCap API)
+	cexPrice, cexErr := t.getCEXPrice(ctx, symbol, name, contractAddress, convert)
+
+	// Step 2: Try to get DEX price data (new DEX API)
+	var dexData []DEXPriceData
+	var dexErr error
+	if contractAddress != "" && networkID != 0 {
+		dexData, dexErr = t.getDEXPrice(ctx, contractAddress, networkID)
+		// DEX API failure is not critical - we can still use CEX data
+		if dexErr != nil && cexErr == nil {
+			// If CEX succeeded but DEX failed, continue with CEX data only
+			dexErr = nil // Clear DEX error to avoid double failure
+		}
+	}
+
+	// Step 3: Combine the data intelligently
+	if cexErr != nil && dexErr != nil {
+		// Both failed
+		return nil, NewToolError("erc20_price_lookup", fmt.Sprintf("failed to get price from both CEX (%v) and DEX (%v)", cexErr, dexErr), "PRICE_FETCH_ERROR")
+	}
+
+	if cexErr == nil {
+		// CEX data available
+		tokenPrice = cexPrice
+		tokenPrice.PriceSource = "CEX"
+	} else {
+		// Only DEX data available, create TokenPrice from DEX data
+		tokenPrice = &TokenPrice{
+			Symbol:      symbol,
+			Contract:    contractAddress,
+			PriceSource: "DEX",
+			HasDEXData:  len(dexData) > 0,
+		}
+		if len(dexData) > 0 {
+			// Use the best DEX price (highest liquidity)
+			tokenPrice.DEXPrice = dexData[0].Price
+			tokenPrice.Price = tokenPrice.DEXPrice
+		}
+	}
+
+	// Step 4: Enhance with DEX data if available
+	if dexErr == nil && len(dexData) > 0 {
+		tokenPrice.DEXData = dexData
+		tokenPrice.HasDEXData = true
+
+		// Calculate DEX metrics
+		var totalLiquidity, totalVolume float64
+		var liquidityWeightedPrice float64
+
+		for _, dex := range dexData {
+			totalLiquidity += dex.LiquidityUSD
+			totalVolume += dex.VolumeUSD24h
+
+			// Weighted average price by liquidity
+			if dex.LiquidityUSD > 0 {
+				liquidityWeightedPrice += dex.Price * dex.LiquidityUSD
+			}
+		}
+
+		tokenPrice.DEXLiquidity = totalLiquidity
+		tokenPrice.DEXVolume24h = totalVolume
+
+		if totalLiquidity > 0 {
+			tokenPrice.DEXPrice = liquidityWeightedPrice / totalLiquidity
+		}
+
+		// If we have both CEX and DEX data, mark as combined
+		if cexErr == nil {
+			tokenPrice.PriceSource = "COMBINED"
+
+			// Use DEX price if CEX price is stale or DEX has significant liquidity
+			if totalLiquidity > 100000 { // $100k+ liquidity threshold
+				// Blend prices: favor CEX for major tokens, DEX for newer tokens
+				blendRatio := 0.3 // 30% DEX, 70% CEX for established tokens
+				tokenPrice.Price = (tokenPrice.Price * (1 - blendRatio)) + (tokenPrice.DEXPrice * blendRatio)
+			}
+		}
+	}
+
+	return tokenPrice, nil
 }
 
 // calculateTransferValues calculates USD values for ERC20 transfers

@@ -137,7 +137,7 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 	if t.verbose {
 		fmt.Printf("✅ Filtered to %d tags above %.1f%% confidence\n",
 			len(highConfidenceTags), t.confidenceThreshold*100)
-		
+
 		// Show summary of detected tags
 		if len(highConfidenceTags) > 0 {
 			fmt.Println("\n📋 DETECTED TAGS SUMMARY:")
@@ -146,7 +146,7 @@ func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{
 					i+1, tag.Tag, tag.Category, tag.Confidence*100)
 			}
 		}
-		
+
 		fmt.Println("\n" + strings.Repeat("🏷️", 60))
 		fmt.Println("✅ TAG RESOLVER: Completed successfully")
 		fmt.Println(strings.Repeat("🏷️", 60) + "\n")
@@ -504,7 +504,7 @@ func (t *TagResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 // GetRagContext provides RAG context for tag information
 func (t *TagResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
 	ragContext := NewRagContext()
-	
+
 	tags, ok := baggage["tags_detailed"].([]ProbabilisticTag)
 	if !ok || len(tags) == 0 {
 		return ragContext

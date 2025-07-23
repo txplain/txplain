@@ -125,7 +125,7 @@ func (s *Server) handleExplainMethod(w http.ResponseWriter, request *MCPRequest)
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	// Process the transaction
@@ -265,9 +265,9 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:         s.address,
 		Handler:      s.router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  300 * time.Second, // 5 minutes for complex requests
+		WriteTimeout: 300 * time.Second, // 5 minutes for AI processing
+		IdleTimeout:  300 * time.Second, // 5 minutes idle timeout
 	}
 
 	log.Printf("Starting Txplain MCP server on %s", s.address)

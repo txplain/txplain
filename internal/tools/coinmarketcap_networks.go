@@ -43,12 +43,14 @@ type CoinMarketCapNetworkResponse struct {
 
 // NetworkMapper handles CoinMarketCap network mappings
 type NetworkMapper struct {
-	apiKey        string
-	httpClient    *http.Client
-	networksCache map[int64]string // networkID -> CoinMarketCap slug
-	cacheFile     string
-	lastFetchTime time.Time
-	cacheDuration time.Duration
+	apiKey               string
+	httpClient           *http.Client
+	networksCache        map[int64]string                // networkID -> CoinMarketCap slug
+	nativeTokenCache     map[int64]string                // networkID -> native token symbol
+	networkPlatformCache map[string]CoinMarketCapNetwork // slug -> network data
+	cacheFile            string
+	lastFetchTime        time.Time
+	cacheDuration        time.Duration
 }
 
 // NewNetworkMapper creates a new network mapper utility
@@ -56,11 +58,13 @@ func NewNetworkMapper(apiKey string) *NetworkMapper {
 	return &NetworkMapper{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 300 * time.Second, // 5 minutes for CoinMarketCap API calls
 		},
-		networksCache: make(map[int64]string),
-		cacheFile:     "./data/coinmarketcap_networks.json",
-		cacheDuration: 24 * time.Hour, // Cache for 24 hours
+		networksCache:        make(map[int64]string),
+		nativeTokenCache:     make(map[int64]string),
+		networkPlatformCache: make(map[string]CoinMarketCapNetwork),
+		cacheFile:            "./data/coinmarketcap_networks.json",
+		cacheDuration:        24 * time.Hour, // Cache for 24 hours
 	}
 }
 
@@ -139,23 +143,15 @@ func (nm *NetworkMapper) loadFromCache() error {
 			}
 		}
 	} else {
-		// Try old format as fallback
+		// Try old format as fallback - but don't process it since we removed hardcoded mappings
+		// Just log that we found old format data
 		var response CoinMarketCapNetworkResponse
 		if err := json.Unmarshal(data, &response); err != nil {
-			return fmt.Errorf("failed to parse cache file in old format: %w", err)
+			return fmt.Errorf("failed to parse cache file in any known format: %w", err)
 		}
 
-		// Populate cache from old format
-		nm.networksCache = make(map[int64]string)
-		for _, network := range response.Data {
-			if network.IsActive == 1 {
-				// Map common network IDs to CoinMarketCap slugs
-				networkID := nm.mapNetworkSymbolToID(network.Symbol)
-				if networkID > 0 {
-					nm.networksCache[networkID] = network.Slug
-				}
-			}
-		}
+		// Old format detected but we can't process it without hardcoded mappings
+		return fmt.Errorf("old cache format detected but not supported - please refresh cache")
 	}
 
 	// Get file modification time as last fetch time
@@ -168,75 +164,17 @@ func (nm *NetworkMapper) loadFromCache() error {
 
 // fetchFromAPI fetches fresh network mappings from CoinMarketCap API
 func (nm *NetworkMapper) fetchFromAPI() error {
-	fmt.Printf("Fetching CoinMarketCap network mappings from API...\n")
+	fmt.Printf("Loading CoinMarketCap network mappings from cache/fallback...\n")
 
-	// Use the correct networks endpoint from CoinMarketCap API documentation
-	// Reference: https://coinmarketcap.com/api/documentation/v1/#operation/getNetworks
-	networkURL := "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?listing_status=active&limit=5000"
-
-	req, err := http.NewRequest("GET", networkURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	// For now, load from our cached data file since we have the network mappings there
+	// This avoids hardcoding while using the existing cached mappings
+	if err := nm.loadFromCache(); err == nil {
+		fmt.Printf("✅ Successfully loaded %d network mappings from cache\n", len(nm.networksCache))
+		return nil
 	}
 
-	req.Header.Set("X-CMC_PRO_API_KEY", nm.apiKey)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := nm.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	// For now, let's create a static mapping since we know the DEX API needs specific slugs
-	// This will be updated once we find the correct endpoint
-	nm.networksCache = map[int64]string{
-		1:     "ethereum",            // Ethereum mainnet
-		56:    "binance-smart-chain", // BSC mainnet
-		137:   "polygon",             // Polygon mainnet
-		43114: "avalanche",           // Avalanche C-Chain
-		250:   "fantom",              // Fantom mainnet
-		25:    "cronos",              // Cronos mainnet
-		42220: "celo",                // Celo mainnet
-		1285:  "moonriver",           // Moonriver
-	}
-
-	// Save a simple cache file for now
-	cacheData := map[string]interface{}{
-		"networks":  make(map[string]string), // Use string keys for JSON compatibility
-		"timestamp": time.Now().Format(time.RFC3339),
-	}
-
-	// Convert int64 keys to strings for JSON serialization
-	networks := cacheData["networks"].(map[string]string)
-	for networkID, slug := range nm.networksCache {
-		networks[fmt.Sprintf("%d", networkID)] = slug
-	}
-
-	jsonData, _ := json.MarshalIndent(cacheData, "", "  ")
-	if err := nm.saveToCache(jsonData); err != nil {
-		fmt.Printf("Warning: failed to save network cache: %v\n", err)
-	}
-
-	nm.lastFetchTime = time.Now()
-	fmt.Printf("✅ Successfully cached %d network mappings (static mapping)\n", len(nm.networksCache))
-
-	// Print the mappings for verification
-	for networkID, slug := range nm.networksCache {
-		fmt.Printf("  Mapped network %d -> %s\n", networkID, slug)
-	}
-
-	return nil
+	// Fallback: if no API endpoint is available yet, return error
+	return fmt.Errorf("network mapping data not available - please ensure coinmarketcap_networks.json cache file exists")
 }
 
 // saveToCache saves the raw API response to cache file
@@ -254,37 +192,139 @@ func (nm *NetworkMapper) saveToCache(data []byte) error {
 	return nil
 }
 
-// mapNetworkSymbolToID maps blockchain symbols to standard network IDs
-func (nm *NetworkMapper) mapNetworkSymbolToID(symbol string) int64 {
-	// Map common blockchain symbols to network IDs
-	switch symbol {
-	case "ETH":
-		return 1 // Ethereum mainnet
-	case "BNB":
-		return 56 // BSC mainnet
-	case "MATIC":
-		return 137 // Polygon mainnet
-	case "AVAX":
-		return 43114 // Avalanche C-Chain
-	case "FTM":
-		return 250 // Fantom mainnet
-	case "ONE":
-		return 1666600000 // Harmony mainnet
-	case "CELO":
-		return 42220 // Celo mainnet
-	case "MOVR":
-		return 1285 // Moonriver
-	case "CRO":
-		return 25 // Cronos mainnet
-	default:
-		return 0 // Unknown/unsupported
-	}
-}
-
 // GetAllNetworks returns all cached network mappings for debugging
 func (nm *NetworkMapper) GetAllNetworks() (map[int64]string, error) {
 	if err := nm.ensureNetworksLoaded(); err != nil {
 		return nil, err
 	}
 	return nm.networksCache, nil
+}
+
+// GetNativeTokenSymbol returns the native token symbol for a given network ID
+func (nm *NetworkMapper) GetNativeTokenSymbol(networkID int64) string {
+	// Check cache first
+	if symbol, exists := nm.nativeTokenCache[networkID]; exists {
+		return symbol
+	}
+
+	// Get network slug
+	slug, err := nm.GetNetworkSlug(networkID)
+	if err != nil {
+		return "" // Network not found
+	}
+
+	// Try to get platform data for this network
+	if err := nm.ensurePlatformDataLoaded(); err != nil {
+		return "" // Failed to load platform data
+	}
+
+	// Look up platform data
+	if platformData, exists := nm.networkPlatformCache[slug]; exists {
+		if platformData.Symbol != "" {
+			// Cache the result
+			nm.nativeTokenCache[networkID] = platformData.Symbol
+			return platformData.Symbol
+		}
+	}
+
+	return "" // No native token symbol found
+}
+
+// ensurePlatformDataLoaded loads platform/network data from CoinMarketCap API
+func (nm *NetworkMapper) ensurePlatformDataLoaded() error {
+	// Check if we already have platform data and it's not stale
+	if len(nm.networkPlatformCache) > 0 && !nm.lastFetchTime.IsZero() && time.Since(nm.lastFetchTime) < nm.cacheDuration {
+		return nil
+	}
+
+	if nm.apiKey == "" {
+		return fmt.Errorf("CoinMarketCap API key required for fetching platform data")
+	}
+
+	// Fetch platform data from CoinMarketCap API
+	return nm.fetchPlatformDataFromAPI()
+}
+
+// fetchPlatformDataFromAPI fetches platform/network data from CoinMarketCap
+func (nm *NetworkMapper) fetchPlatformDataFromAPI() error {
+	// Use the cryptocurrency map endpoint to get platform information
+	// This endpoint includes platform data which has native token information
+	mapURL := "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?listing_status=active&limit=5000"
+
+	req, err := http.NewRequest("GET", mapURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-CMC_PRO_API_KEY", nm.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := nm.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the response to extract platform data
+	var mapResponse struct {
+		Status struct {
+			ErrorCode    int    `json:"error_code"`
+			ErrorMessage string `json:"error_message"`
+		} `json:"status"`
+		Data []struct {
+			ID       int    `json:"id"`
+			Name     string `json:"name"`
+			Symbol   string `json:"symbol"`
+			Slug     string `json:"slug"`
+			Platform *struct {
+				ID           int    `json:"id"`
+				Name         string `json:"name"`
+				Symbol       string `json:"symbol"`
+				Slug         string `json:"slug"`
+				TokenAddress string `json:"token_address"`
+			} `json:"platform"`
+		} `json:"data"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if err := json.Unmarshal(body, &mapResponse); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if mapResponse.Status.ErrorCode != 0 {
+		return fmt.Errorf("API error: %s", mapResponse.Status.ErrorMessage)
+	}
+
+	// Build platform cache from native tokens (tokens with no platform = native blockchain tokens)
+	for _, crypto := range mapResponse.Data {
+		if crypto.Platform == nil {
+			// This is a native blockchain token
+			platformData := CoinMarketCapNetwork{
+				ID:     crypto.ID,
+				Name:   crypto.Name,
+				Symbol: crypto.Symbol,
+				Slug:   crypto.Slug,
+			}
+			nm.networkPlatformCache[crypto.Slug] = platformData
+		}
+	}
+
+	// Also try to map known network slugs to their native tokens
+	// This maps our network cache to the native tokens we found
+	for networkID, networkSlug := range nm.networksCache {
+		if platformData, exists := nm.networkPlatformCache[networkSlug]; exists {
+			nm.nativeTokenCache[networkID] = platformData.Symbol
+		}
+	}
+
+	return nil
 }

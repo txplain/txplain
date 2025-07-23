@@ -33,7 +33,7 @@ function App() {
 
     // Create AbortController for request timeout and cancellation
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 130000) // 130 seconds (slightly longer than server timeout)
+    const timeoutId = setTimeout(() => controller.abort(), 360000) // 6 minutes (1 minute buffer over server's 5-minute timeout)
 
     try {
       const response = await fetch('/api/v1/explain', {
@@ -59,7 +59,7 @@ function App() {
       
       if (err instanceof Error) {
         if (err.name === 'AbortError') {
-          setError('Request timed out. Complex transactions may take up to 2 minutes to analyze.')
+          setError('Request timed out. Complex transactions may take up to 6 minutes to analyze.')
         } else {
           setError(err.message)
         }

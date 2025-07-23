@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,9 +18,11 @@ import (
 
 // MonetaryValueEnricher identifies and enriches all monetary values with USD equivalents
 type MonetaryValueEnricher struct {
-	llm        llms.Model
-	apiKey     string
-	httpClient *http.Client
+	llm           llms.Model
+	apiKey        string
+	httpClient    *http.Client
+	networkMapper *NetworkMapper
+	verbose       bool
 }
 
 // EnrichedAmount represents a detected amount with USD value calculations
@@ -39,10 +40,17 @@ type EnrichedAmount struct {
 // NewMonetaryValueEnricher creates a new monetary value enricher
 func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string) *MonetaryValueEnricher {
 	return &MonetaryValueEnricher{
-		llm:        llm,
-		apiKey:     coinMarketCapAPIKey,
-		httpClient: &http.Client{Timeout: 60 * time.Second}, // Increased for price lookups
+		llm:           llm,
+		apiKey:        coinMarketCapAPIKey,
+		httpClient:    &http.Client{Timeout: 300 * time.Second}, // 5 minutes for price lookups
+		networkMapper: NewNetworkMapper(coinMarketCapAPIKey),
+		verbose:       false,
 	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (m *MonetaryValueEnricher) SetVerbose(verbose bool) {
+	m.verbose = verbose
 }
 
 // Name returns the tool name
@@ -62,16 +70,26 @@ func (m *MonetaryValueEnricher) Dependencies() []string {
 
 // Process enriches detected amounts with USD equivalents
 func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]interface{}) error {
-	fmt.Println("=== MONETARY VALUE ENRICHER: STARTING PROCESSING ===")
+	if m.verbose {
+		fmt.Println("\n" + strings.Repeat("💰", 60))
+		fmt.Println("🔍 MONETARY VALUE ENRICHER: Starting USD value enrichment")
+		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", m.apiKey != "")
+		fmt.Println(strings.Repeat("💰", 60))
+	}
 
 	// Get detected amounts from amounts_finder
 	detectedAmounts, ok := baggage["detected_amounts"].([]DetectedAmount)
 	if !ok || len(detectedAmounts) == 0 {
-		fmt.Println("MONETARY VALUE ENRICHER: No detected amounts found in baggage")
+		if m.verbose {
+			fmt.Println("⚠️  No detected amounts found in baggage, skipping enrichment")
+			fmt.Println(strings.Repeat("💰", 60) + "\n")
+		}
 		return nil // No amounts detected, nothing to enrich
 	}
 
-	fmt.Printf("MONETARY VALUE ENRICHER: Processing %d detected amounts\n", len(detectedAmounts))
+	if m.verbose {
+		fmt.Printf("📊 Processing %d detected amounts for USD conversion\n", len(detectedAmounts))
+	}
 
 	// Get token prices from erc20_price_lookup
 	tokenPrices, hasPrices := baggage["token_prices"].(map[string]*TokenPrice)
@@ -80,30 +98,62 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	tokenMetadata, hasMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
 
 	if !hasMetadata {
-		fmt.Println("MONETARY VALUE ENRICHER: No token metadata found, cannot convert amounts")
+		if m.verbose {
+			fmt.Println("❌ No token metadata found, cannot convert amounts")
+			fmt.Println(strings.Repeat("💰", 60) + "\n")
+		}
 		return nil // Can't convert amounts without metadata
 	}
 
-	fmt.Printf("MONETARY VALUE ENRICHER: Has prices: %v, Has metadata: %v\n", hasPrices, hasMetadata)
+	if m.verbose {
+		priceStatus := "❌ No price data"
+		if hasPrices {
+			priceStatus = fmt.Sprintf("✅ Price data for %d tokens", len(tokenPrices))
+		}
+		fmt.Printf("💱 %s\n", priceStatus)
+		fmt.Printf("🏷️  Token metadata for %d tokens\n", len(tokenMetadata))
+	}
 
 	// Get native token price for gas fee calculations
 	nativeTokenPrice := m.getNativeTokenPrice(ctx, baggage)
+	if m.verbose && nativeTokenPrice > 0 {
+		fmt.Printf("⛽ Native token price: $%.6f\n", nativeTokenPrice)
+	}
+
+	if m.verbose {
+		fmt.Println("🔄 Enriching amounts with USD values...")
+	}
 
 	// Enrich each detected amount with USD value
 	enrichedAmounts := make([]EnrichedAmount, 0, len(detectedAmounts))
+	successCount := 0
 
 	for i, amount := range detectedAmounts {
-		fmt.Printf("MONETARY VALUE ENRICHER: Processing amount %d: %s for token %s\n", i+1, amount.Amount, amount.TokenContract)
-		enriched := m.enrichDetectedAmount(amount, tokenPrices, tokenMetadata, hasPrices)
+		if m.verbose {
+			fmt.Printf("   [%d/%d] Processing %s %s...", i+1, len(detectedAmounts), amount.Amount, amount.TokenSymbol)
+		}
+
+		enriched := m.enrichDetectedAmount(amount, tokenPrices, tokenMetadata, hasPrices, baggage)
 		if enriched != nil {
 			enrichedAmounts = append(enrichedAmounts, *enriched)
-			fmt.Printf("MONETARY VALUE ENRICHER: Enriched amount %d: %s -> $%s\n", i+1, enriched.FormattedAmount, enriched.USDFormatted)
-		} else {
-			fmt.Printf("MONETARY VALUE ENRICHER: Failed to enrich amount %d\n", i+1)
+			successCount++
+
+			if m.verbose {
+				if enriched.HasPriceData {
+					fmt.Printf(" ✅ $%s\n", enriched.USDFormatted)
+				} else {
+					fmt.Printf(" ⚪ No price data\n")
+				}
+			}
+		} else if m.verbose {
+			fmt.Printf(" ❌ Failed to enrich\n")
 		}
 	}
 
-	fmt.Printf("MONETARY VALUE ENRICHER: Successfully enriched %d/%d amounts\n", len(enrichedAmounts), len(detectedAmounts))
+	if m.verbose {
+		fmt.Printf("✅ Successfully enriched %d/%d amounts\n", successCount, len(detectedAmounts))
+		fmt.Println(strings.Repeat("💰", 60) + "\n")
+	}
 
 	// Add enriched amounts to baggage
 	baggage["enriched_amounts"] = enrichedAmounts
@@ -113,22 +163,64 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 		return fmt.Errorf("failed to enrich raw data: %w", err)
 	}
 
-	fmt.Println("=== MONETARY VALUE ENRICHER: COMPLETED PROCESSING ===")
+	if m.verbose {
+		fmt.Println("=== MONETARY VALUE ENRICHER: COMPLETED PROCESSING ===")
+	}
 	return nil
 }
 
 // enrichDetectedAmount converts a detected amount to an enriched amount with USD values
-func (m *MonetaryValueEnricher) enrichDetectedAmount(detected DetectedAmount, tokenPrices map[string]*TokenPrice, tokenMetadata map[string]*TokenMetadata, hasPrices bool) *EnrichedAmount {
-	// Get token metadata for decimal conversion
-	metadata, exists := tokenMetadata[strings.ToLower(detected.TokenContract)]
-	if !exists {
-		return nil // Can't convert without decimals
-	}
+func (m *MonetaryValueEnricher) enrichDetectedAmount(detected DetectedAmount, tokenPrices map[string]*TokenPrice, tokenMetadata map[string]*TokenMetadata, hasPrices bool, baggage map[string]interface{}) *EnrichedAmount {
+	var formattedAmount float64
+	var decimals int
+	var tokenSymbol string
+	var contractAddress string
 
-	// Convert raw amount to formatted amount
-	formattedAmount := m.convertAmountToTokens(detected.Amount, metadata.Decimals)
-	if formattedAmount == 0 {
-		return nil // Skip zero amounts
+	// Handle native token gas fees
+	if detected.TokenContract == "native" {
+		// This is a native token (like ETH for gas fees)
+		// Get network ID from baggage to determine native token
+		rawData, ok := baggage["raw_data"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+
+		networkID, ok := rawData["network_id"].(float64)
+		if !ok {
+			return nil
+		}
+
+		// Get native token symbol using NetworkMapper
+		nativeSymbol := m.networkMapper.GetNativeTokenSymbol(int64(networkID))
+		if nativeSymbol == "" {
+			return nil // Can't process without symbol
+		}
+
+		tokenSymbol = nativeSymbol
+		contractAddress = "native"
+		decimals = 18 // Native tokens typically use 18 decimals
+
+		// Convert amount (assume it's in wei for native tokens)
+		formattedAmount = m.convertAmountToTokens(detected.Amount, decimals)
+		if formattedAmount == 0 {
+			return nil
+		}
+	} else {
+		// Regular ERC20 token - get metadata for decimal conversion
+		metadata, exists := tokenMetadata[strings.ToLower(detected.TokenContract)]
+		if !exists {
+			return nil // Can't convert without decimals
+		}
+
+		// Convert raw amount to formatted amount
+		formattedAmount = m.convertAmountToTokens(detected.Amount, metadata.Decimals)
+		if formattedAmount == 0 {
+			return nil // Skip zero amounts
+		}
+
+		decimals = metadata.Decimals
+		tokenSymbol = detected.TokenSymbol
+		contractAddress = detected.TokenContract
 	}
 
 	// Format the amount for display
@@ -138,18 +230,39 @@ func (m *MonetaryValueEnricher) enrichDetectedAmount(detected DetectedAmount, to
 	enriched := &EnrichedAmount{
 		DetectedAmount:  detected,
 		FormattedAmount: formattedStr,
-		TokenDecimals:   metadata.Decimals,
+		TokenDecimals:   decimals,
 		HasPriceData:    false,
 	}
 
 	// Add USD value if price data is available
 	if hasPrices {
-		if price, exists := tokenPrices[strings.ToLower(detected.TokenContract)]; exists && price.Price > 0 {
-			usdValue := formattedAmount * price.Price
+		var pricePerToken float64
+		var priceSource string
+
+		if detected.TokenContract == "native" {
+			// For native tokens, get price by symbol
+			for _, price := range tokenPrices {
+				// Check if this price matches our native token symbol
+				if strings.EqualFold(price.Symbol, tokenSymbol) {
+					pricePerToken = price.Price
+					priceSource = price.PriceSource
+					break
+				}
+			}
+		} else {
+			// For ERC20 tokens, get price by contract address
+			if price, exists := tokenPrices[strings.ToLower(contractAddress)]; exists && price.Price > 0 {
+				pricePerToken = price.Price
+				priceSource = price.PriceSource
+			}
+		}
+
+		if pricePerToken > 0 {
+			usdValue := formattedAmount * pricePerToken
 			enriched.USDValue = usdValue
 			enriched.USDFormatted = fmt.Sprintf("%.2f", usdValue)
-			enriched.PricePerToken = price.Price
-			enriched.PriceSource = price.PriceSource
+			enriched.PricePerToken = pricePerToken
+			enriched.PriceSource = priceSource
 			enriched.HasPriceData = true
 		}
 	}
@@ -188,7 +301,7 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 	}
 
 	// Map network ID to native token symbol
-	nativeTokenSymbol := m.getNativeTokenSymbol(int64(networkID))
+	nativeTokenSymbol := m.networkMapper.GetNativeTokenSymbol(int64(networkID))
 	if nativeTokenSymbol == "" || m.apiKey == "" {
 		// No native token symbol or API key - return 0
 		return 0
@@ -207,7 +320,7 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 // getNativeTokenSymbol returns the native token symbol for a given network
 // Uses network configuration and pattern detection instead of hardcoding chain IDs
 func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
-	return m.getNativeTokenSymbolFromNetwork(networkID)
+	return m.networkMapper.GetNativeTokenSymbol(networkID)
 }
 
 // fetchNativeTokenPrice fetches the current USD price from CoinMarketCap API
@@ -285,7 +398,7 @@ func (m *MonetaryValueEnricher) fetchNativeTokenPrice(ctx context.Context, symbo
 // Uses RPC-first approach, then API fallbacks, no hardcoded prices
 func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) float64 {
 	// Generic approach: try to fetch current price via API for any network
-	nativeSymbol := m.getNativeTokenSymbol(networkID)
+	nativeSymbol := m.networkMapper.GetNativeTokenSymbol(networkID)
 	if nativeSymbol != "" && m.apiKey != "" {
 		// Try to fetch actual current price from API
 		if price, err := m.fetchNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
@@ -303,7 +416,7 @@ func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) flo
 // This is a completely generic approach that works for any network
 func (m *MonetaryValueEnricher) getNativeTokenPriceFromAPI(networkID int64) float64 {
 	// Get native token symbol for this network
-	nativeSymbol := m.getNativeTokenSymbol(networkID)
+	nativeSymbol := m.networkMapper.GetNativeTokenSymbol(networkID)
 	if nativeSymbol == "" {
 		return 0
 	}
@@ -584,26 +697,6 @@ func (m *MonetaryValueEnricher) calculateGasFeeUSD(baggage map[string]interface{
 	}
 
 	return "0.001" // Show minimal fee for very small amounts
-}
-
-// getNativeTokenSymbolFromNetwork gets the native token symbol for a network
-// This is generic and works with any network without hardcoded assumptions
-func (m *MonetaryValueEnricher) getNativeTokenSymbolFromNetwork(networkID int64) string {
-	// Check for environment variable first: NATIVE_TOKEN_SYMBOL_CHAIN_<NETWORK_ID>
-	envVar := fmt.Sprintf("NATIVE_TOKEN_SYMBOL_CHAIN_%d", networkID)
-	if symbol := os.Getenv(envVar); symbol != "" {
-		return symbol
-	}
-
-	// Check if the network configuration includes native token info
-	// This could be enhanced to use RPC calls to get network-specific token info
-	// For example: eth_getBalance uses the native token, and we could query
-	// network metadata or well-known contract addresses
-
-	// For now, if no environment variable is set and no network-specific data exists,
-	// return empty string - the system will work without native token symbols
-	// This allows the system to be completely generic and work with any network
-	return ""
 }
 
 // GetRagContext provides RAG context for monetary value information (minimal for this tool)

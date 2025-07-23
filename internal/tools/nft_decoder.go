@@ -2,8 +2,7 @@ package tools
 
 import (
 	"context"
-	"fmt"
-	"os" // Added for os.Getenv
+	"fmt" // Added for os.Getenv
 	"strconv"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 // NFTDecoder extracts and enriches NFT transfers from events
 type NFTDecoder struct {
 	rpcClient *rpc.Client
+	verbose   bool
 }
 
 // NFTTransfer represents an NFT transfer with metadata
@@ -32,12 +32,19 @@ type NFTTransfer struct {
 
 // NewNFTDecoder creates a new NFT decoder
 func NewNFTDecoder() *NFTDecoder {
-	return &NFTDecoder{}
+	return &NFTDecoder{
+		verbose: false,
+	}
 }
 
 // SetRPCClient sets the RPC client for network-specific operations
 func (n *NFTDecoder) SetRPCClient(client *rpc.Client) {
 	n.rpcClient = client
+}
+
+// SetVerbose enables or disables verbose logging
+func (n *NFTDecoder) SetVerbose(verbose bool) {
+	n.verbose = verbose
 }
 
 // Name returns the processor name
@@ -57,26 +64,54 @@ func (n *NFTDecoder) Dependencies() []string {
 
 // Process extracts NFT transfers from events and adds them to baggage
 func (n *NFTDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if n.verbose {
+		fmt.Println("\n" + strings.Repeat("🖼️", 60))
+		fmt.Println("🔍 NFT DECODER: Starting NFT transfer extraction")
+		fmt.Printf("🔧 RPC client available: %t\n", n.rpcClient != nil)
+		fmt.Println(strings.Repeat("🖼️", 60))
+	}
+
 	// Get events from baggage
 	events, ok := baggage["events"].([]models.Event)
 	if !ok || len(events) == 0 {
+		if n.verbose {
+			fmt.Println("⚠️  No events found, skipping NFT extraction")
+			fmt.Println(strings.Repeat("🖼️", 60) + "\n")
+		}
 		return nil // No events to process
+	}
+
+	if n.verbose {
+		fmt.Printf("📊 Processing %d events for NFT transfers\n", len(events))
 	}
 
 	// Extract NFT transfers
 	nftTransfers := n.extractNFTTransfers(ctx, events)
 
 	if len(nftTransfers) == 0 {
+		if n.verbose {
+			fmt.Println("⚠️  No NFT transfers found in events")
+			fmt.Println(strings.Repeat("🖼️", 60) + "\n")
+		}
 		return nil // No NFT transfers found
 	}
 
-	// Create debug info
-	var debugInfo []string
-	debugInfo = append(debugInfo, fmt.Sprintf("Found %d NFT transfers", len(nftTransfers)))
+	if n.verbose {
+		fmt.Printf("🎨 Extracted %d NFT transfers\n", len(nftTransfers))
+	}
 
 	// Enrich with contract metadata if RPC client is available
 	if n.rpcClient != nil {
+		if n.verbose {
+			fmt.Println("🔄 Enriching NFT transfers with contract metadata...")
+		}
+
+		successCount := 0
 		for i, transfer := range nftTransfers {
+			if n.verbose {
+				fmt.Printf("   [%d/%d] Enriching %s (Token ID: %s)...", i+1, len(nftTransfers), transfer.Contract[:10]+"...", transfer.TokenID)
+			}
+
 			if contractInfo, err := n.rpcClient.GetContractInfo(ctx, transfer.Contract); err == nil {
 				nftTransfers[i].Name = contractInfo.Name
 				nftTransfers[i].Symbol = contractInfo.Symbol
@@ -90,23 +125,46 @@ func (n *NFTDecoder) Process(ctx context.Context, baggage map[string]interface{}
 					nftTransfers[i].CollectionName = "Unknown Collection"
 				}
 
-				debugInfo = append(debugInfo, fmt.Sprintf("Enriched %s: name=%s, symbol=%s",
-					transfer.Contract, contractInfo.Name, contractInfo.Symbol))
+				successCount++
+				if n.verbose {
+					collectionName := nftTransfers[i].CollectionName
+					if collectionName == "Unknown Collection" {
+						fmt.Printf(" ⚪ No metadata\n")
+					} else {
+						fmt.Printf(" ✅ %s\n", collectionName)
+					}
+				}
 			} else {
-				debugInfo = append(debugInfo, fmt.Sprintf("Failed to enrich %s: %v", transfer.Contract, err))
+				if n.verbose {
+					fmt.Printf(" ❌ Failed: %v\n", err)
+				}
 			}
 		}
+
+		if n.verbose {
+			fmt.Printf("✅ Successfully enriched %d/%d NFT transfers\n", successCount, len(nftTransfers))
+		}
+	} else if n.verbose {
+		fmt.Println("⚠️  No RPC client available, skipping metadata enrichment")
 	}
 
-	// Only store debug information in DEBUG mode to avoid overwhelming baggage
-	if os.Getenv("DEBUG") == "true" && len(debugInfo) > 0 {
-		if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
-			existingDebug["nft_decoder"] = debugInfo
-		} else {
-			baggage["debug_info"] = map[string]interface{}{
-				"nft_decoder": debugInfo,
+	if n.verbose {
+		// Show summary of NFT transfers
+		if len(nftTransfers) > 0 {
+			fmt.Println("\n📋 NFT TRANSFERS SUMMARY:")
+			for i, transfer := range nftTransfers {
+				transferDisplay := fmt.Sprintf("   %d. %s Token ID %s", i+1, transfer.Type, transfer.TokenID)
+				if transfer.CollectionName != "" && transfer.CollectionName != "Unknown Collection" {
+					transferDisplay += fmt.Sprintf(" (%s)", transfer.CollectionName)
+				}
+				transferDisplay += fmt.Sprintf(" - %s → %s", transfer.From[:10]+"...", transfer.To[:10]+"...")
+				fmt.Println(transferDisplay)
 			}
 		}
+
+		fmt.Println("\n" + strings.Repeat("🖼️", 60))
+		fmt.Println("✅ NFT DECODER: Completed successfully")
+		fmt.Println(strings.Repeat("🖼️", 60) + "\n")
 	}
 
 	// Add NFT transfers to baggage
@@ -603,7 +661,7 @@ func GetNFTTransfers(baggage map[string]interface{}) ([]NFTTransfer, bool) {
 // GetRagContext provides RAG context for NFT information
 func (n *NFTDecoder) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
 	ragContext := NewRagContext()
-	
+
 	nftTransfers, ok := baggage["nft_transfers"].([]NFTTransfer)
 	if !ok || len(nftTransfers) == 0 {
 		return ragContext
@@ -614,7 +672,7 @@ func (n *NFTDecoder) GetRagContext(ctx context.Context, baggage map[string]inter
 	for _, transfer := range nftTransfers {
 		if transfer.Name != "" && !seen[transfer.Contract] {
 			seen[transfer.Contract] = true
-			
+
 			ragContext.AddItem(RagContextItem{
 				ID:      fmt.Sprintf("nft_%s", transfer.Contract),
 				Type:    "nft",
@@ -622,9 +680,9 @@ func (n *NFTDecoder) GetRagContext(ctx context.Context, baggage map[string]inter
 				Content: fmt.Sprintf("NFT collection %s (%s) at contract %s supports %s standard", transfer.Name, transfer.Symbol, transfer.Contract, transfer.Type),
 				Metadata: map[string]interface{}{
 					"contract":        transfer.Contract,
-					"name":           transfer.Name,
-					"symbol":         transfer.Symbol,
-					"type":           transfer.Type,
+					"name":            transfer.Name,
+					"symbol":          transfer.Symbol,
+					"type":            transfer.Type,
 					"collection_name": transfer.CollectionName,
 				},
 				Keywords:  []string{transfer.Name, transfer.Symbol, transfer.CollectionName, "nft", transfer.Type},

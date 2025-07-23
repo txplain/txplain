@@ -20,7 +20,7 @@ type IconResolver struct {
 func NewIconResolver(staticContextProvider *StaticContextProvider) *IconResolver {
 	return &IconResolver{
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 300 * time.Second, // 5 minutes for icon downloads
 		},
 		staticContextProvider: staticContextProvider,
 		discoveredIcons:       make(map[string]string),

@@ -124,7 +124,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if verbose {

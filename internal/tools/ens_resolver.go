@@ -12,16 +12,24 @@ import (
 // ENSResolver resolves ENS names for addresses found in transaction data
 type ENSResolver struct {
 	rpcClient *rpc.Client
+	verbose   bool
 }
 
 // NewENSResolver creates a new ENS resolver
 func NewENSResolver() *ENSResolver {
-	return &ENSResolver{}
+	return &ENSResolver{
+		verbose: false,
+	}
 }
 
 // SetRPCClient sets the RPC client for ENS resolution
 func (e *ENSResolver) SetRPCClient(client *rpc.Client) {
 	e.rpcClient = client
+}
+
+// SetVerbose enables or disables verbose logging
+func (e *ENSResolver) SetVerbose(verbose bool) {
+	e.verbose = verbose
 }
 
 // Name returns the tool name
@@ -41,7 +49,17 @@ func (e *ENSResolver) Dependencies() []string {
 
 // Process implements the Tool interface
 func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if e.verbose {
+		fmt.Println("\n" + strings.Repeat("🏷️", 60))
+		fmt.Println("🔍 ENS RESOLVER: Starting ENS name resolution")
+		fmt.Println(strings.Repeat("🏷️", 60))
+	}
+
 	if e.rpcClient == nil {
+		if e.verbose {
+			fmt.Println("❌ RPC client not set")
+			fmt.Println(strings.Repeat("🏷️", 60) + "\n")
+		}
 		return fmt.Errorf("RPC client not set")
 	}
 
@@ -54,23 +72,76 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 		addressList = append(addressList, addr)
 	}
 
+	if e.verbose {
+		fmt.Printf("📊 Found %d unique addresses to resolve\n", len(addresses))
+		if len(addresses) > 0 {
+			fmt.Println("🏠 ADDRESSES TO RESOLVE:")
+			for i, addr := range addressList {
+				if i < 10 { // Limit display to first 10 addresses
+					fmt.Printf("   %d. %s\n", i+1, addr)
+				} else if i == 10 {
+					fmt.Printf("   ... and %d more\n", len(addressList)-10)
+					break
+				}
+			}
+		}
+	}
+
 	if len(addresses) == 0 {
+		if e.verbose {
+			fmt.Println("⚠️  No addresses found, skipping ENS resolution")
+			fmt.Println(strings.Repeat("🏷️", 60) + "\n")
+		}
 		baggage["ens_names"] = make(map[string]string)
 		return nil
 	}
 
+	if e.verbose {
+		fmt.Println("🔄 Resolving ENS names...")
+	}
+
 	ensNames := make(map[string]string)
+	successCount := 0
 
 	// Resolve ENS names for each address
-	for address := range addresses {
+	for i, address := range addressList {
+		if e.verbose {
+			fmt.Printf("   [%d/%d] Resolving %s...", i+1, len(addressList), address)
+		}
+
 		ensName, err := e.rpcClient.ResolveENSName(ctx, address)
 		if err != nil {
+			if e.verbose {
+				fmt.Printf(" ❌ Failed: %v\n", err)
+			}
 			continue // Skip this address if resolution fails
 		}
 
 		if ensName != "" {
 			ensNames[address] = ensName
+			successCount++
+			if e.verbose {
+				fmt.Printf(" ✅ %s\n", ensName)
+			}
+		} else if e.verbose {
+			fmt.Printf(" ⚪ No ENS name\n")
 		}
+	}
+
+	if e.verbose {
+		fmt.Printf("✅ Successfully resolved %d/%d ENS names\n", successCount, len(addresses))
+
+		// Show summary of resolved names
+		if len(ensNames) > 0 {
+			fmt.Println("\n📋 RESOLVED ENS NAMES:")
+			for addr, ensName := range ensNames {
+				fmt.Printf("   • %s → %s\n", addr[:10]+"...", ensName)
+			}
+		}
+
+		fmt.Println("\n" + strings.Repeat("🏷️", 60))
+		fmt.Println("✅ ENS RESOLVER: Completed successfully")
+		fmt.Println(strings.Repeat("🏷️", 60) + "\n")
 	}
 
 	baggage["ens_names"] = ensNames
@@ -252,7 +323,7 @@ func (e *ENSResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 // GetRagContext provides RAG context for ENS information
 func (e *ENSResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
 	ragContext := NewRagContext()
-	
+
 	ensNames, ok := baggage["ens_names"].(map[string]string)
 	if !ok || len(ensNames) == 0 {
 		return ragContext
