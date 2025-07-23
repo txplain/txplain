@@ -24,16 +24,14 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
     
     const bgColors = [
       'bg-red-500', 'bg-blue-500', 'bg-green-800', 'bg-yellow-500',
-      'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-cyan-500',
-      'bg-emerald-500', 'bg-orange-500', 'bg-teal-500', 'bg-violet-500',
-      'bg-rose-500', 'bg-amber-500', 'bg-lime-500', 'bg-sky-500'
+      'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-orange-500',
+      'bg-emerald-500', 'bg-teal-500'
     ]
     
     const textColors = [
       'text-red-700', 'text-blue-700', 'text-green-700', 'text-yellow-700',
-      'text-purple-700', 'text-pink-700', 'text-indigo-700', 'text-cyan-700',
-      'text-emerald-700', 'text-orange-700', 'text-teal-700', 'text-violet-700',
-      'text-rose-700', 'text-amber-700', 'text-lime-700', 'text-sky-700'
+      'text-purple-700', 'text-pink-700', 'text-indigo-700', 'text-orange-700',
+      'text-emerald-700', 'text-teal-700'
     ]
     
     // Special case for transaction to keep it purple for consistency

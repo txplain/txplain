@@ -199,25 +199,23 @@ func (t *ERC20PriceLookup) Dependencies() []string {
 
 // getBlockchainSlug converts network ID to CoinMarketCap blockchain slug
 func (t *ERC20PriceLookup) getBlockchainSlug(networkID int64) string {
-	switch networkID {
-	case 1:
-		return "ethereum"
-	case 137:
-		return "polygon"
-	case 42161:
-		return "arbitrum"
-	case 56:
+	// Get network configuration dynamically
+	network, exists := models.GetNetwork(networkID)
+	if !exists {
+		return "" // Unknown network
+	}
+	
+	// Use network name to generate slug dynamically
+	// Convert network name to lowercase and replace spaces with dashes for CoinMarketCap API
+	slug := strings.ToLower(network.Name)
+	slug = strings.ReplaceAll(slug, " ", "-")
+	
+	// Handle common naming variations for CoinMarketCap compatibility
+	switch slug {
+	case "binance-smart-chain", "bsc":
 		return "binance-smart-chain"
-	case 43114:
-		return "avalanche"
-	case 10:
-		return "optimism"
-	case 8453:
-		return "base"
-	case 250:
-		return "fantom"
 	default:
-		return "ethereum" // Default fallback
+		return slug
 	}
 }
 
@@ -228,11 +226,16 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	}
 
 	// Get network ID from baggage for DEX pricing
-	networkID := int64(1) // Default to Ethereum
+	networkID := int64(0) // No default - require explicit network
 	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
 		if nid, ok := rawData["network_id"].(float64); ok {
 			networkID = int64(nid)
 		}
+	}
+	
+	// Skip if no network ID provided
+	if networkID == 0 {
+		return nil
 	}
 
 	// Get token metadata from baggage
@@ -240,17 +243,31 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	if !ok || len(tokenMetadata) == 0 {
 		return nil // No token metadata, nothing to price
 	}
-
+	
 	// Look up prices for each token
 	tokenPrices := make(map[string]*TokenPrice)
 	for address, metadata := range tokenMetadata {
 		if metadata.Type == "ERC20" {
 			priceInput := map[string]interface{}{
 				"contract_address": address,
-				"network_id":       networkID,
+				"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
 			}
 			if metadata.Symbol != "" {
 				priceInput["symbol"] = metadata.Symbol
+			}
+
+			result, err := t.Run(ctx, priceInput)
+			if err == nil {
+				if tokenData, ok := result["token"].(*TokenPrice); ok {
+					tokenData.Contract = address // Ensure contract address is set
+					tokenPrices[address] = tokenData
+				}
+			}
+		} else if metadata.Type == "Contract" && metadata.Decimals > 0 {
+			// Try DEX pricing for contracts that might be tokens (have decimals but no name/symbol)
+			priceInput := map[string]interface{}{
+				"contract_address": address,
+				"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
 			}
 
 			result, err := t.Run(ctx, priceInput)
@@ -383,7 +400,7 @@ func (t *ERC20PriceLookup) Run(ctx context.Context, input map[string]interface{}
 	networkIDFloat, _ := input["network_id"].(float64)
 	networkID := int64(networkIDFloat)
 	if networkID == 0 {
-		networkID = 1 // Default to Ethereum
+		return nil, NewToolError("erc20_price_lookup", "network_id is required", "MISSING_NETWORK")
 	}
 
 	if convert == "" {

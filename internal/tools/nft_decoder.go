@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os" // Added for os.Getenv
 	"strconv"
 	"strings"
 
@@ -97,12 +98,14 @@ func (n *NFTDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		}
 	}
 
-	// Store debug information
-	if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
-		existingDebug["nft_decoder"] = debugInfo
-	} else {
-		baggage["debug_info"] = map[string]interface{}{
-			"nft_decoder": debugInfo,
+	// Only store debug information in DEBUG mode to avoid overwhelming baggage
+	if os.Getenv("DEBUG") == "true" && len(debugInfo) > 0 {
+		if existingDebug, ok := baggage["debug_info"].(map[string]interface{}); ok {
+			existingDebug["nft_decoder"] = debugInfo
+		} else {
+			baggage["debug_info"] = map[string]interface{}{
+				"nft_decoder": debugInfo,
+			}
 		}
 	}
 

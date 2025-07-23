@@ -199,7 +199,7 @@ AVAILABLE CONTEXT DATA:
 
 	for _, item := range annotationContext.Items {
 		switch item.Type {
-		case "token":
+		case "token", "native_token": // Include both ERC20 tokens and native tokens like ETH
 			tokenItems = append(tokenItems, item)
 		case "address":
 			addressItems = append(addressItems, item)
@@ -318,10 +318,12 @@ INSTRUCTIONS:
    - ANY USD values ($100.00, $0.82) - TABLE with calculation breakdown and source data
 5. CRITICAL TOKEN SYMBOL LINKING RULE:
    - EVERY token symbol (USDT, PEPE, GrowAI, etc.) MUST ALWAYS include a "link" field pointing to the contract address
-   - Contract link format: [NETWORK_EXPLORER]/token/[contract_address] or [NETWORK_EXPLORER]/address/[contract_address]
+   - FOR ERC20/ERC721 TOKENS: Contract link format: [NETWORK_EXPLORER]/token/[contract_address] or [NETWORK_EXPLORER]/address/[contract_address]
+   - FOR NATIVE TOKENS (ETH, BNB, MATIC): Link to main explorer homepage: [NETWORK_EXPLORER] (no contract address needed)
    - If contract address is in TOKEN CONTEXT above, use that exact address
+   - If token is marked as "Native Token" or "native_token" type, DO NOT use a contract address - link to explorer homepage
    - If contract address is NOT in context, create a generic explorer link using blockchain explorer format
-   - NEVER create a token symbol annotation without a contract link - this is mandatory
+   - NEVER create a token symbol annotation without a "link" field - this is mandatory
 6. EXPLORER LINKS - Always create links to blockchain explorers using the network context:
    - Token contract addresses → [NETWORK_EXPLORER]/token/[address]
    - Regular addresses → [NETWORK_EXPLORER]/address/[address]
@@ -390,6 +392,12 @@ EXAMPLES FORMAT (use ONLY context data, never hardcode):
     "text": "[TOKEN_SYMBOL from text]",
     "link": "[NETWORK_EXPLORER]/token/[contract_address from TOKEN CONTEXT]",
     "tooltip": "<table><tr><td><strong>Token:</strong></td><td>[Token Name from TOKEN CONTEXT]</td></tr><tr><td><strong>Symbol:</strong></td><td>[SYMBOL from TOKEN CONTEXT]</td></tr><tr><td><strong>Type:</strong></td><td>[Type from TOKEN CONTEXT]</td></tr><tr><td><strong>Decimals:</strong></td><td>[decimals from TOKEN CONTEXT]</td></tr><tr><td><strong>Price:</strong></td><td>[price from TOKEN CONTEXT or 'Not available']</td></tr><tr><td><strong>Contract:</strong></td><td>[shortened contract from TOKEN CONTEXT]</td></tr></table>",
+    "icon": "[icon from TOKEN CONTEXT if available]"
+  },
+  {
+    "text": "[NATIVE_TOKEN_SYMBOL like ETH]",
+    "link": "[NETWORK_EXPLORER from NETWORK CONTEXT]",
+    "tooltip": "<table><tr><td><strong>Token:</strong></td><td>[Native Token Name from CONTEXT]</td></tr><tr><td><strong>Symbol:</strong></td><td>[SYMBOL from CONTEXT]</td></tr><tr><td><strong>Type:</strong></td><td>Native Token</td></tr><tr><td><strong>Decimals:</strong></td><td>[decimals from CONTEXT]</td></tr><tr><td><strong>Price:</strong></td><td>[price from CONTEXT or 'Not available']</td></tr><tr><td><strong>Network:</strong></td><td>[network name - no contract address for native tokens]</td></tr></table>",
     "icon": "[icon from TOKEN CONTEXT if available]"
   },
   {
