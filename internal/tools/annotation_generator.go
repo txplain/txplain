@@ -360,3 +360,10 @@ func (ag *AnnotationGenerator) isValidURL(url string) bool {
 func (ag *AnnotationGenerator) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
 	return "" // This tool doesn't provide context to others
 }
+
+// GetRagContext provides RAG context for annotation information (minimal for this tool)
+func (ag *AnnotationGenerator) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Annotation generator processes UI/UX display data, not searchable knowledge for RAG
+	return ragContext
+}

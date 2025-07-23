@@ -485,3 +485,36 @@ func (p *ProtocolResolver) GetPromptContext(ctx context.Context, baggage map[str
 
 	return strings.Join(contextParts, "")
 }
+
+// GetRagContext provides RAG context for protocol information
+func (p *ProtocolResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	
+	protocols, ok := baggage["protocols"].([]ProbabilisticProtocol)
+	if !ok || len(protocols) == 0 {
+		return ragContext
+	}
+
+	// Add protocol information to RAG context for searchability
+	for _, protocol := range protocols {
+		if protocol.Confidence >= p.confidenceThreshold {
+			ragContext.AddItem(RagContextItem{
+				ID:      fmt.Sprintf("protocol_%s", strings.ReplaceAll(strings.ToLower(protocol.Name), " ", "_")),
+				Type:    "protocol",
+				Title:   fmt.Sprintf("%s Protocol", protocol.Name),
+				Content: fmt.Sprintf("Protocol %s is a %s %s of type %s with confidence %.2f", protocol.Name, protocol.Type, protocol.Version, protocol.Category, protocol.Confidence),
+				Metadata: map[string]interface{}{
+					"name":       protocol.Name,
+					"type":       protocol.Type,
+					"version":    protocol.Version,
+					"category":   protocol.Category,
+					"confidence": protocol.Confidence,
+				},
+				Keywords:  []string{protocol.Name, protocol.Type, protocol.Category, "protocol"},
+				Relevance: float64(protocol.Confidence),
+			})
+		}
+	}
+
+	return ragContext
+}

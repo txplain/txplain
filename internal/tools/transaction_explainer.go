@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"os"
 	"strconv"
 	"strings"
@@ -43,7 +42,7 @@ func (t *TransactionExplainer) SetVerbose(verbose bool) {
 func (t *TransactionExplainer) Dependencies() []string {
 	return []string{
 		"abi_resolver", "log_decoder", "trace_decoder", "ens_resolver",
-		"token_metadata", "erc20_price_lookup", "monetary_value_enricher",
+		"token_metadata_enricher", "erc20_price_lookup", "monetary_value_enricher",
 		"protocol_resolver", "tag_resolver", "static_context_provider",
 	}
 }
@@ -233,11 +232,8 @@ func (t *TransactionExplainer) Run(ctx context.Context, input map[string]interfa
 		return nil, NewToolError("transaction_explainer", fmt.Sprintf("failed to extract decoded data: %v", err), "INVALID_INPUT")
 	}
 
-	// Extract raw transaction data for additional context
-	rawData, _ := input["raw_data"].(map[string]interface{})
-
-	// Generate explanation using LLM
-	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, []string{}, make(map[string]interface{}))
+	// Generate explanation using LLM with RAG
+	explanation, err := t.generateExplanation(ctx, decodedData, make(map[string]interface{}), []string{})
 	if err != nil {
 		return nil, NewToolError("transaction_explainer", fmt.Sprintf("failed to generate explanation: %v", err), "LLM_ERROR")
 	}
@@ -328,243 +324,6 @@ func (t *TransactionExplainer) extractDecodedData(input map[string]interface{}) 
 	}
 
 	return data, nil
-}
-
-// generateExplanationWithBaggage uses the LLM to create a human-readable explanation with additional context from baggage
-func (t *TransactionExplainer) generateExplanationWithBaggage(ctx context.Context, baggage map[string]interface{}, additionalContext []string) (*models.ExplanationResult, error) {
-	// Extract data from baggage
-	decodedData, _ := baggage["decoded_data"].(*models.DecodedData)
-	rawData, _ := baggage["raw_data"].(map[string]interface{})
-
-	// If no decoded data, create empty structure
-	if decodedData == nil {
-		decodedData = &models.DecodedData{}
-	}
-
-	// Generate explanation using the main method
-	explanation, err := t.generateExplanationWithContext(ctx, decodedData, rawData, additionalContext, baggage)
-	if err != nil {
-		return nil, err
-	}
-
-	// Update the result with baggage-specific data (transfers from TokenTransferExtractor)
-	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok {
-		// Filter out any remaining empty or invalid transfers
-		var validTransfers []models.TokenTransfer
-		for _, transfer := range transfers {
-			// Only include transfers with valid data
-			if transfer.From != "" && transfer.To != "" &&
-				transfer.From != "0x" && transfer.To != "0x" &&
-				len(transfer.From) >= 10 && len(transfer.To) >= 10 {
-				validTransfers = append(validTransfers, transfer)
-			}
-		}
-
-		explanation.Transfers = validTransfers
-	}
-
-	return explanation, nil
-}
-
-// generateExplanationWithContext uses the LLM to create a human-readable explanation with additional context
-func (t *TransactionExplainer) generateExplanationWithContext(ctx context.Context, decodedData *models.DecodedData, rawData map[string]interface{}, additionalContext []string, baggage map[string]interface{}) (*models.ExplanationResult, error) {
-	// Build the prompt with additional context
-	prompt := t.buildExplanationPrompt(decodedData, rawData, additionalContext)
-
-	if t.verbose {
-		fmt.Println("=== TRANSACTION EXPLAINER: PROMPT SENT TO LLM ===")
-		fmt.Println(prompt)
-		fmt.Println("=== END OF PROMPT ===")
-		fmt.Println()
-	}
-
-	// Call LLM
-	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
-		{
-			Role: llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{
-				llms.TextPart(prompt),
-			},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	// Parse the LLM response and build the explanation result
-	responseText := ""
-	if response != nil && len(response.Choices) > 0 {
-		responseText = response.Choices[0].Content
-	}
-
-	if t.verbose {
-		fmt.Println("=== TRANSACTION EXPLAINER: LLM RESPONSE ===")
-		fmt.Println(responseText)
-		fmt.Println("=== END OF LLM RESPONSE ===")
-		fmt.Println()
-	}
-
-	explanation := t.parseExplanationResponse(ctx, responseText, decodedData, rawData, baggage)
-
-	return explanation, nil
-}
-
-// buildExplanationPrompt creates the prompt for the LLM
-func (t *TransactionExplainer) buildExplanationPrompt(decodedData *models.DecodedData, rawData map[string]interface{}, additionalContexts []string) string {
-	prompt := `You are a blockchain transaction analyzer. Provide a VERY SHORT, precise summary of what this transaction accomplished. Keep it under 30 words - users have only 2 seconds to read.
-
-Focus ONLY on the main action. Don't explain blockchain basics or add warnings.
-
-## Decoded Transaction Data:
-
-NOTE: Transaction context, function calls, and events data are provided by other tools in the Additional Context section below.`
-
-	// Add additional context from tools
-	for _, additionalContext := range additionalContexts {
-		prompt += `
-
-### Additional Context:
-` + additionalContext
-	}
-
-	prompt += `
-
-## Instructions:
-
-Write a single, short sentence (under 30 words) describing the main action.
-
-🔥 MANDATORY ENS REQUIREMENT: If ANY address in the transaction has an ENS name (shown in "ENS Names Resolved" or "Address Formatting Guide" sections), you MUST include it in the format "0x1234...5678 (ens-name.eth)" in your explanation. This is non-negotiable. 
-
-CRITICAL SPECIFICITY REQUIREMENTS:
-- NEVER use vague terms like "multiple", "several", "various", "some", "many" 
-- ALWAYS use EXACT numbers: "unlocked 8 orders", "transferred 5 tokens", "swapped 2,485.75 USDT"
-- If you see specific quantities in the transaction data, USE THEM EXPLICITLY
-- Examples: ❌"multiple tokens" → ✅"8 tokens", ❌"several NFTs" → ✅"3 NFTs", ❌"various transfers" → ✅"5 transfers"
-- Count events, calls, transfers, and show the exact numbers
-- Be precise about amounts, quantities, and counts in ALL cases
-
-CRITICAL FORMATTING RULE - AVOID REDUNDANCY:
-- NEVER repeat token amounts or token names in the same sentence
-- Format: "[sender] performed [action] involving [amount] [token] via [protocol] + $[gas] gas" ✅
-- If you mention a token amount and name once, don't repeat them again in the same sentence
-- Keep the format clean and concise - one mention per token is enough
-
-TRANSACTION ANALYSIS APPROACH:
-- Analyze the raw transaction data (events, calls, transfers) without preconceived categories
-- Let the transaction data tell you what happened - don't assume specific action types
-- Focus on the actual flow of value: who sent what to whom, and what they received in return
-- Use event parameters and function calls to understand the transaction's purpose
-- Describe what actually occurred based on the data, not predetermined transaction types
-
-ZERO ADDRESS PATTERN RECOGNITION:
-- When tokens/NFTs are transferred FROM the zero address (0x0000000000000000000000000000000000000000), this typically indicates new token creation
-- When tokens/NFTs are transferred TO the zero address, this typically indicates token destruction
-- Use descriptive language based on the actual data rather than hardcoded terms
-
-VALUE FLOW ANALYSIS:
-- For transactions with multiple token transfers, trace the complete flow
-- Identify who initiated the transaction (transaction sender)
-- Identify what value entered and exited the system
-- Focus on the NET EFFECT for the actual user
-- Look for intermediary steps but describe the overall outcome
-- Don't assume specific patterns - let the data guide the description
-
-USER IDENTIFICATION IN DEFI:
-- CRITICAL: Always check for "ACTUAL USER" in Payment Flow Analysis section
-- When ACTUAL USER is provided, use that address, NOT the contract/router addresses
-- DeFi transactions often use intermediary contracts - show the real beneficiary
-- The contract address is the intermediary, not the user
-
-PAYMENT FLOW ANALYSIS:
-- Use the "Payment Flow Analysis" section to identify:
-  - Who paid (the payer)
-  - How much was paid initially 
-  - How much reached the final recipient
-  - What fees were deducted
-  - CRITICAL: Who is the ACTUAL USER vs intermediary contracts
-- CRITICAL: Always include fee information from "Fee Summary for Final Explanation" section
-- Use suggested fee formats provided in the context
-- Never omit fee information - users must know where all their value went
-
-MANDATORY FEE REQUIREMENTS:
-- ALWAYS include transaction fees when they exist (shown in Payment Flow Analysis)
-- ALWAYS include gas fees when they exist (shown in Fee Summary)
-- ALWAYS include fee recipient addresses when available (shown in Fee recipients section)
-- Format examples:
-  - "for 30.32 USDC (3.55 USDC fees to 0x0705...64e0 + $0.85 gas)"
-  - "for 30.32 USDC (3.55 USDC fees to 3 recipients + $0.85 gas)"
-  - "for 50 ETH + $12.50 gas"  
-  - "for 100 USDT (2.5 USDT fees to 0x1234...5678)"
-- Use "Fee Summary for Final Explanation" for exact formatting suggestions
-- Show total cost to user when provided: "total cost $32.17"
-- Fee recipients provide transparency about where fees went - include when available
-
-IMPORTANT: 
-- Use enriched monetary values from "Enriched Token Transfers" section when available (FormattedAmount and USD Value fields).
-- Prefer specific USD values from the enriched data over raw hex values or basic token prices.
-- If enriched transfers show "Amount: 43.94 ATH" and "USD Value: $1.45", use those exact values.
-- Only fall back to raw data or basic prices if enriched values are not available.
-- Always use the total converted amount, not the base unit price.
-- Use the address formatting provided in the "Address Formatting Guide" section.
-- Follow the address usage instructions from the ENS Names section.
-- CRITICAL: Always include gas fees and transaction fees from the "Fee Summary" section
-- Gas fees should be shown in USD format: "$0.85 gas", "$12.50 gas"
-
-EVENT PARAMETER USAGE:
-- CRITICAL: Use event parameters to provide SPECIFIC DETAILS in your explanation
-- When events have meaningful parameter names (user, role, enabled, roleId, etc.), ALWAYS include them in the text
-- For role/permission events: Include role ID/name and whether it was enabled/disabled/granted/revoked
-- For user management: Include both the admin who made the change AND the affected user
-- For numeric parameters: Include specific numbers (role ID 7, token ID 1234, etc.)
-- For boolean parameters: Include the state (enabled/disabled, approved/revoked, active/inactive)
-- Always prioritize the transaction sender when describing WHO initiated the action
-- NEVER use vague terms like "updated a user role" when specific details are available
-
-CRITICAL ENS NAME REQUIREMENTS:
-- MANDATORY: Always include ENS names in the final explanation text when available
-- Use the format: "0x1234...5678 (ens-name.eth)" for addresses with ENS names
-- Check the "ENS Names Resolved" and "Address Formatting Guide" sections for available ENS names
-- NEVER use just the shortened address if an ENS name exists - always include both
-- This applies to ALL addresses in the explanation: transaction sender, event parameters, contract addresses
-
-PROTOCOL USAGE:
-- Always include specific protocol/aggregator names when available from the "Protocol Detection" section
-- Use specific protocol names provided in the context instead of generic terms 
-- For aggregators, mention the aggregator name from detected protocols
-- For DEX protocols, include the protocol name from detected protocols
-
-NFT HANDLING:
-- Always include NFT transfers from the "NFT Transfers" section when present
-- For ERC721 NFTs: mention the specific token ID and collection name
-- For ERC1155 tokens: include both token ID and amount transferred - be specific about quantities
-- Use collection names when available, otherwise use contract symbol or "Unknown NFT"
-- Include NFT transfers in the main action summary alongside token transfers
-- For large amounts, use clear formatting: "3,226 tokens of ID 3226" or "3,226x NFT #3226"
-- CRITICAL: Always show explicit recipients and amounts - never use generic terms like "to 2 recipients"
-- Use "Recipient Summary for Final Explanation" section to get specific recipient details
-- For multiple recipients: show each recipient explicitly: "3,226x to 0x6686...1f28 and 3,226x to 0xd53c...eb47"
-- For single recipients: show the recipient: "5 NFTs to 0x1234...5678"
-
-EXPLICIT RECIPIENT REQUIREMENTS:
-- NEVER say "to 2 recipients" or "to multiple recipients" - always show the specific addresses
-- ALWAYS include the amount each recipient received
-- Format: "3,226x PAYKEN tokens to 0x6686...1f28 and 3,226x to 0xd53c...eb47"
-- Format: "1 CryptoPunk NFT #1234 to 0x1234...5678"
-- Format: "5 BoredApes NFTs to 0x1111...2222, 3 to 0x3333...4444, and 2 to 0x5555...6666"
-- Use the "Recipient Summary" section to get exact recipient addresses and amounts
-
-GENERIC EXAMPLES (describe what actually happened based on data):
-- "[sender] ([ens]) performed action involving [amount] [token] with [recipient] ([ens]) + $[gas] gas"
-- "[sender] ([ens]) interacted with [protocol] using [amount] [token] + $[gas] gas"
-- "[sender] ([ens]) executed operation resulting in [outcome] + $[gas] gas"
-- "Transaction executed by [sender] ([ens]) involving [details] + $[gas] gas"
-- "[sender] ([ens]) completed operation on [protocol] with [specifications] + $[gas] gas"
-
-CRITICAL: In ALL examples above, notice how ENS names are ALWAYS included when addresses appear. This is MANDATORY - never omit ENS names from the final explanation.
-
-Be specific about amounts, tokens, protocols, and main action. No explanations or warnings.`
-
-	return prompt
 }
 
 // parseExplanationResponse parses the LLM response and creates the result structure
@@ -994,30 +753,6 @@ func (t *TransactionExplainer) generateFallbackLinks(txHash string, networkID in
 	return links
 }
 
-// weiToEther converts wei string to ether string
-func (t *TransactionExplainer) weiToEther(weiStr string) string {
-	if weiStr == "" || weiStr == "0x" || weiStr == "0x0" {
-		return "0"
-	}
-
-	// Remove 0x prefix if present
-	if strings.HasPrefix(weiStr, "0x") {
-		weiStr = weiStr[2:]
-	}
-
-	// Convert to big int
-	wei, success := new(big.Int).SetString(weiStr, 16)
-	if !success {
-		return "0"
-	}
-
-	// Convert to ether (divide by 10^18)
-	ether := new(big.Float).SetInt(wei)
-	ether.Quo(ether, new(big.Float).SetFloat64(1e18))
-
-	return ether.String()
-}
-
 // formatStatus formats transaction status
 func (t *TransactionExplainer) formatStatus(status string) string {
 	switch status {
@@ -1028,44 +763,6 @@ func (t *TransactionExplainer) formatStatus(status string) string {
 	default:
 		return "unknown"
 	}
-}
-
-// formatAmount formats token amounts from hex to decimal
-func (t *TransactionExplainer) formatAmount(amount string, decimals int) string {
-	if amount == "" {
-		return "0"
-	}
-
-	// Try to convert hex amount to decimal
-	if strings.HasPrefix(amount, "0x") {
-		// Parse hex to big int
-		if value, ok := new(big.Int).SetString(amount[2:], 16); ok {
-			// Convert to float based on decimals
-			if decimals > 0 {
-				// Create divisor (10^decimals)
-				divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-
-				// Convert to big.Float for decimal division with precision
-				valueBig := new(big.Float).SetInt(value)
-				divisorBig := new(big.Float).SetInt(divisor)
-				result := new(big.Float).Quo(valueBig, divisorBig)
-
-				// Format with reasonable precision
-				formatted := result.Text('f', 6) // 6 decimal places
-				// Remove trailing zeros
-				formatted = strings.TrimRight(formatted, "0")
-				formatted = strings.TrimRight(formatted, ".")
-
-				return formatted
-			} else {
-				// No decimals, just show the integer value
-				return value.String()
-			}
-		}
-	}
-
-	// Fallback: return as-is
-	return amount
 }
 
 // GetPromptContext provides lightweight context for other tools
@@ -1196,10 +893,33 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 		// Process all function calls
 		var functionMessages []llms.MessageContent
 
+		// First, add the original human message to maintain conversation context
+		functionMessages = append(functionMessages, llms.MessageContent{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart(t.buildRAGEnabledPrompt(decodedData, []string{})), // Rebuild the original prompt
+			},
+		})
+
 		// Add the assistant's response with tool calls
+		assistantParts := []llms.ContentPart{}
+		if choice.Content != "" {
+			assistantParts = append(assistantParts, llms.TextPart(choice.Content))
+		}
+		for _, toolCall := range choice.ToolCalls {
+			assistantParts = append(assistantParts, llms.ToolCall{
+				ID:   toolCall.ID,
+				Type: "function",
+				FunctionCall: &llms.FunctionCall{
+					Name:      toolCall.FunctionCall.Name,
+					Arguments: toolCall.FunctionCall.Arguments,
+				},
+			})
+		}
+		
 		functionMessages = append(functionMessages, llms.MessageContent{
 			Role:  llms.ChatMessageTypeAI,
-			Parts: []llms.ContentPart{llms.TextPart(choice.Content)},
+			Parts: assistantParts,
 		})
 
 		// Execute each function call
@@ -1214,10 +934,20 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 				return nil, fmt.Errorf("failed to parse function arguments: %w", err)
 			}
 
-			// Execute the RAG search function
+			// Execute the RAG search function - ALWAYS CONTINUE EVEN IF SEARCH FAILS
 			result, err := t.ragService.HandleFunctionCall(ctx, toolCall.FunctionCall.Name, args)
 			if err != nil {
-				return nil, fmt.Errorf("RAG function call failed: %w", err)
+				// Log the error but don't fail the entire explanation
+				if t.verbose {
+					fmt.Printf("RAG function call failed (continuing anyway): %v\n", err)
+				}
+				// Return empty result to continue processing
+				result = map[string]interface{}{
+					"query":   fmt.Sprintf("%v", args),
+					"results": []interface{}{},
+					"found":   0,
+					"error":   err.Error(),
+				}
 			}
 
 			// Convert result to JSON for LLM
@@ -1230,7 +960,10 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 			functionMessages = append(functionMessages, llms.MessageContent{
 				Role: llms.ChatMessageTypeTool,
 				Parts: []llms.ContentPart{
-					llms.TextPart(string(resultJSON)),
+					llms.ToolCallResponse{
+						ToolCallID: toolCall.ID,
+						Content:    string(resultJSON),
+					},
 				},
 			})
 		}
@@ -1277,7 +1010,36 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 
 // buildRAGEnabledPrompt creates a prompt that encourages autonomous RAG usage
 func (t *TransactionExplainer) buildRAGEnabledPrompt(decodedData *models.DecodedData, lightweightContext []string) string {
-	prompt := `You are a blockchain transaction analyzer with autonomous search capabilities. Your task is to provide a VERY SHORT, precise summary of what this transaction accomplished.
+	prompt := `You are a blockchain transaction analyzer with autonomous search capabilities. Your task is to provide a VERY SHORT, precise summary that includes ALL critical transaction details.
+
+REQUIRED FORMAT: [ACTION] [PROTOCOL/CONTRACT] [SPECIFIC AMOUNTS] [TOKEN SYMBOLS] [KEY ADDRESSES] + [GAS FEE]
+
+EXAMPLES OF PERFECT FORMAT (covering diverse transaction types):
+- "Approved 🍣 SushiSwap router to spend unlimited PEPE tokens for 0x3286...399f (outta.eth) + $0.85 gas"
+- "Swapped 100 USDT for 0.0264 WETH via 1inch aggregator + $1.20 gas"
+- "Transferred 57,071 GrowAI tokens to 0x1234...5678 + $0.82 gas"
+- "Minted 5 NFTs from CryptoPunks to 0xabcd...ef01 (vitalik.eth) + $2.10 gas"
+- "Granted role #7 to 0x1234...5678 (alice.eth) on access control contract + $0.45 gas"
+- "Voted on proposal #12 in DAO governance contract for 0x9876...cdef (dao-member.eth) + $0.62 gas"
+- "Deployed new contract 0xabcd...1234 by 0x5678...9abc (deployer.eth) + $1.85 gas"
+- "Updated user permissions on contract 0x2345...6789 by 0x1111...2222 (admin.eth) + $0.38 gas"
+
+CRITICAL REQUIREMENTS - INCLUDE ALL OF THESE (when applicable):
+1. **SPECIFIC ACTION**: Approved, Swapped, Transferred, Minted, Staked, Granted, Voted, Deployed, Updated, etc.
+2. **EXACT AMOUNTS**: Include all relevant token amounts (100 USDT, 0.0264 WETH, unlimited, etc.) OR role numbers/IDs
+3. **TOKEN SYMBOLS**: Use actual symbols (USDT, WETH, PEPE) - BUT ONLY if tokens are actually involved
+4. **PROTOCOL NAMES**: Use discovered protocol names (SushiSwap, 1inch, Uniswap) with emojis if available
+5. **KEY ADDRESSES**: Include recipient/sender addresses in shortened format (0x1234...5678)
+6. **ENS NAMES**: Add ENS names in parentheses when available (vitalik.eth)
+7. **GAS FEE**: Always end with "+ $X.XX gas" 
+
+TRANSACTION TYPE DETECTION:
+- **TOKEN TRANSACTIONS**: Look for Transfer events, token method calls (transfer, approve, etc.)
+- **ROLE MANAGEMENT**: Look for RoleGranted, RoleRevoked, UserRoleUpdated events with role parameters
+- **GOVERNANCE**: Look for Vote, Proposal, Delegation events and DAO-related activities
+- **CONTRACT DEPLOYMENT**: Look for contract creation, zero address recipients
+- **ACCESS CONTROL**: Look for permission updates, admin changes, access modifications
+- **NFT OPERATIONS**: Look for ERC721/ERC1155 Transfer events with tokenId parameters
 
 AUTONOMOUS SEARCH INSTRUCTIONS:
 - When you encounter UNKNOWN protocols, contracts, or addresses, USE the search functions available to you
@@ -1287,7 +1049,11 @@ AUTONOMOUS SEARCH INSTRUCTIONS:
 - The search functions do fuzzy matching, so partial matches work well
 - You can make multiple searches as needed to fully understand the transaction
 
-CRITICAL: Search autonomously when you encounter unknowns - don't guess or leave things unexplained.
+CRITICAL CONTINUATION RULE:
+- ALWAYS provide a final explanation, even if some searches return no results
+- If a search finds nothing, simply continue your analysis without that information
+- DO NOT stop or ask for more context - analyze what you can see and provide the best summary possible
+- The goal is ALWAYS to reach a final transaction explanation, regardless of search results
 
 ## Transaction Analysis:`
 
@@ -1308,14 +1074,39 @@ CRITICAL: Search autonomously when you encounter unknowns - don't guess or leave
 3. **CONCISE OUTPUT**: Keep the final explanation under 30 words - users read it in 2 seconds
 4. **SEARCH FIRST, EXPLAIN SECOND**: Gather all needed information through searches, then provide the final explanation
 
-EXAMPLE WORKFLOW:
+EXAMPLE WORKFLOW FOR TOKEN TRANSACTION:
 1. See unknown contract 0x111111125... → search_protocols("0x111111125")
 2. Find it's "1inch Aggregation Router v6" → now you know it's a DEX aggregator  
 3. See token 0xa0b86a33... → search_tokens("0xa0b86a33")
 4. Find it's "Chainlink Token (LINK)" → now you have token details
-5. Provide final explanation: "User swapped 100 LINK via 1inch aggregator for 0.5 ETH + $1.20 gas"
+5. Provide final explanation: "Swapped 100 LINK for 0.5 ETH via 1inch aggregator + $1.20 gas"
 
-Search for anything you don't immediately recognize, then provide your concise explanation.`
+EXAMPLE WORKFLOW FOR ROLE MANAGEMENT:
+1. See UserRoleUpdated event with role parameter 7 → understand this is role management
+2. See unknown contract 0x123... → search_protocols("0x123") 
+3. Find no protocol results → continue with "contract" description
+4. See transaction initiator with ENS name → include ENS in explanation
+5. Provide final explanation: "Granted role #7 to 0x000...000 by 0x7e97...63c7 (cocytus.eth) + $0.75 gas"
+
+EXAMPLE WITH NO SEARCH RESULTS:
+1. See unknown contract 0x123... → search_protocols("0x123")
+2. Search returns no results → continue anyway
+3. See unknown operation → analyze events and parameters
+4. Provide final explanation: "Updated contract permissions on 0x123...456 by 0x789...abc + $0.82 gas"
+
+FORMATTING RULES:
+- Use EXACT token amounts from context (100 USDT, not "some USDT") - BUT ONLY if tokens exist
+- Use EXACT role numbers/IDs from event parameters (role #7, not "some role")
+- Use EXACT token symbols from context (PEPE, WETH, not "tokens") - BUT ONLY if tokens exist
+- Use SHORTENED addresses (0x1234...5678 format)
+- Include ENS names when available: 0x1234...5678 (vitalik.eth)
+- Always end with gas fee: + $X.XX gas
+- Use protocol emojis when known (🍣 for SushiSwap, 🦄 for Uniswap)
+- Be specific about actions: Approved, Swapped, Transferred, Granted, Revoked, Updated, Deployed, etc.
+
+**CRITICAL RULE**: Do NOT assume this is a token transaction unless you see clear evidence (Transfer events, token method calls). Many blockchain transactions are about governance, access control, contract management, or other non-token operations.
+
+Search for anything you don't immediately recognize, but ALWAYS provide your concise, data-rich explanation regardless of search results.`
 
 	return prompt
 }

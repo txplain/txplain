@@ -186,3 +186,11 @@ func (ir *IconResolver) GetPromptContext(ctx context.Context, baggage map[string
 
 	return strings.Join(contextParts, "\n")
 }
+
+// GetRagContext provides RAG context for icon information (minimal for this tool)
+func (ir *IconResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Icon resolver discovers icons from external sources
+	// No general knowledge to contribute to RAG
+	return ragContext
+}

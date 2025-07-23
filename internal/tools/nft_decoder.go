@@ -599,3 +599,39 @@ func GetNFTTransfers(baggage map[string]interface{}) ([]NFTTransfer, bool) {
 	}
 	return nil, false
 }
+
+// GetRagContext provides RAG context for NFT information
+func (n *NFTDecoder) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	
+	nftTransfers, ok := baggage["nft_transfers"].([]NFTTransfer)
+	if !ok || len(nftTransfers) == 0 {
+		return ragContext
+	}
+
+	// Add NFT collection information to RAG context for searchability
+	seen := make(map[string]bool)
+	for _, transfer := range nftTransfers {
+		if transfer.Name != "" && !seen[transfer.Contract] {
+			seen[transfer.Contract] = true
+			
+			ragContext.AddItem(RagContextItem{
+				ID:      fmt.Sprintf("nft_%s", transfer.Contract),
+				Type:    "nft",
+				Title:   fmt.Sprintf("%s NFT Collection", transfer.Name),
+				Content: fmt.Sprintf("NFT collection %s (%s) at contract %s supports %s standard", transfer.Name, transfer.Symbol, transfer.Contract, transfer.Type),
+				Metadata: map[string]interface{}{
+					"contract":        transfer.Contract,
+					"name":           transfer.Name,
+					"symbol":         transfer.Symbol,
+					"type":           transfer.Type,
+					"collection_name": transfer.CollectionName,
+				},
+				Keywords:  []string{transfer.Name, transfer.Symbol, transfer.CollectionName, "nft", transfer.Type},
+				Relevance: 0.7,
+			})
+		}
+	}
+
+	return ragContext
+}

@@ -304,12 +304,19 @@ TRANSACTION CONTEXT:
 
 Your task is to probabilistically identify transaction tags based on the transaction patterns, protocols involved, events emitted, method calls, and token transfers. Use the curated tag knowledge above as reference but also apply your broader knowledge.
 
+CRITICAL ANALYSIS RULES:
+1. **ONLY identify tags when there is CLEAR EVIDENCE in the transaction context**  
+2. **DO NOT assume token operations exist without explicit Transfer events or token-related method calls**
+3. **DO NOT identify swap/liquidity tags unless there are actual Swap events or DEX-related calls**
+4. **FOCUS on the actual events and method calls present in the transaction**
+5. **Consider contract management operations, not just DeFi activities**
+
 IDENTIFICATION PATTERNS:
-- Method calls (transfer, approve, swap, mint, stake, etc.)
-- Events emitted (Transfer, Swap, Approval, Mint, Burn, etc.)
-- Protocols involved (DEX, lending, NFT marketplace, etc.)
-- Token types (ERC20, ERC721, ERC1155, stablecoins, etc.)
-- Transaction patterns (multi-hop swaps, liquidity provision, flash loans, etc.)
+- Method calls (transfer, approve, swap, mint, stake, grantRole, updateRole, etc.)
+- Events emitted (Transfer, Swap, Approval, Mint, Burn, RoleGranted, UserRoleUpdated, etc.)
+- Protocols involved (DEX, lending, NFT marketplace, access control, governance, etc.)
+- Token types (ERC20, ERC721, ERC1155, stablecoins, etc.) - ONLY if actual tokens are involved
+- Transaction patterns (multi-hop swaps, liquidity provision, flash loans, role management, etc.)
 - Value flows (from/to addresses, amounts, fees)
 
 CONFIDENCE CRITERIA:
@@ -320,11 +327,12 @@ CONFIDENCE CRITERIA:
 - Speculation = VERY LOW confidence (0.0-0.3)
 
 TAG SELECTION GUIDELINES:
-- Be specific rather than generic (prefer "swap" over "defi" when applicable)
+- Be specific rather than generic (prefer "role-management" over "admin" when applicable)
 - Include both protocol-specific and action-specific tags
 - Consider the primary action and secondary effects
-- Include technical standards when relevant (erc20, erc721, etc.)
+- Include technical standards when relevant (erc20, erc721, etc.) - BUT ONLY when actually present
 - Add infrastructure tags for technical aspects (batch, proxy, multisig)
+- Consider governance and access control operations
 
 OUTPUT FORMAT:
 Respond with a JSON array of tag identifications. Each should include:
@@ -336,7 +344,7 @@ Respond with a JSON array of tag identifications. Each should include:
   "description": "What this tag represents in this context"
 }
 
-EXAMPLES:
+DIVERSE EXAMPLES (covering different types of transactions):
 [
   {
     "tag": "swap",
@@ -346,6 +354,20 @@ EXAMPLES:
     "description": "Token swapping operation on a DEX"
   },
   {
+    "tag": "role-management",
+    "category": "Access Control",
+    "confidence": 0.9,
+    "evidence": ["UserRoleUpdated event emitted", "Role parameter indicates permission change", "Access control contract interaction"],
+    "description": "Role or permission management in smart contract"
+  },
+  {
+    "tag": "governance",
+    "category": "DAO",
+    "confidence": 0.85,
+    "evidence": ["Vote cast event", "Governance contract interaction", "Proposal-related method call"],
+    "description": "Governance participation or proposal management"
+  },
+  {
     "tag": "erc20",
     "category": "Token",
     "confidence": 0.9,
@@ -353,15 +375,23 @@ EXAMPLES:
     "description": "ERC20 token standard operations"
   },
   {
-    "tag": "liquidity",
-    "category": "DeFi", 
-    "confidence": 0.8,
-    "evidence": ["addLiquidity method call", "LP token minting", "Pair contract interaction"],
-    "description": "Liquidity provision to AMM pool"
+    "tag": "contract-deployment",
+    "category": "Infrastructure",
+    "confidence": 0.95,
+    "evidence": ["Contract creation transaction", "Zero address as recipient", "Constructor execution"],
+    "description": "Smart contract deployment operation"
   }
 ]
 
-Analyze the transaction context and return tags with reasonable confidence (> 0.3). Focus on accuracy - it's better to miss a tag than to incorrectly identify one. Limit to 8-10 most relevant tags.`, knowledgeContext.String(), contextData)
+**CRITICAL VALIDATION RULES:**
+- If there are NO Transfer events, do NOT tag as "token-transfer" or "erc20"
+- If there are NO Swap events, do NOT tag as "swap" or "liquidity"  
+- If there are NO mint/burn operations, do NOT tag as "minting"
+- ONLY use DeFi tags when actual DeFi protocols/operations are detected
+- ALWAYS require clear evidence from the transaction context
+
+Analyze the transaction context and return tags with reasonable confidence (> 0.3). Focus on accuracy - it's better to miss a tag than to incorrectly identify one. Limit to 8-10 most relevant tags.`,
+		knowledgeContext.String(), contextData)
 
 	return prompt
 }
@@ -446,4 +476,37 @@ func (t *TagResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	contextParts = append(contextParts, fmt.Sprintf("\n\nNote: Tags identified with %.1f%% minimum confidence threshold", t.confidenceThreshold*100))
 
 	return strings.Join(contextParts, "")
+}
+
+// GetRagContext provides RAG context for tag information
+func (t *TagResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	
+	tags, ok := baggage["tags_detailed"].([]ProbabilisticTag)
+	if !ok || len(tags) == 0 {
+		return ragContext
+	}
+
+	// Add tag information to RAG context for searchability
+	for _, tag := range tags {
+		if tag.Confidence >= t.confidenceThreshold {
+			ragContext.AddItem(RagContextItem{
+				ID:      fmt.Sprintf("tag_%s", strings.ReplaceAll(tag.Tag, "-", "_")),
+				Type:    "tag",
+				Title:   fmt.Sprintf("%s Tag", tag.Tag),
+				Content: fmt.Sprintf("Tag %s in category %s represents %s with confidence %.2f", tag.Tag, tag.Category, tag.Description, tag.Confidence),
+				Metadata: map[string]interface{}{
+					"tag":         tag.Tag,
+					"category":    tag.Category,
+					"description": tag.Description,
+					"confidence":  tag.Confidence,
+					"evidence":    tag.Evidence,
+				},
+				Keywords:  []string{tag.Tag, tag.Category, "tag"},
+				Relevance: float64(tag.Confidence),
+			})
+		}
+	}
+
+	return ragContext
 }

@@ -605,3 +605,10 @@ func (m *MonetaryValueEnricher) getNativeTokenSymbolFromNetwork(networkID int64)
 	// This allows the system to be completely generic and work with any network
 	return ""
 }
+
+// GetRagContext provides RAG context for monetary value information (minimal for this tool)
+func (m *MonetaryValueEnricher) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Monetary value enricher provides current market calculations, not historical knowledge for RAG
+	return ragContext
+}

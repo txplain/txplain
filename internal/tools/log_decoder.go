@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"os" // Added for debug logging
 	"strconv"
 	"strings"
 	"unicode"
@@ -14,9 +15,16 @@ import (
 	"github.com/txplain/txplain/internal/rpc"
 )
 
-// NewLogDecoder creates a new LogDecoder tool
+// NewLogDecoder creates a new log decoder
 func NewLogDecoder() *LogDecoder {
-	return &LogDecoder{}
+	return &LogDecoder{
+		verbose: false,
+	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (t *LogDecoder) SetVerbose(verbose bool) {
+	t.verbose = verbose
 }
 
 // NewLogDecoderWithRPC creates a LogDecoder with RPC capabilities
@@ -31,6 +39,7 @@ func NewLogDecoderWithRPC(rpcClient *rpc.Client) *LogDecoder {
 type LogDecoder struct {
 	rpcClient         *rpc.Client
 	signatureResolver *rpc.SignatureResolver
+	verbose           bool // Added for debug logging
 }
 
 // Name returns the tool name
@@ -255,19 +264,64 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 	signature := ""
 	var abiMethod *ABIMethod
 
+	// DEBUG: Log the lookup attempt
+	if t.verbose || os.Getenv("DEBUG") == "true" {
+		fmt.Printf("=== ABI LOOKUP DEBUG ===\n")
+		fmt.Printf("Contract: %s\n", contractAddress)
+		fmt.Printf("Event Signature: %s\n", eventSig)
+	}
+
 	// First, try to resolve using ABI resolver data if available - THIS IS THE ROBUST PART
 	if baggage != nil {
 		if resolvedContracts, ok := baggage["resolved_contracts"].(map[string]*ContractInfo); ok {
+			if t.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("Found %d resolved contracts in baggage\n", len(resolvedContracts))
+			}
+			
 			if contractInfo, exists := resolvedContracts[strings.ToLower(contractAddress)]; exists && contractInfo.IsVerified {
+				if t.verbose || os.Getenv("DEBUG") == "true" {
+					fmt.Printf("Contract %s is verified with %d ABI methods\n", contractAddress, len(contractInfo.ParsedABI))
+				}
+				
 				// Look for matching event in parsed ABI
 				for i, method := range contractInfo.ParsedABI {
 					if method.Type == "event" && method.Hash == eventSig {
 						eventName = method.Name
 						signature = method.Signature
 						abiMethod = &contractInfo.ParsedABI[i]
+						
+						if t.verbose || os.Getenv("DEBUG") == "true" {
+							fmt.Printf("✅ Found matching ABI event: %s (%s)\n", method.Name, method.Signature)
+							fmt.Printf("Parameters from ABI: ")
+							for _, input := range method.Inputs {
+								fmt.Printf("%s:%s ", input.Name, input.Type)
+							}
+							fmt.Printf("\n")
+						}
 						break
 					}
 				}
+				
+				if abiMethod == nil && (t.verbose || os.Getenv("DEBUG") == "true") {
+					fmt.Printf("❌ No matching event found in ABI. Available events:\n")
+					for _, method := range contractInfo.ParsedABI {
+						if method.Type == "event" {
+							fmt.Printf("  - %s: %s (hash: %s)\n", method.Name, method.Signature, method.Hash)
+						}
+					}
+				}
+			} else {
+				if t.verbose || os.Getenv("DEBUG") == "true" {
+					if !exists {
+						fmt.Printf("❌ Contract %s not found in resolved contracts\n", contractAddress)
+					} else {
+						fmt.Printf("❌ Contract %s found but not verified\n", contractAddress)
+					}
+				}
+			}
+		} else {
+			if t.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("❌ No resolved_contracts found in baggage\n")
 			}
 		}
 	}
@@ -278,12 +332,26 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 		if err == nil {
 			eventName = sigInfo.Name
 			signature = sigInfo.Signature
+			if t.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("✅ Signature resolver found: %s (%s)\n", sigInfo.Name, sigInfo.Signature)
+			}
+		} else {
+			if t.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("❌ Signature resolver failed: %v\n", err)
+			}
 		}
 	}
 
 	// Final fallback
 	if eventName == "" || eventName == "unknown" {
 		eventName = eventSig
+		if t.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("❌ Using event signature hash as name: %s\n", eventSig)
+		}
+	}
+
+	if t.verbose || os.Getenv("DEBUG") == "true" {
+		fmt.Printf("=== END ABI LOOKUP DEBUG ===\n\n")
 	}
 
 	parameters := make(map[string]interface{})
@@ -303,6 +371,9 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 
 	// ROBUST ABI-BASED PARSING - This is the key enhancement
 	if abiMethod != nil {
+		if t.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("Using ABI-based parameter parsing\n")
+		}
 		// Use ABI-based parsing for maximum accuracy
 		abiParams, err := t.parseEventWithABI(topics, data, abiMethod)
 		if err == nil {
@@ -311,10 +382,16 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 				parameters[key] = value
 			}
 		} else {
+			if t.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("❌ ABI parsing failed: %v, falling back to signature parsing\n", err)
+			}
 			// If ABI parsing fails, fall back to signature-based parsing
 			t.parseEventBySignature(eventName, topics, data, parameters)
 		}
 	} else {
+		if t.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("❌ No ABI method available, using signature-based parsing\n")
+		}
 		// Use signature-based parsing as fallback
 		t.parseEventBySignature(eventName, topics, data, parameters)
 	}
@@ -324,8 +401,140 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 
 // parseEventBySignature handles all events generically without hardcoded names
 func (t *LogDecoder) parseEventBySignature(eventName string, topics []string, data string, parameters map[string]interface{}) {
-	// All events are now handled generically - no hardcoded event names
+	// Check if we have a signature to extract parameter types from
+	if signature, ok := parameters["signature"].(string); ok && signature != "" {
+		// Try to parse parameter types from signature like "UserRoleUpdated(address,uint8,bool)"
+		if paramTypes := t.extractParameterTypesFromSignature(signature); len(paramTypes) > 0 {
+			t.parseEventWithSignatureTypes(eventName, topics, data, parameters, paramTypes)
+			return
+		}
+	}
+	
+	// Fall back to generic parsing if signature parsing fails
 	t.parseGenericEvent(topics, data, parameters)
+}
+
+// extractParameterTypesFromSignature extracts parameter types from event signature
+func (t *LogDecoder) extractParameterTypesFromSignature(signature string) []string {
+	// Extract parameter types from signature like "UserRoleUpdated(address,uint8,bool)"
+	start := strings.Index(signature, "(")
+	end := strings.LastIndex(signature, ")")
+	
+	if start == -1 || end == -1 || end <= start {
+		return nil
+	}
+	
+	paramSection := signature[start+1 : end]
+	if paramSection == "" {
+		return []string{} // No parameters
+	}
+	
+	// Split by comma and clean up
+	types := strings.Split(paramSection, ",")
+	var cleanTypes []string
+	for _, t := range types {
+		cleanType := strings.TrimSpace(t)
+		if cleanType != "" {
+			cleanTypes = append(cleanTypes, cleanType)
+		}
+	}
+	
+	return cleanTypes
+}
+
+// parseEventWithSignatureTypes parses event using parameter types from signature
+func (t *LogDecoder) parseEventWithSignatureTypes(eventName string, topics []string, data string, parameters map[string]interface{}, paramTypes []string) {
+	// topics[0] is the event signature hash
+	// topics[1...] are indexed parameters
+	// data contains non-indexed parameters
+	
+	topicIndex := 1 // Start from topics[1] (skip event signature)
+	dataOffset := 0 // Offset into the data hex string (after 0x)
+	
+	// Clean and prepare data for parsing
+	cleanData := strings.TrimPrefix(data, "0x")
+	
+	for i, paramType := range paramTypes {
+		// Use simple positional naming since we don't have ABI parameter names
+		paramName := fmt.Sprintf("_%d", i+1)
+		
+		var paramValue interface{}
+		var paramSuffix string
+		
+		if topicIndex < len(topics) {
+			// Try parsing from topics first (indexed parameters)
+			paramValue = topics[topicIndex]
+			paramSuffix = "_indexed"
+			topicIndex++
+		} else if dataOffset*2 < len(cleanData) && dataOffset*2+64 <= len(cleanData) {
+			// Parse from data (non-indexed parameters)
+			paramHex := "0x" + cleanData[dataOffset*2:dataOffset*2+64]
+			paramValue = paramHex
+			paramSuffix = "_data"
+			dataOffset += 32 // Each parameter is 32 bytes
+		} else {
+			// No more data available
+			break
+		}
+		
+		// Store the parameter with positional name
+		parameters[paramName] = paramValue
+		parameters[paramName+"_type"] = strings.TrimSpace(paramType) + paramSuffix
+		
+		// Add decoded formats for additional context
+		if hexValue, ok := paramValue.(string); ok {
+			t.addDecodedFormats(parameters, paramName, hexValue)
+		}
+	}
+	
+	// If we have leftover topics or data, add them with generic names
+	for topicIndex < len(topics) {
+		paramName := fmt.Sprintf("_extra_topic_%d", topicIndex)
+		parameters[paramName] = topics[topicIndex]
+		parameters[paramName+"_type"] = "indexed"
+		t.addDecodedFormats(parameters, paramName, topics[topicIndex])
+		topicIndex++
+	}
+}
+
+// parseGenericEvent extracts all available parameters from any event generically
+func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters map[string]interface{}) {
+	// Store all topics with positional names (topic_0 is event signature, skip it)
+	for i := 1; i < len(topics); i++ {
+		paramName := fmt.Sprintf("_%d", i)
+		paramValue := topics[i]
+
+		// Store original hex value
+		parameters[paramName] = paramValue
+		parameters[paramName+"_type"] = "indexed"
+
+		// Add decoded formats for additional context
+		t.addDecodedFormats(parameters, paramName, paramValue)
+	}
+
+	// Parse data field if present
+	if data != "" && data != "0x" {
+		dataLen := len(data) - 2 // Remove 0x prefix
+		if dataLen >= 64 {
+			// Each 32-byte chunk is a parameter
+			paramIndex := len(topics) // Start numbering after indexed parameters
+			for offset := 0; offset < dataLen; offset += 64 {
+				if offset+64 <= dataLen {
+					paramHex := "0x" + data[2+offset:2+offset+64]
+					paramName := fmt.Sprintf("_%d", paramIndex)
+
+					// Store original hex value
+					parameters[paramName] = paramHex
+					parameters[paramName+"_type"] = "data"
+
+					// Add decoded formats for additional context
+					t.addDecodedFormats(parameters, paramName, paramHex)
+
+					paramIndex++
+				}
+			}
+		}
+	}
 }
 
 // parseEventWithABI parses event parameters using ABI specification for maximum accuracy
@@ -480,46 +689,6 @@ func (t *LogDecoder) cleanAddress(address string) string {
 	}
 
 	return address
-}
-
-// parseGenericEvent extracts all available parameters from any event generically
-func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters map[string]interface{}) {
-	// Store all topics with generic names (topic_0 is event signature, skip it)
-	for i := 1; i < len(topics); i++ {
-		paramName := fmt.Sprintf("param_%d", i)
-		paramValue := topics[i]
-
-		// Store original hex value
-		parameters[paramName] = paramValue
-		parameters[paramName+"_type"] = "indexed"
-
-		// Add decoded formats for additional context
-		t.addDecodedFormats(parameters, paramName, paramValue)
-	}
-
-	// Parse data field if present
-	if data != "" && data != "0x" {
-		dataLen := len(data) - 2 // Remove 0x prefix
-		if dataLen >= 64 {
-			// Each 32-byte chunk is a parameter
-			paramIndex := len(topics) // Start numbering after indexed parameters
-			for offset := 0; offset < dataLen; offset += 64 {
-				if offset+64 <= dataLen {
-					paramHex := "0x" + data[2+offset:2+offset+64]
-					paramName := fmt.Sprintf("param_%d", paramIndex)
-
-					// Store original hex value
-					parameters[paramName] = paramHex
-					parameters[paramName+"_type"] = "data"
-
-					// Add decoded formats for additional context
-					t.addDecodedFormats(parameters, paramName, paramHex)
-
-					paramIndex++
-				}
-			}
-		}
-	}
 }
 
 // addDecodedFormats adds decimal, UTF-8, and address decoded versions of hex parameters
@@ -694,27 +863,41 @@ func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 	var contextParts []string
 	contextParts = append(contextParts, "### EVENTS EMITTED:")
 
-	// Add events information - same logic as transaction explainer had
+	// Add events information
 	for i, event := range decodedData.Events {
 		eventInfo := fmt.Sprintf("Event #%d:\n- Contract: %s\n- Event: %s",
 			i+1, event.Contract, event.Name)
+
+		// Add the full event signature prominently if available
+		if event.Parameters != nil {
+			if signature, exists := event.Parameters["signature"]; exists {
+				eventInfo += fmt.Sprintf("\n- Signature: %s", signature)
+			}
+		}
 
 		// Include ALL meaningful parameters with their decoded formats
 		if len(event.Parameters) > 0 {
 			eventInfo += "\n- Parameters:"
 
-			// Group parameters by base name (param_1, param_2, etc.)
+			// Group parameters by base name (_1, _2, etc.)
 			paramGroups := make(map[string]map[string]interface{})
 
 			for key, value := range event.Parameters {
+				// Skip the signature since we already displayed it prominently
+				if key == "signature" {
+					continue
+				}
+
 				// Include ALL parameters - let LLM decide what's meaningful for final explanation
 
-				// Extract base parameter name (e.g., "param_1" from "param_1_decimal")
+				// Extract base parameter name (e.g., "_1" from "_1_decimal")
 				var baseName string
-				if strings.Contains(key, "_") {
+				if strings.HasPrefix(key, "_") {
+					// Split by underscore and get the first part (_1, _2, etc.)
 					parts := strings.Split(key, "_")
-					if len(parts) >= 2 && (parts[0] == "param" || parts[0] == "topic") {
-						baseName = parts[0] + "_" + parts[1]
+					if len(parts) >= 2 {
+						// For _1, _2, etc., baseName is "_1", "_2"
+						baseName = "_" + parts[1]
 					} else {
 						baseName = key
 					}
@@ -767,4 +950,12 @@ func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 	}
 
 	return strings.Join(contextParts, "\n\n")
+}
+
+// GetRagContext provides RAG context for events and logs
+func (t *LogDecoder) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Log decoder processes transaction-specific event data
+	// No general knowledge to contribute to RAG
+	return ragContext
 }

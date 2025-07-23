@@ -420,3 +420,11 @@ func (a *AmountsFinder) GetPromptContext(ctx context.Context, baggage map[string
 
 	return strings.Join(contextParts, "\n\n")
 }
+
+// GetRagContext provides RAG context for detected amounts (minimal for this tool)
+func (a *AmountsFinder) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Amounts finder processes transaction-specific amount data
+	// No general knowledge to contribute to RAG
+	return ragContext
+}

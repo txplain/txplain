@@ -248,3 +248,31 @@ func (e *ENSResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 
 	return strings.Join(contextParts, "\n")
 }
+
+// GetRagContext provides RAG context for ENS information
+func (e *ENSResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	
+	ensNames, ok := baggage["ens_names"].(map[string]string)
+	if !ok || len(ensNames) == 0 {
+		return ragContext
+	}
+
+	// Add ENS mappings to RAG context for searchability
+	for address, ensName := range ensNames {
+		ragContext.AddItem(RagContextItem{
+			ID:      fmt.Sprintf("ens_%s", address),
+			Type:    "ens",
+			Title:   fmt.Sprintf("ENS Name: %s", ensName),
+			Content: fmt.Sprintf("Address %s is mapped to ENS name %s", address, ensName),
+			Metadata: map[string]interface{}{
+				"address":  address,
+				"ens_name": ensName,
+			},
+			Keywords:  []string{ensName, address, "ens", "name"},
+			Relevance: 0.6,
+		})
+	}
+
+	return ragContext
+}

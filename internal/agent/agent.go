@@ -50,8 +50,11 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 	traceDecoder := txtools.NewTraceDecoder() // Will be enhanced per request
 	logDecoder := txtools.NewLogDecoder()     // Will be enhanced per request
 
-	// Initialize transaction explainer (now uses baggage pipeline)
-	explainer := txtools.NewTransactionExplainer(llm)
+	// Initialize static context provider first (needed by transaction explainer)
+	staticProvider := txtools.NewStaticContextProvider()
+	
+	// Initialize transaction explainer (now uses baggage pipeline with RAG)
+	explainer := txtools.NewTransactionExplainer(llm, staticProvider)
 
 	agent := &TxplainAgent{
 		llm:                 llm,
@@ -103,7 +106,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Step 3: Create and configure baggage pipeline
 	pipeline := txtools.NewBaggagePipeline()
-	var contextProviders []txtools.ContextProvider
+	var contextProviders []interface{}
 
 	// Add static context provider first (loads CSV data - tokens, protocols, addresses)
 	staticContextProvider := txtools.NewStaticContextProvider()
