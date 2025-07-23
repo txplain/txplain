@@ -94,7 +94,7 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 
 	// Get progress tracker from baggage if available
 	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
-	
+
 	// Test each contract address individually
 	for i, address := range contractAddresses {
 		// Send progress updates for each contract
@@ -102,7 +102,7 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 			progress := fmt.Sprintf("Analyzing contract %d of %d (%s)", i+1, len(contractAddresses), address[:10]+"...")
 			progressTracker.UpdateComponent("token_metadata_enricher", models.ComponentGroupEnrichment, "Fetching Token Metadata", models.ComponentStatusRunning, progress)
 		}
-		
+
 		if t.verbose {
 			fmt.Printf("   [%d/%d] Analyzing %s...", i+1, len(contractAddresses), address)
 		}
@@ -114,6 +114,12 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		var abiContract *ContractInfo
 		if resolvedContracts != nil {
 			abiContract, _ = resolvedContracts[strings.ToLower(address)]
+		}
+
+		// Send sub-progress update for ABI data
+		if hasProgress {
+			progress := fmt.Sprintf("Processing ABI data for %s...", address[:10]+"...")
+			progressTracker.UpdateComponent("token_metadata_enricher", models.ComponentGroupEnrichment, "Fetching Token Metadata", models.ComponentStatusRunning, progress)
 		}
 
 		// Add ABI resolver information (contract name from verification, etc.)
@@ -132,6 +138,12 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 			}
 			contractInfo["is_verified"] = true
 			contractInfo["source_verified"] = true
+		}
+
+		// Send sub-progress update for RPC calls
+		if hasProgress {
+			progress := fmt.Sprintf("Making RPC calls to %s...", address[:10]+"...")
+			progressTracker.UpdateComponent("token_metadata_enricher", models.ComponentGroupEnrichment, "Fetching Token Metadata", models.ComponentStatusRunning, progress)
 		}
 
 		// Get RPC contract information (method calls, etc.)

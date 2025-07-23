@@ -8,6 +8,7 @@ interface ProgressDisplayProps {
 
 const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplete }) => {
   const [isExpanded, setIsExpanded] = useState(true)
+  const [liveTimers, setLiveTimers] = useState<Record<string, number>>({})
 
   // Auto-collapse when analysis is complete
   useEffect(() => {
@@ -15,6 +16,27 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
       setIsExpanded(false)
     }
   }, [isComplete])
+
+  // Live timer effect for running components
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now()
+      const newTimers: Record<string, number> = {}
+      
+      components.forEach(component => {
+        if (component.status === 'running' || component.status === 'initiated') {
+          const startTime = component.start_time ? new Date(component.start_time).getTime() : now
+          const elapsed = Math.max(0, now - startTime)
+          newTimers[component.id] = elapsed
+        }
+      })
+      
+      setLiveTimers(newTimers)
+    }, 100) // Update every 100ms for smooth timer animation
+
+    return () => clearInterval(interval)
+  }, [components])
+
   // Group components by their group
   const groupedComponents = components.reduce((acc, component) => {
     if (!acc[component.group]) {
@@ -106,9 +128,23 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
     return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
   }
 
-  // Helper function to format component duration display using server-calculated durations
+  // Helper function to format component duration with live timer for running components
   const formatComponentDuration = (component: ComponentUpdate) => {
-    // Use server-calculated duration for all components
+    // For running components, use live timer if available
+    if (component.status === 'running' || component.status === 'initiated') {
+      const liveElapsed = liveTimers[component.id]
+      if (liveElapsed !== undefined) {
+        if (liveElapsed < 1000) {
+          return `${Math.floor(liveElapsed)}ms`
+        } else {
+          return `${(liveElapsed / 1000).toFixed(1)}s`
+        }
+      }
+      // Fallback to "Starting..." if no live timer yet
+      return 'Starting...'
+    }
+    
+    // For finished/error components, use server-calculated duration
     if (component.duration_ms === 0) {
       return 'Starting...'
     } else if (component.duration_ms < 1000) {

@@ -57,7 +57,7 @@ func (s *Server) setupRoutes() {
 
 	// Transaction explanation endpoint
 	v1.HandleFunc("/explain", s.handleExplainTransaction).Methods("POST")
-	
+
 	// Transaction explanation with Server-Sent Events
 	v1.HandleFunc("/explain-sse", s.handleExplainTransactionSSE).Methods("POST")
 
@@ -188,7 +188,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 
 	// Send immediate feedback that request was received and validated
 	immediateEvent := models.ProgressEvent{
-		Type:      "component_update",
+		Type: "component_update",
 		Component: &models.ComponentUpdate{
 			ID:          "request_received",
 			Group:       models.ComponentGroupData,
@@ -239,7 +239,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 
 		// Send SSE event
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, eventData)
-		
+
 		// Flush immediately
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
@@ -259,14 +259,14 @@ func (s *Server) writeSSEError(w http.ResponseWriter, message string, err error)
 		Error:     message,
 		Timestamp: time.Now(),
 	}
-	
+
 	if err != nil {
 		errorEvent.Error = fmt.Sprintf("%s: %v", message, err)
 	}
 
 	eventData, _ := json.Marshal(errorEvent)
 	fmt.Fprintf(w, "event: error\ndata: %s\n\n", eventData)
-	
+
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}

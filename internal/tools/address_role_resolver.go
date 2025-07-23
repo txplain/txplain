@@ -716,7 +716,7 @@ func (a *AddressRoleResolver) GetPromptContext(ctx context.Context, baggage map[
 	return strings.Join(contextParts, "\n")
 }
 
-// GetRagContext provides RAG context for address role information  
+// GetRagContext provides RAG context for address role information
 // Address roles are small structured data, so we keep them in prompt context instead of RAG
 func (a *AddressRoleResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
 	ragContext := NewRagContext()

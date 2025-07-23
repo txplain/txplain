@@ -395,29 +395,29 @@ const (
 type ComponentGroup string
 
 const (
-	ComponentGroupData       ComponentGroup = "data"        // Blue - Data fetching
-	ComponentGroupDecoding   ComponentGroup = "decoding"    // Green - Decoding/parsing
-	ComponentGroupEnrichment ComponentGroup = "enrichment"  // Purple - Data enrichment
-	ComponentGroupAnalysis   ComponentGroup = "analysis"    // Orange - AI analysis
-	ComponentGroupFinishing  ComponentGroup = "finishing"   // Gray - Final steps
+	ComponentGroupData       ComponentGroup = "data"       // Blue - Data fetching
+	ComponentGroupDecoding   ComponentGroup = "decoding"   // Green - Decoding/parsing
+	ComponentGroupEnrichment ComponentGroup = "enrichment" // Purple - Data enrichment
+	ComponentGroupAnalysis   ComponentGroup = "analysis"   // Orange - AI analysis
+	ComponentGroupFinishing  ComponentGroup = "finishing"  // Gray - Final steps
 )
 
 // ComponentUpdate represents a single component's progress update
 type ComponentUpdate struct {
-	ID          string          `json:"id"`          // Unique component ID
-	Group       ComponentGroup  `json:"group"`       // Visual grouping
-	Title       string          `json:"title"`       // Display title
-	Status      ComponentStatus `json:"status"`      // Current status
-	Description string          `json:"description"` // Optional detailed description
-	Timestamp   time.Time       `json:"timestamp"`   // When this update occurred
-	StartTime   *time.Time      `json:"start_time"`  // When this component started (always included)
-	Duration    int64           `json:"duration_ms"` // Duration in milliseconds (0 for running components)
+	ID          string          `json:"id"`                 // Unique component ID
+	Group       ComponentGroup  `json:"group"`              // Visual grouping
+	Title       string          `json:"title"`              // Display title
+	Status      ComponentStatus `json:"status"`             // Current status
+	Description string          `json:"description"`        // Optional detailed description
+	Timestamp   time.Time       `json:"timestamp"`          // When this update occurred
+	StartTime   *time.Time      `json:"start_time"`         // When this component started (always included)
+	Duration    int64           `json:"duration_ms"`        // Duration in milliseconds (0 for running components)
 	Metadata    interface{}     `json:"metadata,omitempty"` // Optional tool-specific data
 }
 
 // ProgressEvent represents a complete progress event sent via SSE
 type ProgressEvent struct {
-	Type      string           `json:"type"`      // "component_update", "complete", "error"
+	Type      string           `json:"type"`                // "component_update", "complete", "error"
 	Component *ComponentUpdate `json:"component,omitempty"` // For component updates
 	Result    interface{}      `json:"result,omitempty"`    // For completion
 	Error     string           `json:"error,omitempty"`     // For errors
@@ -439,7 +439,7 @@ type ProgressTracker struct {
 // NewProgressTracker creates a new progress tracker
 func NewProgressTracker(updateChan chan<- ProgressEvent) *ProgressTracker {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	pt := &ProgressTracker{
 		components:  make(map[string]*ComponentUpdate),
 		updateChan:  updateChan,
@@ -450,10 +450,10 @@ func NewProgressTracker(updateChan chan<- ProgressEvent) *ProgressTracker {
 		ctx:         ctx,
 		cancel:      cancel,
 	}
-	
+
 	// Start heartbeat goroutine to ensure updates every 500ms
 	go pt.startHeartbeat()
-	
+
 	return pt
 }
 
@@ -466,11 +466,11 @@ func (pt *ProgressTracker) Close() {
 // UpdateComponent updates a component's status and sends progress event
 func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, title string, status ComponentStatus, description string) {
 	now := time.Now()
-	
+
 	// Track start time for new components
 	var startTime *time.Time
 	var duration int64
-	
+
 	if _, exists := pt.startTimes[id]; !exists {
 		// This is the first time we see this component, record start time
 		pt.startTimes[id] = now
@@ -480,17 +480,17 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 		// Component already exists, use existing start time
 		existingStart := pt.startTimes[id]
 		startTime = &existingStart
-		
+
 		// Calculate duration for all components based on elapsed time
 		duration = now.Sub(existingStart).Milliseconds()
-		
+
 		// Ensure minimum duration of 1ms for any component that has been running
 		// to avoid displaying "Starting..." for components that have actually started
 		if duration == 0 && (status == ComponentStatusRunning || status == ComponentStatusFinished || status == ComponentStatusError) {
 			duration = 1
 		}
 	}
-	
+
 	component := &ComponentUpdate{
 		ID:          id,
 		Group:       group,
@@ -501,7 +501,7 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 		StartTime:   startTime,
 		Duration:    duration,
 	}
-	
+
 	pt.components[id] = component
 	pt.lastUpdate = now
 
@@ -519,7 +519,7 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 					pt.cancel()
 				}
 			}()
-			
+
 			if pt.updateChan != nil {
 				pt.updateChan <- ProgressEvent{
 					Type:      "component_update",
@@ -533,9 +533,9 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 
 // startHeartbeat ensures there's always a progress update within 500ms
 func (pt *ProgressTracker) startHeartbeat() {
-	ticker := time.NewTicker(250 * time.Millisecond) // More frequent heartbeat for more activity
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-pt.ctx.Done():
@@ -550,18 +550,18 @@ func (pt *ProgressTracker) startHeartbeat() {
 				// Find the most recent running component to update
 				var latestRunning *ComponentUpdate
 				var latestTime time.Time
-				
+
 				for _, component := range pt.components {
 					if component.Status == ComponentStatusRunning && component.Timestamp.After(latestTime) {
 						latestRunning = component
 						latestTime = component.Timestamp
 					}
 				}
-				
+
 				if latestRunning != nil {
 					// Send a subtle heartbeat update with more dynamic descriptions
 					heartbeatDesc := pt.generateProgressDescription(latestRunning)
-					
+
 					pt.UpdateComponent(
 						latestRunning.ID,
 						latestRunning.Group,
@@ -578,13 +578,13 @@ func (pt *ProgressTracker) startHeartbeat() {
 // generateProgressDescription creates dynamic progress descriptions for heartbeats
 func (pt *ProgressTracker) generateProgressDescription(component *ComponentUpdate) string {
 	elapsed := time.Since(*component.StartTime)
-	
+
 	// Create more dynamic, varied descriptions based on elapsed time
 	baseDesc := component.Description
 	if strings.Contains(baseDesc, "...") {
 		baseDesc = strings.TrimSuffix(baseDesc, "...")
 	}
-	
+
 	// Add time-based variations to make it feel more alive
 	switch {
 	case elapsed < 2*time.Second:
@@ -624,7 +624,7 @@ func (pt *ProgressTracker) SendComplete(result interface{}) {
 					pt.cancel()
 				}
 			}()
-			
+
 			if pt.updateChan != nil {
 				pt.updateChan <- ProgressEvent{
 					Type:      "complete",
@@ -651,7 +651,7 @@ func (pt *ProgressTracker) SendError(err error) {
 					pt.cancel()
 				}
 			}()
-			
+
 			if pt.updateChan != nil {
 				pt.updateChan <- ProgressEvent{
 					Type:      "error",

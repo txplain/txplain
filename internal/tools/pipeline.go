@@ -167,10 +167,10 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 		if p.progressTracker != nil {
 			group := p.getToolGroup(name)
 			title := p.getToolTitle(name)
-			
+
 			// Update component to initiated
 			p.progressTracker.UpdateComponent(name, group, title, models.ComponentStatusInitiated, "Preparing to start...")
-			
+
 			// Update component to running
 			p.progressTracker.UpdateComponent(name, group, title, models.ComponentStatusRunning, processor.Description())
 		}
@@ -191,7 +191,7 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 				title := p.getToolTitle(name)
 				p.progressTracker.UpdateComponent(name, group, title, models.ComponentStatusError, fmt.Sprintf("Failed: %v", err))
 			}
-			
+
 			if p.verbose {
 				fmt.Printf("│  ❌ FAILED after %v: %v\n", stepDuration, err)
 				fmt.Printf("└─ ❌ %s FAILED\n\n", strings.ToUpper(name))
@@ -279,35 +279,35 @@ func (p *BaggagePipeline) GetProcessor(name string) (Tool, bool) {
 func (p *BaggagePipeline) getToolGroup(toolName string) models.ComponentGroup {
 	groupMap := map[string]models.ComponentGroup{
 		// Data fetching phase
-		"static_context_provider":     models.ComponentGroupData,
+		"static_context_provider":      models.ComponentGroupData,
 		"transaction_context_provider": models.ComponentGroupData,
-		"abi_resolver":                models.ComponentGroupData,
-		
-		// Decoding phase  
-		"trace_decoder":               models.ComponentGroupDecoding,
-		"log_decoder":                 models.ComponentGroupDecoding,
-		"signature_resolver":          models.ComponentGroupDecoding,
-		"token_transfer_extractor":    models.ComponentGroupDecoding,
-		
+		"abi_resolver":                 models.ComponentGroupData,
+
+		// Decoding phase
+		"trace_decoder":            models.ComponentGroupDecoding,
+		"log_decoder":              models.ComponentGroupDecoding,
+		"signature_resolver":       models.ComponentGroupDecoding,
+		"token_transfer_extractor": models.ComponentGroupDecoding,
+
 		// Enrichment phase
-		"nft_decoder":                 models.ComponentGroupEnrichment,
-		"token_metadata_enricher":     models.ComponentGroupEnrichment,
-		"amounts_finder":              models.ComponentGroupEnrichment,
-		"icon_resolver":               models.ComponentGroupEnrichment,
-		"erc20_price_lookup":          models.ComponentGroupEnrichment,
-		"monetary_value_enricher":     models.ComponentGroupEnrichment,
-		"ens_resolver":                models.ComponentGroupEnrichment,
-		
+		"nft_decoder":             models.ComponentGroupEnrichment,
+		"token_metadata_enricher": models.ComponentGroupEnrichment,
+		"amounts_finder":          models.ComponentGroupEnrichment,
+		"icon_resolver":           models.ComponentGroupEnrichment,
+		"erc20_price_lookup":      models.ComponentGroupEnrichment,
+		"monetary_value_enricher": models.ComponentGroupEnrichment,
+		"ens_resolver":            models.ComponentGroupEnrichment,
+
 		// Analysis phase
-		"address_role_resolver":       models.ComponentGroupAnalysis,
-		"protocol_resolver":           models.ComponentGroupAnalysis,
-		"tag_resolver":                models.ComponentGroupAnalysis,
-		"transaction_explainer":       models.ComponentGroupAnalysis,
-		
+		"address_role_resolver": models.ComponentGroupAnalysis,
+		"protocol_resolver":     models.ComponentGroupAnalysis,
+		"tag_resolver":          models.ComponentGroupAnalysis,
+		"transaction_explainer": models.ComponentGroupAnalysis,
+
 		// Finishing phase
-		"annotation_generator":        models.ComponentGroupFinishing,
+		"annotation_generator": models.ComponentGroupFinishing,
 	}
-	
+
 	if group, exists := groupMap[toolName]; exists {
 		return group
 	}
@@ -337,7 +337,7 @@ func (p *BaggagePipeline) getToolTitle(toolName string) string {
 		"transaction_explainer":        "Generating AI Explanation",
 		"annotation_generator":         "Creating Annotations",
 	}
-	
+
 	if title, exists := titleMap[toolName]; exists {
 		return title
 	}

@@ -381,7 +381,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 		progressTracker.SendError(fmt.Errorf("failed to fetch transaction data: %w", err))
 		return nil, fmt.Errorf("failed to fetch transaction data: %w", err)
 	}
-	
+
 	// Mark data fetching as complete
 	progressTracker.UpdateComponent("fetch_data", models.ComponentGroupData, "Fetching Transaction Data", models.ComponentStatusFinished, fmt.Sprintf("Fetched %d logs and trace data", len(rawData.Logs)))
 

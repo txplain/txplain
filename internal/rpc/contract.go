@@ -162,7 +162,7 @@ func (c *Client) methodExists(ctx context.Context, contractAddress, methodSig st
 func (c *Client) tryFetchTokenLikeInfo(ctx context.Context, contractAddress string, info *ContractInfo) {
 	// Initialize decimals to -1 to indicate "not set" vs "0 decimals"
 	info.Decimals = -1
-	
+
 	// Add debug context
 	var debugInfo []string
 

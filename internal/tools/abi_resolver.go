@@ -114,36 +114,22 @@ func (a *ABIResolver) Dependencies() []string {
 	return []string{} // No dependencies, runs first in pipeline
 }
 
-// Process resolves ABIs for all contract addresses and adds to baggage
+// Process resolves ABIs for all contracts found in the transaction
 func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
 	if a.verbose {
 		fmt.Println("\n" + strings.Repeat("🔧", 60))
-		fmt.Println("🔍 ABI RESOLVER: Starting contract ABI resolution")
-		fmt.Printf("🔑 API Key available: %t\n", a.apiKey != "")
+		fmt.Println("🔧 ABI RESOLVER: Starting ABI resolution for contract addresses")
 		fmt.Println(strings.Repeat("🔧", 60))
 	}
 
-	// Extract all contract addresses from transaction data
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
+	// Extract contract addresses using existing method
 	contractAddresses := a.extractContractAddresses(baggage)
 
 	if a.verbose {
-		fmt.Printf("📊 Extracted %d contract addresses to resolve\n", len(contractAddresses))
-		if len(contractAddresses) > 0 {
-			fmt.Println("🏠 ADDRESSES TO RESOLVE:")
-			for i, addr := range contractAddresses {
-				fmt.Printf("   %d. %s\n", i+1, addr)
-			}
-		}
-	}
-
-	if len(contractAddresses) == 0 {
-		if a.verbose {
-			fmt.Println("⚠️  No contract addresses found, adding empty resolved_contracts")
-			fmt.Println(strings.Repeat("🔧", 60) + "\n")
-		}
-		// Add empty resolved contracts to baggage
-		baggage["resolved_contracts"] = make(map[string]*ContractInfo)
-		return nil
+		fmt.Printf("📊 Found %d unique contract addresses to resolve ABIs for\n", len(contractAddresses))
 	}
 
 	// Get network ID for appropriate Etherscan API endpoint
@@ -154,110 +140,83 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 		}
 	}
 
-	if a.verbose {
-		if network, exists := models.GetNetwork(networkID); exists {
-			fmt.Printf("🌐 Network: %s (ID: %d)\n", network.Name, networkID)
-		} else {
-			fmt.Printf("🌐 Network ID: %d\n", networkID)
-		}
+	// Send progress update for starting ABI resolution
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Found %d contracts to resolve", len(contractAddresses)))
 	}
 
-	if a.verbose {
-		fmt.Println("🔄 Resolving contracts from Etherscan API...")
-	}
-
-	// Resolve contracts
 	resolvedContracts := make(map[string]*ContractInfo)
-	successCount := 0
+
+	// Process each contract address with detailed progress
 	for i, address := range contractAddresses {
-		if a.verbose {
-			fmt.Printf("   [%d/%d] Resolving %s...", i+1, len(contractAddresses), address)
+		// Send frequent progress updates showing which contract we're working on
+		if hasProgress {
+			progress := fmt.Sprintf("Fetching ABI %d/%d: %s", i+1, len(contractAddresses), address[:10]+"...")
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, progress)
 		}
 
-		if contractInfo, err := a.resolveContract(ctx, address, networkID); err == nil {
-			resolvedContracts[strings.ToLower(address)] = contractInfo
-			successCount++
+		if a.verbose {
+			fmt.Printf("   [%d/%d] Resolving ABI for %s...", i+1, len(contractAddresses), address)
+		}
 
+		// Attempt to resolve contract info using existing method
+		contractInfo, err := a.resolveContract(ctx, address, networkID)
+		if err != nil {
 			if a.verbose {
-				verifiedStatus := "❌ Not verified"
-				if contractInfo.IsVerified {
-					verifiedStatus = "✅ Verified"
-				}
-				fmt.Printf(" %s\n", verifiedStatus)
-				if contractInfo.IsVerified && contractInfo.ContractName != "" {
-					fmt.Printf("      Name: %s, ABI methods: %d\n", contractInfo.ContractName, len(contractInfo.ParsedABI))
-				}
+				fmt.Printf(" ❌ Error: %v\n", err)
 			}
+			// Still add empty contract info to track that we tried
+			resolvedContracts[strings.ToLower(address)] = &ContractInfo{
+				Address:    address,
+				IsVerified: false,
+			}
+			continue
+		}
 
-			// If this is a proxy contract, also resolve the implementation contract
-			if contractInfo.IsProxy && contractInfo.Implementation != "" {
-				if a.verbose {
-					fmt.Printf("      📝 Proxy detected, resolving implementation: %s\n", contractInfo.Implementation)
-				}
-
-				// Add small delay before resolving implementation
-				time.Sleep(200 * time.Millisecond)
-
-				if implInfo, err := a.resolveContract(ctx, contractInfo.Implementation, networkID); err == nil {
-					// Store implementation contract info with a clear key
-					implKey := strings.ToLower(contractInfo.Implementation)
-					resolvedContracts[implKey] = implInfo
-
-					// Mark this as an implementation contract for context
-					implInfo.IsImplementation = true
-					implInfo.ProxyAddress = address
-					successCount++
-
-					if a.verbose {
-						fmt.Printf("      ✅ Implementation resolved: %s\n", implInfo.ContractName)
-					}
-				} else if a.verbose {
-					fmt.Printf("      ❌ Implementation resolution failed: %v\n", err)
+		if contractInfo != nil {
+			resolvedContracts[strings.ToLower(address)] = contractInfo
+			if a.verbose {
+				if contractInfo.IsVerified {
+					fmt.Printf(" ✅ Found verified contract: %s\n", contractInfo.ContractName)
+				} else {
+					fmt.Printf(" ⚠️  Unverified contract\n")
 				}
 			}
 		} else {
 			if a.verbose {
-				fmt.Printf(" ❌ Failed: %v\n", err)
+				fmt.Printf(" ⚠️  No ABI found\n")
 			}
 		}
 
-		// Add small delay to respect API rate limits
-		time.Sleep(200 * time.Millisecond)
+		// Add small delay to prevent overwhelming Etherscan API and show progress
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	if a.verbose {
-		fmt.Printf("✅ Successfully resolved %d/%d contracts\n", successCount, len(contractAddresses))
-
-		// Show summary of resolved contracts
-		if len(resolvedContracts) > 0 {
-			fmt.Println("\n📋 RESOLVED CONTRACTS SUMMARY:")
-			for addr, info := range resolvedContracts {
-				contractDisplay := fmt.Sprintf("   • %s", addr[:10]+"...")
-				if info.IsVerified {
-					contractDisplay += fmt.Sprintf(" - %s", info.ContractName)
-					if info.IsProxy {
-						contractDisplay += " (Proxy)"
-					}
-					if info.IsImplementation {
-						contractDisplay += " (Implementation)"
-					}
-				} else {
-					contractDisplay += " - Not verified"
-				}
-				fmt.Println(contractDisplay)
+	// Final progress update
+	if hasProgress {
+		verifiedCount := 0
+		for _, contract := range resolvedContracts {
+			if contract.IsVerified {
+				verifiedCount++
 			}
 		}
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusFinished, fmt.Sprintf("Resolved %d contracts (%d verified)", len(resolvedContracts), verifiedCount))
+	}
 
-		fmt.Println("\n" + strings.Repeat("🔧", 60))
-		fmt.Println("✅ ABI RESOLVER: Completed successfully")
+	// Store resolved contracts in baggage
+	baggage["resolved_contracts"] = resolvedContracts
+
+	if a.verbose {
+		verifiedCount := 0
+		for _, contract := range resolvedContracts {
+			if contract.IsVerified {
+				verifiedCount++
+			}
+		}
+		fmt.Printf("✅ ABI resolution complete: %d total contracts, %d verified\n", len(resolvedContracts), verifiedCount)
 		fmt.Println(strings.Repeat("🔧", 60) + "\n")
 	}
 
-	// Add resolved contracts to baggage
-	baggage["resolved_contracts"] = resolvedContracts
-
-	// Also add the list of all discovered contract addresses for other tools to use
-	baggage["contract_addresses"] = contractAddresses
 	return nil
 }
 

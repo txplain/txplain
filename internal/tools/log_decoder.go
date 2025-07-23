@@ -237,7 +237,7 @@ func (t *LogDecoder) hexToUint64(hex string) (uint64, error) {
 func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, networkID int64, baggage map[string]interface{}) ([]models.Event, error) {
 	var events []models.Event
 	totalLogs := len(logs)
-	
+
 	// Get progress tracker from baggage if available
 	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
 

@@ -47,14 +47,27 @@ func (t *TransactionExplainer) Dependencies() []string {
 	}
 }
 
-// Process generates explanations using TRUE RAG with autonomous function calling
+// Process generates a human-readable explanation of the transaction
 func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]interface{}) error {
 	if t.verbose {
 		fmt.Printf("TransactionExplainer.Process: Starting with %d baggage items\n", len(baggage))
 	}
 
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
+	// Send initial progress update
+	if hasProgress {
+		progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Preparing transaction data for AI analysis...")
+	}
+
 	// Clean up baggage first - remove unnecessary data before processing
 	t.cleanupBaggage(baggage)
+
+	// Send progress update for data preparation
+	if hasProgress {
+		progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Building context for AI analysis...")
+	}
 
 	// Add decoded data for the explanation generation
 	decodedData := &models.DecodedData{}
@@ -71,6 +84,11 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 
 	baggage["decoded_data"] = decodedData
 
+	// Send progress update for context collection
+	if hasProgress {
+		progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Collecting context from analysis tools...")
+	}
+
 	// TRUE RAG APPROACH: Collect lightweight context only
 	// The LLM will autonomously decide what detailed knowledge to retrieve
 	var lightweightContext []string
@@ -84,6 +102,11 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 					lightweightContext = append(lightweightContext, context)
 				}
 			}
+		}
+
+		// Send progress update for starting AI generation
+		if hasProgress {
+			progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Starting AI explanation generation...")
 		}
 
 		// Generate explanation with autonomous RAG function calling
@@ -525,6 +548,9 @@ func (t *TransactionExplainer) GetRagContext(ctx context.Context, baggage map[st
 
 // generateExplanation generates explanation using autonomous LLM function calling with RAG
 func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedData *models.DecodedData, baggage map[string]interface{}, lightweightContext []string) (*models.ExplanationResult, error) {
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
 	// Build the prompt with lightweight context and RAG instructions
 	prompt := t.buildRAGEnabledPrompt(decodedData, lightweightContext)
 
@@ -533,6 +559,11 @@ func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedD
 		fmt.Println(prompt)
 		fmt.Println("=== END OF PROMPT ===")
 		fmt.Println()
+	}
+
+	// Send progress update for calling AI
+	if hasProgress {
+		progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Sending transaction data to AI...")
 	}
 
 	// Get RAG function tools for autonomous searching
@@ -552,6 +583,11 @@ func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedD
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
+	// Send progress update for processing AI response
+	if hasProgress {
+		progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Processing AI response...")
+	}
+
 	// Handle LLM response and potential function calls
 	return t.processRAGResponse(ctx, response, decodedData, baggage, lightweightContext)
 }
@@ -562,12 +598,20 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 		return nil, fmt.Errorf("no response from LLM")
 	}
 
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
 	choice := response.Choices[0]
 
 	// Check if LLM wants to call functions
 	if len(choice.ToolCalls) > 0 {
 		if t.verbose {
 			fmt.Printf("=== LLM REQUESTED %d FUNCTION CALLS ===\n", len(choice.ToolCalls))
+		}
+
+		// Send progress update for function calls
+		if hasProgress {
+			progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, fmt.Sprintf("AI requesting %d knowledge searches...", len(choice.ToolCalls)))
 		}
 
 		// Process all function calls
@@ -603,7 +647,12 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 		})
 
 		// Execute each function call
-		for _, toolCall := range choice.ToolCalls {
+		for i, toolCall := range choice.ToolCalls {
+			// Send progress update for each function call
+			if hasProgress {
+				progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, fmt.Sprintf("Executing search %d/%d: %s", i+1, len(choice.ToolCalls), toolCall.FunctionCall.Name))
+			}
+
 			if t.verbose {
 				fmt.Printf("Executing function: %s with args: %s\n", toolCall.FunctionCall.Name, toolCall.FunctionCall.Arguments)
 			}
@@ -646,6 +695,11 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 					},
 				},
 			})
+		}
+
+		// Send progress update for final AI generation
+		if hasProgress {
+			progressTracker.UpdateComponent("transaction_explainer", models.ComponentGroupAnalysis, "AI Analysis", models.ComponentStatusRunning, "Generating final explanation...")
 		}
 
 		// Add final instruction to ensure LLM provides the explanation
