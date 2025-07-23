@@ -314,3 +314,36 @@ func (t *TokenMetadataEnricher) getRPCContractInfo(ctx context.Context, address 
 
 	return t.rpcClient.GetContractInfo(ctx, address)
 }
+
+// GetRagContext provides RAG context for token metadata information
+func (t *TokenMetadataEnricher) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	
+	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
+	if !ok || len(tokenMetadata) == 0 {
+		return ragContext
+	}
+
+	// Add token metadata to RAG context for searchability
+	for address, metadata := range tokenMetadata {
+		if metadata.Name != "" && metadata.Symbol != "" {
+			ragContext.AddItem(RagContextItem{
+				ID:      fmt.Sprintf("token_%s", address),
+				Type:    "token",
+				Title:   fmt.Sprintf("%s (%s) Token", metadata.Name, metadata.Symbol),
+				Content: fmt.Sprintf("Token %s (%s) at address %s has %d decimals and is of type %s", metadata.Name, metadata.Symbol, address, metadata.Decimals, metadata.Type),
+				Metadata: map[string]interface{}{
+					"address":  address,
+					"name":     metadata.Name,
+					"symbol":   metadata.Symbol,
+					"decimals": metadata.Decimals,
+					"type":     metadata.Type,
+				},
+				Keywords:  []string{metadata.Name, metadata.Symbol, address, "token", metadata.Type},
+				Relevance: 0.8,
+			})
+		}
+	}
+
+	return ragContext
+}

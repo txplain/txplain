@@ -372,3 +372,11 @@ func (t *TraceDecoder) hexToUint64(hex string) (uint64, error) {
 
 	return strconv.ParseUint(hex, 16, 64)
 }
+
+// GetRagContext provides RAG context for function calls and traces
+func (t *TraceDecoder) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Trace decoder processes transaction-specific call data
+	// No general knowledge to contribute to RAG
+	return ragContext
+}

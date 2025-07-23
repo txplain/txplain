@@ -123,3 +123,11 @@ func (t *TransactionContextProvider) formatStatus(status string) string {
 		return status
 	}
 }
+
+// GetRagContext provides RAG context for transaction metadata (minimal for this tool)
+func (t *TransactionContextProvider) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Transaction context provider doesn't provide searchable knowledge
+	// It processes transaction-specific data
+	return ragContext
+}

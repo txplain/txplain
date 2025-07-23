@@ -876,3 +876,10 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 
 	return "Token Prices (CEX + DEX Data):\n" + strings.Join(contextParts, "\n")
 }
+
+// GetRagContext provides RAG context for price information (minimal for this tool)
+func (t *ERC20PriceLookup) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Price lookup provides current market data, not historical knowledge for RAG
+	return ragContext
+}

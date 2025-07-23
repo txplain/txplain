@@ -247,3 +247,11 @@ func (t *TokenTransferExtractor) GetPromptContext(ctx context.Context, baggage m
 
 	return context
 }
+
+// GetRagContext provides RAG context for token transfers (minimal for this tool)
+func (t *TokenTransferExtractor) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	// Token transfer extractor processes transaction-specific transfer data
+	// No general knowledge to contribute to RAG
+	return ragContext
+}
