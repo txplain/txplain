@@ -133,20 +133,16 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 			if event.Parameters != nil {
 				cleanedParams := make(map[string]interface{})
 				
-				// Only keep human-readable parameters, skip raw hex data
+				// Keep ALL meaningful parameters, only skip internal/technical fields
 				for key, value := range event.Parameters {
-					// Skip raw data and technical fields
+					// Skip only internal technical fields, not meaningful parameter names
 					if key == "raw_data" || key == "signature" || 
-					   strings.HasPrefix(key, "topic_") || 
-					   strings.HasPrefix(key, "contract_") {
+					   strings.HasPrefix(key, "topic_") && len(key) > 10 {
 						continue
 					}
 					
-					// Keep essential parameters
-					if key == "from" || key == "to" || key == "value" || key == "spender" || key == "owner" ||
-					   key == "value_formatted" || key == "value_usd" {
-						cleanedParams[key] = value
-					}
+					// Keep ALL other parameters - they all come from ABI decoding
+					cleanedParams[key] = value
 				}
 				
 				events[i].Parameters = cleanedParams
@@ -482,7 +478,7 @@ Call #%d:`,
 
 ### Events Emitted:`
 
-	// Add events information - INCLUDE MORE CRITICAL PARAMETERS
+	// Add events information - INCLUDE ALL DECODED FORMATS
 	for i, event := range decodedData.Events {
 		prompt += fmt.Sprintf(`
 
@@ -491,59 +487,68 @@ Event #%d:
 - Event: %s`,
 			i+1, event.Contract, event.Name)
 
-		// Include critical parameters for detailed explanations
+		// Include ALL meaningful parameters with their decoded formats
 		if len(event.Parameters) > 0 {
-			criticalParams := make(map[string]interface{})
+			prompt += "\n- Parameters:"
+			
+			// Group parameters by base name (param_1, param_2, etc.)
+			paramGroups := make(map[string]map[string]interface{})
+			
 			for key, value := range event.Parameters {
-				// Skip only truly irrelevant data
-				if key == "raw_data" || key == "signature" || 
-				   strings.HasPrefix(key, "topic_") && len(key) > 10 { // Skip topic_0, topic_1, etc. but allow "topics"
+				// Skip only internal technical fields
+				if key == "raw_data" || key == "signature" {
 					continue
 				}
 				
-				// Include ALL meaningful parameters for critical context
-				switch v := value.(type) {
-				case string:
-					if v != "" {
-						// Include addresses, role IDs, and other string values
-						criticalParams[key] = v
+				// Extract base parameter name (e.g., "param_1" from "param_1_decimal")
+				var baseName string
+				if strings.Contains(key, "_") {
+					parts := strings.Split(key, "_")
+					if len(parts) >= 2 && (parts[0] == "param" || parts[0] == "topic") {
+						baseName = parts[0] + "_" + parts[1]
+					} else {
+						baseName = key
 					}
-				case bool:
-					// Include boolean values (enabled/disabled, etc.)
-					criticalParams[key] = v
-				case int, int64, uint64, float64:
-					// Include numeric values (role IDs, amounts, etc.)
-					criticalParams[key] = v
-				default:
-					// Include other types as-is
-					if v != nil {
-						criticalParams[key] = v
-					}
+				} else {
+					baseName = key
 				}
+				
+				if paramGroups[baseName] == nil {
+					paramGroups[baseName] = make(map[string]interface{})
+				}
+				paramGroups[baseName][key] = value
 			}
 			
-			if len(criticalParams) > 0 {
-				prompt += `
-- Parameters:`
-				for key, value := range criticalParams {
-					// Format parameter display based on type
-					switch v := value.(type) {
-					case string:
-						if strings.HasPrefix(v, "0x") && len(v) == 66 {
-							// Show full addresses for important context (can be cleaned by address formatter)
-							prompt += fmt.Sprintf(`
-  - %s: %s`, key, v)
-						} else {
-							prompt += fmt.Sprintf(`
-  - %s: %s`, key, v)
-						}
-					case bool:
-						// Clear boolean display
-						prompt += fmt.Sprintf(`
-  - %s: %t`, key, v)
-					default:
-						prompt += fmt.Sprintf(`
-  - %s: %v`, key, v)
+			// Display parameters with all their decoded formats
+			for baseName, group := range paramGroups {
+				if baseValue, exists := group[baseName]; exists {
+					prompt += fmt.Sprintf("\n  - %s: %v", baseName, baseValue)
+					
+					// Add decoded formats on the same line for context
+					var decodedInfo []string
+					
+					if decimal, exists := group[baseName+"_decimal"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("decimal: %v", decimal))
+					}
+					
+					if address, exists := group[baseName+"_address"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("address: %v", address))
+					}
+					
+					if boolean, exists := group[baseName+"_boolean"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("boolean: %v", boolean))
+					}
+					
+					if utf8, exists := group[baseName+"_utf8"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("utf8: \"%v\"", utf8))
+					}
+					
+					if paramType, exists := group[baseName+"_type"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("type: %v", paramType))
+					}
+					
+					if len(decodedInfo) > 0 {
+						prompt += fmt.Sprintf(" (%s)", strings.Join(decodedInfo, ", "))
 					}
 				}
 			}
@@ -605,8 +610,8 @@ CRITICAL SPECIFICITY REQUIREMENTS:
 
 CRITICAL FORMATTING RULE - AVOID REDUNDANCY:
 - NEVER repeat token amounts or token names in the same sentence
-- Format: "Swapped 100 USDT for 57,071 GrowAI tokens via 1inch v6 aggregator + $3.45 gas" ✅
-- NEVER: "Swapped 100 USDT for 57,071 GrowAI tokens via 1inch v6 aggregator for 57,071 GrowAI + $3.45 gas" ❌
+- Format: "Swapped [amount] [token] for [amount] [token] via [protocol] + $[gas] gas" ✅
+- NEVER repeat token amounts or names in the same sentence ❌
 - If you mention a token amount and name once, don't repeat them again in the same sentence
 - Keep the format clean and concise - one mention per token is enough
 
@@ -718,9 +723,9 @@ CRITICAL ENS NAME REQUIREMENTS:
 
 PROTOCOL USAGE:
 - Always include specific protocol/aggregator names when available from the "Protocol Detection" section
-- Use specific protocol names like "1inch v6", "Uniswap v3", "Curve", etc. instead of generic terms
-- For aggregators, mention the aggregator name (e.g., "via 1inch aggregator", "through Paraswap")
-- For DEX protocols, include the protocol name (e.g., "on Uniswap v3", "via Curve pool")
+- Use specific protocol names provided in the context instead of generic terms 
+- For aggregators, mention the aggregator name from detected protocols
+- For DEX protocols, include the protocol name from detected protocols
 
 NFT HANDLING:
 - Always include NFT transfers from the "NFT Transfers" section when present
@@ -743,15 +748,15 @@ EXPLICIT RECIPIENT REQUIREMENTS:
 - Use the "Recipient Summary" section to get exact recipient addresses and amounts
 
 Examples (NOTICE: Always include ENS names when available):
-- "0x7e97...63c7 (cocytus.eth) updated role 7 to enabled for user 0x1234...5678 (alice.eth) + $0.85 gas"
-- "0x1234...5678 (admin.eth) granted admin permissions to 0x9876...4321 (user.eth) + $1.20 gas"
-- "0x5678...1234 (dao.eth) revoked role 3 from user 0x9876...4321 (manager.eth) + $2.10 gas"
-- "Minted 3,226x PAYKEN tokens to 0x6686...1f28 (collector.eth) and 3,226x to 0xd53c...eb47 for 30.32 USDC + $0.18 gas"
-- "0x1234...5678 (alice.eth) transferred 100 USDC to 0x9876...4321 (bob.eth) + $0.85 gas"
-- "0x2468...1357 (trader.eth) swapped 1 ETH for 2,485.75 USDT on Uniswap v3 + $15.20 gas"
-- "0x9876...4321 (defi-user.eth) approved Uniswap Router to spend unlimited DAI + $8.90 gas"
-- "Transferred NFT #1234 from 0x1111...2222 (seller.eth) to 0x3333...4444 (buyer.eth) + $12.50 gas"
-- "0x5555...6666 (liquidity-provider.eth) added liquidity to Uniswap ETH/USDC pool + $18.75 gas"
+- "[sender] ([ens]) updated role [roleId] to [enabled] for user [user] ([ens]) + $[gas] gas"
+- "[sender] ([ens]) granted [permission] permissions to [recipient] ([ens]) + $[gas] gas"
+- "[sender] ([ens]) revoked role [roleId] from user [user] ([ens]) + $[gas] gas"
+- "Minted [amount]x [token] tokens to [recipient] ([ens]) and [amount]x to [recipient] for [payment] + $[gas] gas"
+- "[sender] ([ens]) transferred [amount] [token] to [recipient] ([ens]) + $[gas] gas"
+- "[sender] ([ens]) swapped [amount] [token] for [amount] [token] on [protocol] + $[gas] gas"
+- "[sender] ([ens]) approved [protocol] to spend [amount] [token] + $[gas] gas"
+- "Transferred NFT #[tokenId] from [sender] ([ens]) to [recipient] ([ens]) + $[gas] gas"
+- "[sender] ([ens]) added liquidity to [protocol] [token]/[token] pool + $[gas] gas"
 
 CRITICAL: In ALL examples above, notice how ENS names are ALWAYS included when addresses appear. This is MANDATORY - never omit ENS names from the final explanation.
 
@@ -851,53 +856,6 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 	}
 
 	return result
-}
-
-// generateTags creates tags based on transaction content
-func (t *TransactionExplainer) generateTags(decodedData *models.DecodedData) []string {
-	tags := []string{}
-
-	// Add tags based on methods called
-	for _, call := range decodedData.Calls {
-		switch call.Method {
-		case "transfer", "transferFrom":
-			tags = append(tags, "token-transfer")
-		case "approve":
-			tags = append(tags, "token-approval")
-		case "mint":
-			tags = append(tags, "minting")
-		case "swap", "swapExactETHForTokens", "swapExactTokensForTokens":
-			tags = append(tags, "defi", "swap")
-		case "addLiquidity", "addLiquidityETH":
-			tags = append(tags, "defi", "liquidity")
-		case "removeLiquidity", "removeLiquidityETH":
-			tags = append(tags, "defi", "liquidity")
-		}
-	}
-
-	// Add tags based on events
-	for _, event := range decodedData.Events {
-		switch event.Name {
-		case "Transfer":
-			tags = append(tags, "transfer")
-		case "Swap":
-			tags = append(tags, "defi", "swap")
-		case "Mint", "Burn":
-			tags = append(tags, "token-supply")
-		}
-	}
-
-	// Remove duplicates
-	tagMap := make(map[string]bool)
-	var uniqueTags []string
-	for _, tag := range tags {
-		if !tagMap[tag] {
-			tagMap[tag] = true
-			uniqueTags = append(uniqueTags, tag)
-		}
-	}
-
-	return uniqueTags
 }
 
 // generateIntelligentLinks creates explorer links with AI-inferred meaningful labels

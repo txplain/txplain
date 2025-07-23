@@ -250,44 +250,19 @@ func (t *TagResolver) buildTransactionContext(baggage map[string]interface{}) st
 		for _, event := range events {
 			eventInfo := fmt.Sprintf("- %s on %s", event.Name, event.Contract)
 			if event.Parameters != nil {
-				// Add key parameters for better tag detection
+				// Add ALL event parameters generically - no hardcoded parameter names
 				var paramDetails []string
 				
-				// Common parameters
-				if from, exists := event.Parameters["from"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("from: %v", from))
-				}
-				if to, exists := event.Parameters["to"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("to: %v", to))
-				}
-				if value, exists := event.Parameters["value"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("value: %v", value))
-				}
-				
-				// Access control specific parameters
-				if user, exists := event.Parameters["user"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("user: %v", user))
-				}
-				if role, exists := event.Parameters["role"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("role: %v", role))
-				}
-				if roleId, exists := event.Parameters["roleId"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("roleId: %v", roleId))
-				}
-				if enabled, exists := event.Parameters["enabled"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("enabled: %v", enabled))
-				}
-				if account, exists := event.Parameters["account"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("account: %v", account))
-				}
-				if sender, exists := event.Parameters["sender"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("sender: %v", sender))
-				}
-				if owner, exists := event.Parameters["owner"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("owner: %v", owner))
-				}
-				if spender, exists := event.Parameters["spender"]; exists {
-					paramDetails = append(paramDetails, fmt.Sprintf("spender: %v", spender))
+				// Include ALL parameters from the event without filtering
+				for paramName, paramValue := range event.Parameters {
+					// Skip only internal technical fields
+					if paramName == "raw_data" || paramName == "signature" || 
+					   strings.HasPrefix(paramName, "topic_") && len(paramName) > 10 {
+						continue
+					}
+					
+					// Include ALL meaningful parameters
+					paramDetails = append(paramDetails, fmt.Sprintf("%s: %v", paramName, paramValue))
 				}
 				
 				if len(paramDetails) > 0 {

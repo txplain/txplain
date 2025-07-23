@@ -2,9 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/txplain/txplain/internal/models"
 	"github.com/txplain/txplain/internal/rpc"
@@ -208,88 +212,20 @@ func (t *LogDecoder) decodeLog(log map[string]interface{}) (*models.Event, error
 	return event, nil
 }
 
-// decodeEventFromTopics decodes event name and parameters from topics and data
+// decodeEventFromTopics decodes event name and parameters generically from topics and data
 func (t *LogDecoder) decodeEventFromTopics(topics []string, data string) (string, map[string]interface{}) {
 	if len(topics) == 0 {
 		return "", nil
 	}
 
-	// Map of common event signatures to names
-	eventMap := map[string]string{
-		"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef": "Transfer",
-		"0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925": "Approval",
-		"0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31": "ApprovalForAll",
-		"0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f": "Mint",
-		"0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5": "Burn",
-		"0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1": "Sync",
-		"0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822": "Swap",
-		"0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb": "PairCreated",
-	}
-
+	// Use the event signature hash as the event name - no hardcoded mappings
 	eventSig := topics[0]
-	eventName := eventMap[eventSig]
-	if eventName == "" {
-		eventName = eventSig // Use signature if name not known
-	}
+	eventName := eventSig // Always use signature hash, let ABI resolution provide proper names
 
 	parameters := make(map[string]interface{})
 
-	// Parse parameters based on known event signatures
-	switch eventName {
-	case "Transfer":
-		if len(topics) >= 3 {
-			parameters["from"] = topics[1]
-			parameters["to"] = topics[2]
-			if data != "" && data != "0x" {
-				parameters["value"] = data
-			}
-			// For ERC721, there might be a tokenId in topics[3]
-			if len(topics) >= 4 {
-				parameters["tokenId"] = topics[3]
-			}
-		}
-	case "Approval":
-		if len(topics) >= 3 {
-			parameters["owner"] = topics[1]
-			parameters["spender"] = topics[2]
-			if data != "" && data != "0x" {
-				parameters["value"] = data
-			}
-		}
-	case "ApprovalForAll":
-		if len(topics) >= 3 {
-			parameters["owner"] = topics[1]
-			parameters["operator"] = topics[2]
-			if data != "" && data != "0x" {
-				parameters["approved"] = data
-			}
-		}
-	case "Swap":
-		// Uniswap V2/V3 Swap event
-		parameters["raw_data"] = data
-		if len(topics) >= 2 {
-			parameters["sender"] = topics[1]
-		}
-		if len(topics) >= 3 {
-			parameters["to"] = topics[2]
-		}
-	case "Sync":
-		// Uniswap V2 Sync event
-		parameters["raw_data"] = data
-	case "PairCreated":
-		// Uniswap V2 PairCreated event
-		if len(topics) >= 3 {
-			parameters["token0"] = topics[1]
-			parameters["token1"] = topics[2]
-		}
-		parameters["raw_data"] = data
-	default:
-		// For unknown events, store raw data
-		parameters["raw_data"] = data
-		for i, topic := range topics {
-			parameters[fmt.Sprintf("topic_%d", i)] = topic
-		}
-	}
+	// Parse all events generically without hardcoded parameter names
+	t.parseGenericEvent(topics, data, parameters)
 
 	return eventName, parameters
 }
@@ -712,26 +648,10 @@ func (t *LogDecoder) cleanAddress(address string) string {
 	return address
 }
 
-// parseEventBySignature handles event parsing by signature/name (fallback method)
+// parseEventBySignature handles all events generically without hardcoded names
 func (t *LogDecoder) parseEventBySignature(eventName string, topics []string, data string, parameters map[string]interface{}) {
-	// Parse parameters based on signature
-	switch eventName {
-	case "Transfer":
-		t.parseTransferEvent(topics, data, parameters)
-	case "TransferSingle":
-		// ERC-1155 single transfer event
-		t.parseTransferSingleEvent(topics, data, parameters)
-	case "TransferBatch":
-		// ERC-1155 batch transfer event  
-		t.parseTransferBatchEvent(topics, data, parameters)
-	case "Approval":
-		t.parseApprovalEvent(topics, data, parameters)
-	case "Swap":
-		t.parseSwapEvent(topics, data, parameters)
-	default:
-		// For unknown events, extract all available parameters generically
-		t.parseGenericEvent(topics, data, parameters)
-	}
+	// All events are now handled generically - no hardcoded event names
+	t.parseGenericEvent(topics, data, parameters)
 }
 
 // parseGenericEvent extracts all available parameters from any event generically
@@ -741,36 +661,12 @@ func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters 
 		paramName := fmt.Sprintf("param_%d", i)
 		paramValue := topics[i]
 		
-		// Try to clean address values
-		if len(paramValue) == 66 && strings.HasPrefix(paramValue, "0x") {
-			// Could be a padded address or uint256
-			if strings.HasPrefix(paramValue, "0x000000000000000000000000") {
-				// Padded address - extract the address part
-				cleanAddr := t.cleanAddress(paramValue)
-				if cleanAddr != "0x0000000000000000000000000000000000000000" {
-					parameters[paramName] = cleanAddr
-					parameters[paramName+"_type"] = "address"
-				} else {
-					// Zero address or large number
-					parameters[paramName] = paramValue
-					parameters[paramName+"_type"] = "uint256"
-				}
-			} else {
-				// Try to parse as uint256
-				if parsed, err := strconv.ParseUint(paramValue[2:], 16, 64); err == nil && parsed < 1000000 {
-					// Small number, likely an ID or enum
-					parameters[paramName] = parsed
-					parameters[paramName+"_type"] = "uint256"
-				} else {
-					// Large number or other data
-					parameters[paramName] = paramValue
-					parameters[paramName+"_type"] = "bytes32"
-				}
-			}
-		} else {
-			parameters[paramName] = paramValue
-			parameters[paramName+"_type"] = "bytes32"
-		}
+		// Store original hex value
+		parameters[paramName] = paramValue
+		parameters[paramName+"_type"] = "indexed"
+		
+		// Add decoded formats for additional context
+		t.addDecodedFormats(parameters, paramName, paramValue)
 	}
 	
 	// Parse data field if present
@@ -784,29 +680,177 @@ func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters 
 					paramHex := "0x" + data[2+offset:2+offset+64]
 					paramName := fmt.Sprintf("param_%d", paramIndex)
 					
-					// Try to parse as different types
-					if parsed, err := strconv.ParseUint(paramHex[2:], 16, 64); err == nil {
-						if parsed == 0 || parsed == 1 {
-							// Likely boolean
-							parameters[paramName] = parsed == 1
-							parameters[paramName+"_type"] = "bool"
-						} else if parsed < 1000000 {
-							// Small number, likely ID or enum
-							parameters[paramName] = parsed
-							parameters[paramName+"_type"] = "uint256"
-						} else {
-							// Large number
-							parameters[paramName] = paramHex
-							parameters[paramName+"_type"] = "uint256"
-						}
-					} else {
-						parameters[paramName] = paramHex
-						parameters[paramName+"_type"] = "bytes32"
-					}
+					// Store original hex value
+					parameters[paramName] = paramHex
+					parameters[paramName+"_type"] = "data"
+					
+					// Add decoded formats for additional context
+					t.addDecodedFormats(parameters, paramName, paramHex)
 					
 					paramIndex++
 				}
 			}
 		}
 	}
+}
+
+// addDecodedFormats adds decimal, UTF-8, and address decoded versions of hex parameters
+func (t *LogDecoder) addDecodedFormats(parameters map[string]interface{}, paramKey, hexValue string) {
+	// Try to convert to decimal (for numeric values)
+	if decimal := t.hexToDecimal(hexValue); decimal != "" {
+		parameters[paramKey+"_decimal"] = decimal
+	}
+	
+	// Try to convert to UTF-8 string (for string values)
+	if utf8Str := t.hexToUTF8(hexValue); utf8Str != "" {
+		parameters[paramKey+"_utf8"] = utf8Str
+	}
+	
+	// For addresses, clean up the format
+	if t.isLikelyAddress(hexValue) {
+		parameters[paramKey+"_address"] = t.cleanAddressFormat(hexValue)
+	}
+	
+	// For boolean-like values
+	if t.isLikelyBoolean(hexValue) {
+		parameters[paramKey+"_boolean"] = t.hexToBoolean(hexValue)
+	}
+}
+
+// hexToDecimal converts hex string to decimal string (for likely numeric values)
+func (t *LogDecoder) hexToDecimal(hexStr string) string {
+	// Remove 0x prefix
+	cleanHex := strings.TrimPrefix(hexStr, "0x")
+	if len(cleanHex) == 0 {
+		return ""
+	}
+	
+	// Convert to big.Int to handle large numbers
+	bigInt := new(big.Int)
+	if _, ok := bigInt.SetString(cleanHex, 16); !ok {
+		return ""
+	}
+	
+	// Only include decimal if it's non-zero or exactly zero
+	if bigInt.Cmp(big.NewInt(0)) == 0 {
+		return "0"
+	}
+	
+	decimalStr := bigInt.String()
+	
+	// For very large numbers, add a hint
+	if len(decimalStr) > 15 {
+		return decimalStr + " (large_number)"
+	}
+	
+	return decimalStr
+}
+
+// hexToUTF8 attempts to convert hex to UTF-8 string if it contains readable text
+func (t *LogDecoder) hexToUTF8(hexStr string) string {
+	// Remove 0x prefix
+	cleanHex := strings.TrimPrefix(hexStr, "0x")
+	if len(cleanHex) == 0 || len(cleanHex)%2 != 0 {
+		return ""
+	}
+	
+	// Convert hex to bytes
+	bytes, err := hex.DecodeString(cleanHex)
+	if err != nil {
+		return ""
+	}
+	
+	// Remove null bytes (common in padded strings)
+	if lastNonZero := t.findLastNonZero(bytes); lastNonZero >= 0 {
+		bytes = bytes[:lastNonZero+1]
+	} else {
+		return "" // All zeros
+	}
+	
+	// Check if it's valid UTF-8 and contains mostly printable characters
+	if !utf8.Valid(bytes) {
+		return ""
+	}
+	
+	str := string(bytes)
+	
+	// Only return if it contains mostly printable ASCII/UTF-8 characters and is meaningful
+	if t.isPrintableString(str) && len(str) >= 2 {
+		return str
+	}
+	
+	return ""
+}
+
+// isLikelyAddress checks if hex value looks like an Ethereum address
+func (t *LogDecoder) isLikelyAddress(hexStr string) bool {
+	cleanHex := strings.TrimPrefix(hexStr, "0x")
+	
+	// Ethereum addresses are 40 hex characters, but can be padded to 64
+	if len(cleanHex) == 64 {
+		// Check if first 24 characters are zeros (padded address)
+		return cleanHex[:24] == "000000000000000000000000"
+	}
+	
+	return len(cleanHex) == 40
+}
+
+// isLikelyBoolean checks if hex value represents a boolean (0 or 1)
+func (t *LogDecoder) isLikelyBoolean(hexStr string) bool {
+	cleanHex := strings.TrimPrefix(hexStr, "0x")
+	
+	// Remove leading zeros
+	cleanHex = strings.TrimLeft(cleanHex, "0")
+	
+	return cleanHex == "" || cleanHex == "1" // empty means all zeros (false), "1" means true
+}
+
+// hexToBoolean converts hex to boolean value
+func (t *LogDecoder) hexToBoolean(hexStr string) bool {
+	cleanHex := strings.TrimPrefix(hexStr, "0x")
+	cleanHex = strings.TrimLeft(cleanHex, "0")
+	
+	return cleanHex == "1"
+}
+
+// cleanAddressFormat extracts clean address from padded hex
+func (t *LogDecoder) cleanAddressFormat(hexStr string) string {
+	cleanHex := strings.TrimPrefix(hexStr, "0x")
+	
+	if len(cleanHex) == 64 && cleanHex[:24] == "000000000000000000000000" {
+		return "0x" + cleanHex[24:]
+	}
+	
+	if len(cleanHex) == 40 {
+		return "0x" + cleanHex
+	}
+	
+	return hexStr
+}
+
+// findLastNonZero finds the index of the last non-zero byte
+func (t *LogDecoder) findLastNonZero(bytes []byte) int {
+	for i := len(bytes) - 1; i >= 0; i-- {
+		if bytes[i] != 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// isPrintableString checks if string contains mostly printable characters
+func (t *LogDecoder) isPrintableString(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	
+	printableCount := 0
+	for _, r := range s {
+		if unicode.IsPrint(r) || unicode.IsSpace(r) {
+			printableCount++
+		}
+	}
+	
+	// At least 80% of characters should be printable
+	return float64(printableCount)/float64(len([]rune(s))) >= 0.8
 }
