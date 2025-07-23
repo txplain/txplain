@@ -53,7 +53,7 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 
 	// Initialize static context provider first (needed by transaction explainer)
 	staticProvider := txtools.NewStaticContextProvider()
-	
+
 	// Initialize transaction explainer (now uses baggage pipeline with RAG)
 	explainer := txtools.NewTransactionExplainer(llm, staticProvider)
 
@@ -85,7 +85,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		return "Unknown"
 	}(), request.NetworkID)
 	fmt.Println(strings.Repeat("🌟", 40))
-	
+
 	// Validate input
 	if !models.IsValidNetwork(request.NetworkID) {
 		return nil, fmt.Errorf("unsupported network ID: %d", request.NetworkID)

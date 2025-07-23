@@ -123,7 +123,7 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 		fmt.Println("\n" + strings.Repeat("=", 80))
 		fmt.Printf("🚀 STARTING TRANSACTION PROCESSING PIPELINE (%d tools)\n", len(p.order))
 		fmt.Println(strings.Repeat("=", 80))
-		
+
 		// Show execution order
 		fmt.Println("\n📋 EXECUTION ORDER:")
 		for i, name := range p.order {
@@ -139,7 +139,7 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 	}
 
 	startTime := time.Now()
-	
+
 	for i, name := range p.order {
 		processor, exists := p.processors[name]
 		if !exists {
@@ -170,7 +170,7 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 	}
 
 	totalDuration := time.Since(startTime)
-	
+
 	if p.verbose {
 		fmt.Println(strings.Repeat("=", 80))
 		fmt.Printf("🎉 PIPELINE COMPLETED SUCCESSFULLY in %v\n", totalDuration)

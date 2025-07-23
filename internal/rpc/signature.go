@@ -42,7 +42,7 @@ type SignatureResolver struct {
 func NewSignatureResolver(rpcClient *Client, use4ByteAPI bool) *SignatureResolver {
 	return &SignatureResolver{
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: 300 * time.Second, // 5 minutes for signature resolution
 		},
 		rpcClient:   rpcClient,
 		cache:       make(map[string]*SignatureInfo),

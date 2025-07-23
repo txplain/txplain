@@ -52,7 +52,7 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 	if t.verbose {
 		fmt.Printf("TransactionExplainer.Process: Starting with %d baggage items\n", len(baggage))
 	}
-	
+
 	// Clean up baggage first - remove unnecessary data before processing
 	t.cleanupBaggage(baggage)
 
@@ -201,8 +201,6 @@ func (t *TransactionExplainer) cleanupBaggage(baggage map[string]interface{}) {
 		baggage["contract_addresses"] = uniqueAddresses
 	}
 }
-
-
 
 // Name returns the tool name
 func (t *TransactionExplainer) Name() string {
@@ -356,9 +354,12 @@ func (t *TransactionExplainer) parseExplanationResponse(ctx context.Context, res
 		}
 	}
 
-	// Token transfers should be provided via the Process method/baggage
-	// For Run method, leave empty for now
-	result.Transfers = []models.TokenTransfer{}
+	// Extract token transfers from baggage (set by TokenTransferExtractor)
+	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok {
+		result.Transfers = transfers
+	} else {
+		result.Transfers = []models.TokenTransfer{} // Empty if no transfers found
+	}
 
 	// Get tags from tag resolver (probabilistic approach)
 	if tags, ok := baggage["tags"].([]string); ok {
@@ -830,11 +831,11 @@ func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedD
 	}
 
 	// Handle LLM response and potential function calls
-	return t.processRAGResponse(ctx, response, decodedData, baggage)
+	return t.processRAGResponse(ctx, response, decodedData, baggage, lightweightContext)
 }
 
 // processRAGResponse processes LLM response with potential function calls
-func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response *llms.ContentResponse, decodedData *models.DecodedData, baggage map[string]interface{}) (*models.ExplanationResult, error) {
+func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response *llms.ContentResponse, decodedData *models.DecodedData, baggage map[string]interface{}, lightweightContext []string) (*models.ExplanationResult, error) {
 	if response == nil || len(response.Choices) == 0 {
 		return nil, fmt.Errorf("no response from LLM")
 	}
@@ -854,7 +855,7 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 		functionMessages = append(functionMessages, llms.MessageContent{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
-				llms.TextPart(t.buildRAGEnabledPrompt(decodedData, []string{})), // Rebuild the original prompt
+				llms.TextPart(t.buildRAGEnabledPrompt(decodedData, lightweightContext)), // Rebuild the original prompt with full context
 			},
 		})
 
@@ -873,7 +874,7 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 				},
 			})
 		}
-		
+
 		functionMessages = append(functionMessages, llms.MessageContent{
 			Role:  llms.ChatMessageTypeAI,
 			Parts: assistantParts,
@@ -924,6 +925,14 @@ func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response 
 				},
 			})
 		}
+
+		// Add final instruction to ensure LLM provides the explanation
+		functionMessages = append(functionMessages, llms.MessageContent{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart("Now provide the final transaction explanation in the required format based on the search results and transaction context above."),
+			},
+		})
 
 		if t.verbose {
 			fmt.Println("=== SENDING FUNCTION RESULTS BACK TO LLM ===")

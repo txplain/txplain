@@ -53,7 +53,7 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 		fmt.Printf("📦 Baggage keys available: %v\n", getKeys(baggage))
 		fmt.Println(strings.Repeat("📝", 60))
 	}
-	
+
 	// Get the explanation result
 	explanation, ok := baggage["explanation"].(*models.ExplanationResult)
 	if !ok || explanation == nil {

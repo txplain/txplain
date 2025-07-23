@@ -78,7 +78,7 @@ func TestMonetaryValueEnricher_FetchNativeTokenPrice_Integration(t *testing.T) {
 
 	llm, _ := openai.New()
 	enricher := NewMonetaryValueEnricher(llm, apiKey)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Test major native tokens
@@ -124,7 +124,7 @@ func TestMonetaryValueEnricher_GasFeesCalculation_Integration(t *testing.T) {
 
 	llm, _ := openai.New()
 	enricher := NewMonetaryValueEnricher(llm, apiKey)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Get available networks dynamically instead of hardcoding specific networks
@@ -212,7 +212,7 @@ func TestMonetaryValueEnricher_Process_Integration(t *testing.T) {
 
 	llm, _ := openai.New()
 	enricher := NewMonetaryValueEnricher(llm, apiKey)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Get first available network dynamically instead of hardcoding Polygon
@@ -313,7 +313,7 @@ func TestMonetaryValueEnricher_Process_Integration(t *testing.T) {
 func TestMonetaryValueEnricher_InvalidAPIKey(t *testing.T) {
 	llm, _ := openai.New()
 	enricher := NewMonetaryValueEnricher(llm, "invalid-api-key")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// This should fail and fall back to hardcoded values

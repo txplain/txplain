@@ -91,16 +91,16 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 
 	if a.verbose {
 		fmt.Printf("✅ Validated %d amounts after filtering\n", len(validatedAmounts))
-		
+
 		// Show summary of detected amounts
 		if len(validatedAmounts) > 0 {
 			fmt.Println("\n📋 DETECTED AMOUNTS SUMMARY:")
 			for i, amount := range validatedAmounts {
-				fmt.Printf("   %d. %s %s (%s) - Confidence: %.2f\n", 
+				fmt.Printf("   %d. %s %s (%s) - Confidence: %.2f\n",
 					i+1, amount.Amount, amount.TokenSymbol, amount.AmountType, amount.Confidence)
 			}
 		}
-		
+
 		fmt.Println("\n" + strings.Repeat("💰", 60))
 		fmt.Println("✅ AMOUNTS FINDER: Completed successfully")
 		fmt.Println(strings.Repeat("💰", 60) + "\n")
@@ -137,6 +137,31 @@ func (a *AmountsFinder) buildAnalysisContext(baggage map[string]interface{}) str
 			if input, ok := tx["input"].(string); ok && input != "0x" {
 				contextParts = append(contextParts, fmt.Sprintf("- Input data: %s", input))
 			}
+		}
+
+		// Add gas fee information for detection as an amount
+		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
+			contextParts = append(contextParts, "\n### GAS FEE DATA (for gas fee amount detection):")
+
+			// Gas used and effective gas price
+			if gasUsed, ok := receipt["gasUsed"].(string); ok {
+				contextParts = append(contextParts, fmt.Sprintf("- Gas Used: %s", gasUsed))
+			}
+			if effectiveGasPrice, ok := receipt["effectiveGasPrice"].(string); ok {
+				contextParts = append(contextParts, fmt.Sprintf("- Effective Gas Price: %s", effectiveGasPrice))
+			}
+
+			// Network ID for native token identification
+			if networkID, ok := rawData["network_id"].(float64); ok {
+				contextParts = append(contextParts, fmt.Sprintf("- Network ID: %.0f", networkID))
+			}
+
+			// Transaction sender (who paid gas)
+			if from, ok := receipt["from"].(string); ok {
+				contextParts = append(contextParts, fmt.Sprintf("- Gas Paid By: %s", from))
+			}
+
+			contextParts = append(contextParts, "- Note: Gas fees should be detected as 'fee' type amounts using native token contract")
 		}
 	}
 
@@ -211,12 +236,14 @@ ANALYSIS INSTRUCTIONS:
    - Event parameters like "value", "amount", "quantity", "balance", etc.
    - Function call parameters that contain amounts
    - Native token values in transaction data
+   - Gas fees (calculate from gasUsed × effectiveGasPrice for native token amounts)
    - Any hex or decimal numbers that could represent token amounts
 
 2. **ASSOCIATE WITH TOKENS**: For each amount, determine:
    - The token contract address that this amount refers to
    - The token symbol if available from the context
    - Whether this is a known ERC20 token based on available metadata
+   - For gas fees, use "native" as token_contract and derive symbol from network (ETH for Ethereum, etc.)
 
 3. **CATEGORIZE AMOUNTS**: Classify each amount by type:
    - "transfer" - standard token transfers between addresses
@@ -229,13 +256,24 @@ ANALYSIS INSTRUCTIONS:
    - "withdraw" - tokens withdrawn from a protocol
    - "other" - any other type of amount
 
-4. **VALIDATION RULES**:
-   - Only include amounts that have clear token contract associations
+4. **GAS FEE DETECTION**: ALWAYS detect gas fees when gasUsed and effectiveGasPrice are available:
+   - Calculate total gas fee: gasUsed × effectiveGasPrice (result in wei for Ethereum)
+   - Use amount_type: "fee"
+   - Use token_contract: "native" 
+   - Use token_symbol based on network: "ETH" for network 1, "MATIC" for 137, "BNB" for 56, etc.
+   - Use from_address: the transaction sender (who paid the gas)
+   - Context: "Gas fee - calculated from gasUsed × effectiveGasPrice"
+   - Confidence: 1.0 (gas fees are always certain)
+
+5. **VALIDATION RULES**:
+   - Only include amounts that have clear token contract associations OR are gas fees
    - Skip amounts of zero or empty values
    - Skip raw transaction data that doesn't represent token amounts
    - Focus on meaningful amounts that represent actual value transfers
+   - ALWAYS include gas fees when gas data is available
 
-5. **CONFIDENCE SCORING**:
+6. **CONFIDENCE SCORING**:
+   - 1.0: Gas fees and verified amounts with clear contract associations
    - 0.9-1.0: Clear token contract + verified metadata + explicit amount parameter
    - 0.7-0.9: Clear token contract + amount parameter, but less context
    - 0.5-0.7: Inferred token contract + probable amount
@@ -247,16 +285,22 @@ Respond with a JSON array of detected amounts. Each should include:
 
 {
   "amount": "hex or decimal amount value",
-  "token_contract": "0x...",
+  "token_contract": "FULL CONTRACT ADDRESS (0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48) or 'native' for gas fees - NEVER use shortened addresses",
   "token_symbol": "SYMBOL or empty",
   "amount_type": "transfer|swap_in|swap_out|fee|mint|burn|deposit|withdraw|other",
   "context": "where found (event name + parameter name)",
   "confidence": 0.85,
-  "from_address": "0x... or empty",
-  "to_address": "0x... or empty", 
-  "event_contract": "0x... contract that emitted the event",
+  "from_address": "FULL ADDRESS (0x55fe002aeff02f77364de339a1292923a15844b8) or empty - NEVER use shortened addresses",
+  "to_address": "FULL ADDRESS (0x0000000000000000000000000000000000000000) or empty - NEVER use shortened addresses", 
+  "event_contract": "FULL CONTRACT ADDRESS that emitted the event - NEVER use shortened addresses",
   "is_valid_token": false
 }
+
+CRITICAL RULE FOR JSON OUTPUT:
+- Always use FULL 42-CHARACTER contract addresses in the JSON output (0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)
+- NEVER use shortened addresses (0xa0b8...eb48) in the JSON token_contract, from_address, to_address, or event_contract fields  
+- The Address Formatting Guide is ONLY for explanatory text - JSON output must use full addresses
+- If you see a shortened address in the context, use the full address from the mapping above
 
 EXAMPLE ANALYSIS:
 
@@ -264,14 +308,30 @@ Good Example - ERC20 Transfer:
 [
   {
     "amount": "0x1bc16d674ec80000",
-    "token_contract": "0xa0b86a33e6c6c67d3c6d3d6d3d6d3d6d3d6d3d6d",
+    "token_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
     "token_symbol": "USDC",
     "amount_type": "transfer",
     "context": "Transfer event - value parameter",
     "confidence": 0.95,
-    "from_address": "0x1234...",
-    "to_address": "0x5678...",
-    "event_contract": "0xa0b86a33e6c6c67d3c6d3d6d3d6d3d6d3d6d3d6d",
+    "from_address": "0x55fe002aeff02f77364de339a1292923a15844b8",
+    "to_address": "0x0000000000000000000000000000000000000000",
+    "event_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "is_valid_token": false
+  }
+]
+
+Good Example - Gas Fee:
+[
+  {
+    "amount": "21000000000000000",
+    "token_contract": "native",
+    "token_symbol": "ETH",
+    "amount_type": "fee",
+    "context": "Gas fee - calculated from gasUsed × effectiveGasPrice",
+    "confidence": 1.0,
+    "from_address": "0x55fe002aeff02f77364de339a1292923a15844b8",
+    "to_address": "",
+    "event_contract": "",
     "is_valid_token": false
   }
 ]
@@ -285,26 +345,26 @@ Good Example - DEX Swap:
     "amount_type": "swap_in",
     "context": "Swap event - amount0In parameter",
     "confidence": 0.9,
-    "from_address": "0xuser...",
-    "to_address": "0xpool...",
-    "event_contract": "0xpair_contract...",
+    "from_address": "0x55fe002aeff02f77364de339a1292923a15844b8",
+    "to_address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "event_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
     "is_valid_token": false
   },
   {
     "amount": "2500000000",
-    "token_contract": "0xa0b86a33e6c6cd67d26c0a6c6cd67d26c0a6c6cd6",
+    "token_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
     "token_symbol": "USDC", 
     "amount_type": "swap_out",
     "context": "Swap event - amount1Out parameter",
     "confidence": 0.9,
-    "from_address": "0xpool...",
-    "to_address": "0xuser...",
-    "event_contract": "0xpair_contract...",
+    "from_address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "to_address": "0x55fe002aeff02f77364de339a1292923a15844b8",
+    "event_contract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
     "is_valid_token": false
   }
 ]
 
-Be thorough but precise. Only include amounts where you can confidently identify the associated token contract and the amount represents actual value flow.`, contextData)
+Be thorough but precise. Only include amounts where you can confidently identify the associated token contract and the amount represents actual value flow. ALWAYS include gas fees when gas data is available.`, contextData)
 }
 
 // validateTokenContracts validates that detected token contracts are real ERC20 tokens

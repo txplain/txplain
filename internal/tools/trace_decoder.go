@@ -15,6 +15,7 @@ import (
 type TraceDecoder struct {
 	rpcClient         *rpc.Client
 	signatureResolver *rpc.SignatureResolver
+	verbose           bool // Added verbose flag
 }
 
 // NewTraceDecoder creates a new TraceDecoder tool
@@ -27,7 +28,13 @@ func NewTraceDecoderWithRPC(rpcClient *rpc.Client) *TraceDecoder {
 	return &TraceDecoder{
 		rpcClient:         rpcClient,
 		signatureResolver: rpc.NewSignatureResolver(rpcClient, true), // Enable 4byte API
+		verbose:           false,
 	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (t *TraceDecoder) SetVerbose(verbose bool) {
+	t.verbose = verbose
 }
 
 // Name returns the tool name
@@ -47,17 +54,35 @@ func (t *TraceDecoder) Dependencies() []string {
 
 // Process processes trace data from baggage and stores decoded calls
 func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if t.verbose {
+		fmt.Println("\n" + strings.Repeat("🔍", 60))
+		fmt.Println("🔍 TRACE DECODER: Starting transaction trace decoding")
+		fmt.Println(strings.Repeat("🔍", 60))
+	}
+
 	// Extract raw data from baggage
 	rawData, ok := baggage["raw_data"].(map[string]interface{})
 	if !ok {
+		if t.verbose {
+			fmt.Println("❌ Missing raw_data in baggage")
+			fmt.Println(strings.Repeat("🔍", 60) + "\n")
+		}
 		return fmt.Errorf("missing raw_data in baggage")
 	}
 
 	traceData, ok := rawData["trace"].(map[string]interface{})
 	if !ok || traceData == nil {
+		if t.verbose {
+			fmt.Println("⚠️  No trace data available, adding empty calls")
+			fmt.Println(strings.Repeat("🔍", 60) + "\n")
+		}
 		// No trace data available, set empty calls in baggage
 		baggage["calls"] = []models.Call{}
 		return nil
+	}
+
+	if t.verbose {
+		fmt.Println("📊 Found trace data to decode")
 	}
 
 	networkID := int64(1) // Default to Ethereum
@@ -65,19 +90,68 @@ func (t *TraceDecoder) Process(ctx context.Context, baggage map[string]interface
 		networkID = int64(nid)
 	}
 
+	if t.verbose {
+		fmt.Printf("🌐 Network ID: %d\n", networkID)
+	}
+
 	// Set up RPC client for this network if not already set
 	if t.rpcClient == nil {
+		if t.verbose {
+			fmt.Println("🔧 Setting up RPC client and signature resolver...")
+		}
 		var err error
 		t.rpcClient, err = rpc.NewClient(networkID)
 		if err != nil {
+			if t.verbose {
+				fmt.Printf("❌ Failed to create RPC client: %v\n", err)
+				fmt.Println(strings.Repeat("🔍", 60) + "\n")
+			}
 			return fmt.Errorf("failed to create RPC client: %w", err)
 		}
 		t.signatureResolver = rpc.NewSignatureResolver(t.rpcClient, true)
+		if t.verbose {
+			fmt.Println("✅ RPC client and signature resolver ready")
+		}
+	}
+
+	if t.verbose {
+		fmt.Println("🔄 Decoding trace with RPC introspection...")
 	}
 
 	calls, err := t.decodeTrace(ctx, traceData, networkID)
 	if err != nil {
+		if t.verbose {
+			fmt.Printf("❌ Failed to decode trace: %v\n", err)
+			fmt.Println(strings.Repeat("🔍", 60) + "\n")
+		}
 		return fmt.Errorf("failed to decode trace: %w", err)
+	}
+
+	if t.verbose {
+		fmt.Printf("✅ Successfully decoded %d calls\n", len(calls))
+
+		// Show summary of decoded calls
+		if len(calls) > 0 {
+			fmt.Println("\n📋 DECODED CALLS SUMMARY:")
+			for i, call := range calls {
+				callDisplay := fmt.Sprintf("   %d. %s", i+1, call.CallType)
+				if call.Method != "" {
+					callDisplay += fmt.Sprintf(" %s", call.Method)
+				}
+				if call.Contract != "" {
+					callDisplay += fmt.Sprintf(" (contract: %s)", call.Contract[:10]+"...")
+				}
+				if call.Value != "" && call.Value != "0" && call.Value != "0x0" {
+					callDisplay += fmt.Sprintf(" [value: %s]", call.Value)
+				}
+				callDisplay += fmt.Sprintf(" - Success: %t", call.Success)
+				fmt.Println(callDisplay)
+			}
+		}
+
+		fmt.Println("\n" + strings.Repeat("🔍", 60))
+		fmt.Println("✅ TRACE DECODER: Completed successfully")
+		fmt.Println(strings.Repeat("🔍", 60) + "\n")
 	}
 
 	// Store calls in baggage for transaction explainer

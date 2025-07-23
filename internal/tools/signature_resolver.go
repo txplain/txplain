@@ -23,11 +23,11 @@ type SignatureResolver struct {
 
 // FourByteSignature represents a signature from 4byte.directory API
 type FourByteSignature struct {
-	ID            int    `json:"id"`
-	TextSignature string `json:"text_signature"`
-	HexSignature  string `json:"hex_signature"`
+	ID             int    `json:"id"`
+	TextSignature  string `json:"text_signature"`
+	HexSignature   string `json:"hex_signature"`
 	BytesSignature string `json:"bytes_signature,omitempty"`
-	CreatedAt     string `json:"created_at,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
 }
 
 // FourByteResponse represents the API response from 4byte.directory
@@ -50,7 +50,7 @@ type ResolvedSignature struct {
 func NewSignatureResolver() *SignatureResolver {
 	return &SignatureResolver{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 300 * time.Second, // 5 minutes for signature lookups
 		},
 		verbose: false,
 	}
@@ -227,12 +227,12 @@ func (s *SignatureResolver) resolveFunctionSignatures(ctx context.Context, bagga
 // lookupEventSignature looks up an event signature on 4byte.directory
 func (s *SignatureResolver) lookupEventSignature(ctx context.Context, hexSignature string) (*ResolvedSignature, error) {
 	baseURL := "https://www.4byte.directory/api/v1/event-signatures/"
-	
+
 	params := url.Values{}
 	params.Set("hex_signature", hexSignature)
-	
+
 	apiURL := baseURL + "?" + params.Encode()
-	
+
 	if s.verbose || os.Getenv("DEBUG") == "true" {
 		fmt.Printf("  Looking up event signature: %s\n", hexSignature)
 	}
@@ -268,7 +268,7 @@ func (s *SignatureResolver) lookupEventSignature(ctx context.Context, hexSignatu
 
 	// Return the first (most common) signature
 	result := response.Results[0]
-	
+
 	if s.verbose || os.Getenv("DEBUG") == "true" {
 		fmt.Printf("  ✅ Found event: %s\n", result.TextSignature)
 	}
@@ -284,12 +284,12 @@ func (s *SignatureResolver) lookupEventSignature(ctx context.Context, hexSignatu
 // lookupFunctionSignature looks up a function signature on 4byte.directory
 func (s *SignatureResolver) lookupFunctionSignature(ctx context.Context, hexSignature string) (*ResolvedSignature, error) {
 	baseURL := "https://www.4byte.directory/api/v1/signatures/"
-	
+
 	params := url.Values{}
 	params.Set("hex_signature", hexSignature)
-	
+
 	apiURL := baseURL + "?" + params.Encode()
-	
+
 	if s.verbose || os.Getenv("DEBUG") == "true" {
 		fmt.Printf("  Looking up function signature: %s\n", hexSignature)
 	}
@@ -325,7 +325,7 @@ func (s *SignatureResolver) lookupFunctionSignature(ctx context.Context, hexSign
 
 	// Return the first (most common) signature
 	result := response.Results[0]
-	
+
 	if s.verbose || os.Getenv("DEBUG") == "true" {
 		fmt.Printf("  ✅ Found function: %s\n", result.TextSignature)
 	}
@@ -349,7 +349,7 @@ func (s *SignatureResolver) GetPromptContext(ctx context.Context, baggage map[st
 	contextParts = append(contextParts, "### 4byte.directory Signature Resolutions:")
 
 	var eventSigs, functionSigs []string
-	
+
 	for _, sig := range resolvedSignatures {
 		if sig.Type == "event" {
 			eventSigs = append(eventSigs, fmt.Sprintf("- %s: %s", sig.Signature, sig.TextSignature))
@@ -381,4 +381,4 @@ func (s *SignatureResolver) GetRagContext(ctx context.Context, baggage map[strin
 	// This tool primarily provides context rather than search functionality
 	// But could be extended to allow LLM to search for specific signatures
 	return NewRagContext()
-} 
+}

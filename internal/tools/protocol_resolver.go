@@ -139,7 +139,7 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 	if p.verbose {
 		fmt.Printf("✅ Filtered to %d protocols above %.1f%% confidence\n",
 			len(highConfidenceProtocols), p.confidenceThreshold*100)
-		
+
 		// Show summary of detected protocols
 		if len(highConfidenceProtocols) > 0 {
 			fmt.Println("\n📋 DETECTED PROTOCOLS SUMMARY:")
@@ -148,7 +148,7 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 					i+1, protocol.Name, protocol.Type, protocol.Version, protocol.Confidence*100)
 			}
 		}
-		
+
 		fmt.Println("\n" + strings.Repeat("🏛️", 60))
 		fmt.Println("✅ PROTOCOL RESOLVER: Completed successfully")
 		fmt.Println(strings.Repeat("🏛️", 60) + "\n")
@@ -512,7 +512,7 @@ func (p *ProtocolResolver) GetPromptContext(ctx context.Context, baggage map[str
 // GetRagContext provides RAG context for protocol information
 func (p *ProtocolResolver) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
 	ragContext := NewRagContext()
-	
+
 	protocols, ok := baggage["protocols"].([]ProbabilisticProtocol)
 	if !ok || len(protocols) == 0 {
 		return ragContext

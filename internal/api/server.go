@@ -323,9 +323,9 @@ func (s *Server) Start() error {
 		Handler: s.router,
 
 		// Security settings
-		ReadTimeout:  60 * time.Second,
+		ReadTimeout:  300 * time.Second, // 5 minutes for complex requests
 		WriteTimeout: 300 * time.Second, // Long timeout for AI processing
-		IdleTimeout:  60 * time.Second,
+		IdleTimeout:  300 * time.Second, // 5 minutes idle timeout
 	}
 
 	log.Printf("Starting Txplain API server on %s", s.address)
