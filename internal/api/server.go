@@ -111,7 +111,7 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 	defer cancel()
 
 	// Process the transaction
@@ -121,7 +121,7 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 		log.Printf("ExplainTransaction failed: %v", err)
 		// Check for specific error types to provide better error messages
 		if ctx.Err() == context.DeadlineExceeded {
-			s.writeErrorResponse(w, http.StatusRequestTimeout, "Transaction analysis timed out after 120 seconds", err)
+			s.writeErrorResponse(w, http.StatusRequestTimeout, "Transaction analysis timed out after 300 seconds", err)
 		} else if ctx.Err() == context.Canceled {
 			s.writeErrorResponse(w, http.StatusRequestTimeout, "Request was canceled", err)
 		} else if strings.Contains(err.Error(), "context canceled") {
@@ -323,8 +323,8 @@ func (s *Server) Start() error {
 		Handler: s.router,
 
 		// Security settings
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 120 * time.Second, // Long timeout for AI processing
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 300 * time.Second, // Long timeout for AI processing
 		IdleTimeout:  60 * time.Second,
 	}
 

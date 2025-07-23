@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/txplain/txplain/internal/models"
 )
 
 // IconResolver discovers token icons from TrustWallet's GitHub repository
@@ -170,81 +168,6 @@ func (ir *IconResolver) checkIconExists(ctx context.Context, iconURL string) boo
 
 	// Consider 200 and 304 (not modified) as successful
 	return resp.StatusCode == 200 || resp.StatusCode == 304
-}
-
-// GetAnnotationContext provides annotation context with discovered icons
-func (ir *IconResolver) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
-	annotationContext := &models.AnnotationContext{
-		Items: make([]models.AnnotationContextItem, 0),
-	}
-
-	// Get discovered icons from baggage
-	discoveredIcons, ok := baggage["discovered_icons"].(map[string]string)
-	if !ok || len(discoveredIcons) == 0 {
-		return annotationContext
-	}
-
-	// Get token metadata for additional context
-	tokenMetadata, _ := baggage["token_metadata"].(map[string]*TokenMetadata)
-
-	// Add icon context for discovered icons
-	for address, iconURL := range discoveredIcons {
-		var metadata *TokenMetadata
-		if tokenMetadata != nil {
-			metadata, _ = tokenMetadata[strings.ToLower(address)]
-		}
-
-		name := "Unknown Token"
-		symbol := "TOKEN"
-		description := "Token contract"
-
-		if metadata != nil {
-			if metadata.Name != "" {
-				name = metadata.Name
-			}
-			if metadata.Symbol != "" {
-				symbol = metadata.Symbol
-			}
-			description = fmt.Sprintf("%s token", metadata.Type)
-			if metadata.Decimals > 0 {
-				description += fmt.Sprintf(" with %d decimals", metadata.Decimals)
-			}
-		}
-
-		// Add by address
-		annotationContext.AddItem(models.AnnotationContextItem{
-			Type:        "token",
-			Value:       address,
-			Name:        fmt.Sprintf("%s (%s)", name, symbol),
-			Icon:        iconURL,
-			Description: description,
-			Metadata: map[string]interface{}{
-				"address":     address,
-				"icon_source": "trustwallet_github",
-			},
-		})
-
-		// Add by symbol for easier matching
-		if symbol != "TOKEN" {
-			annotationContext.AddItem(models.AnnotationContextItem{
-				Type:        "token",
-				Value:       symbol,
-				Name:        fmt.Sprintf("%s (%s)", name, symbol),
-				Icon:        iconURL,
-				Description: description,
-				Metadata: map[string]interface{}{
-					"address":     address,
-					"icon_source": "trustwallet_github",
-				},
-			})
-		}
-	}
-
-	if ir.verbose && len(annotationContext.Items) > 0 {
-		fmt.Printf("IconResolver: Provided %d annotation context items with icons\n", len(annotationContext.Items))
-	}
-
-	return annotationContext
 }
 
 // GetPromptContext provides context for LLM prompts

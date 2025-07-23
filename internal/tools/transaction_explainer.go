@@ -5,46 +5,55 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"time"
-
-	"os"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/txplain/txplain/internal/models"
 )
 
-// TransactionExplainer generates human-readable explanations from decoded transaction data
+// TransactionExplainer generates human-readable explanations of blockchain transactions using TRUE RAG
 type TransactionExplainer struct {
-	llm     llms.Model
-	verbose bool
+	llm        llms.Model
+	ragService *RAGSearchService
+	verbose    bool
 }
 
-// NewTransactionExplainer creates a new TransactionExplainer tool
-func NewTransactionExplainer(llm llms.Model) *TransactionExplainer {
+// NewTransactionExplainer creates a new transaction explainer with TRUE RAG capabilities
+func NewTransactionExplainer(llm llms.Model, staticProvider *StaticContextProvider) *TransactionExplainer {
+	ragService := NewRAGSearchService(staticProvider)
 	return &TransactionExplainer{
-		llm:     llm,
-		verbose: false,
+		llm:        llm,
+		ragService: ragService,
+		verbose:    false,
 	}
 }
 
 // SetVerbose enables or disables verbose logging
 func (t *TransactionExplainer) SetVerbose(verbose bool) {
 	t.verbose = verbose
+	if t.ragService != nil {
+		t.ragService.SetVerbose(verbose)
+	}
 }
 
 // Dependencies returns the tools this processor depends on
 func (t *TransactionExplainer) Dependencies() []string {
-	return []string{"abi_resolver", "log_decoder", "token_transfer_extractor", "nft_decoder", "token_metadata_enricher", "amounts_finder", "erc20_price_lookup", "monetary_value_enricher", "ens_resolver", "protocol_resolver"}
+	return []string{
+		"abi_resolver", "log_decoder", "trace_decoder", "ens_resolver",
+		"token_metadata", "erc20_price_lookup", "monetary_value_enricher",
+		"protocol_resolver", "tag_resolver", "static_context_provider",
+	}
 }
 
-// Process generates explanation using all information from baggage
+// Process generates explanations using TRUE RAG with autonomous function calling
 func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]interface{}) error {
 	// Clean up baggage first - remove unnecessary data before processing
 	t.cleanupBaggage(baggage)
 
-	// Add decoded data and raw data to baggage for generateExplanationWithBaggage
+	// Add decoded data for the explanation generation
 	decodedData := &models.DecodedData{}
 
 	// Include events from log decoder
@@ -59,26 +68,36 @@ func (t *TransactionExplainer) Process(ctx context.Context, baggage map[string]i
 
 	baggage["decoded_data"] = decodedData
 
-	// Collect context from all context providers in the baggage
-	var additionalContext []string
-	if contextProviders, ok := baggage["context_providers"].([]ContextProvider); ok {
+	// TRUE RAG APPROACH: Collect lightweight context only
+	// The LLM will autonomously decide what detailed knowledge to retrieve
+	var lightweightContext []string
+	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
 		for _, provider := range contextProviders {
-			if context := provider.GetPromptContext(ctx, baggage); context != "" {
-				additionalContext = append(additionalContext, context)
+			// Try both unified Tool interface and legacy ContextProvider
+			if contextProvider, ok := provider.(interface {
+				GetPromptContext(context.Context, map[string]interface{}) string
+			}); ok {
+				if context := contextProvider.GetPromptContext(ctx, baggage); context != "" {
+					lightweightContext = append(lightweightContext, context)
+				}
 			}
 		}
+
 		// Remove context providers after use - they're no longer needed
 		delete(baggage, "context_providers")
-	}
 
-	// Generate explanation with context from other tools
-	explanation, err := t.generateExplanationWithBaggage(ctx, baggage, additionalContext)
-	if err != nil {
-		return fmt.Errorf("failed to generate explanation: %w", err)
-	}
+		// Generate explanation with autonomous RAG function calling
+		explanation, err := t.generateExplanation(ctx, decodedData, baggage, lightweightContext)
+		if err != nil {
+			return fmt.Errorf("failed to generate explanation with RAG: %w", err)
+		}
 
-	// Add explanation to baggage
-	baggage["explanation"] = explanation
+		// Add explanation to baggage
+		baggage["explanation"] = explanation
+	} else {
+		// This should never happen - all explanations use RAG now
+		return fmt.Errorf("no context providers found - cannot generate explanation")
+	}
 
 	// Final cleanup after processing
 	t.finalCleanup(baggage)
@@ -398,178 +417,7 @@ Focus ONLY on the main action. Don't explain blockchain basics or add warnings.
 
 ## Decoded Transaction Data:
 
-### Function Calls:`
-
-	// Add calls information - CLEANED UP VERSION
-	for i, call := range decodedData.Calls {
-		// Only include calls that are meaningful for explanation
-		if call.Contract == "" && call.Method == "" && call.Value == "" {
-			continue // Skip empty/meaningless calls
-		}
-
-		prompt += fmt.Sprintf(`
-
-Call #%d:`,
-			i+1)
-
-		if call.Contract != "" {
-			prompt += fmt.Sprintf(`
-- Contract: %s`, call.Contract)
-		}
-
-		if call.Method != "" {
-			prompt += fmt.Sprintf(`
-- Method: %s`, call.Method)
-		}
-
-		if call.CallType != "" {
-			prompt += fmt.Sprintf(`
-- Type: %s`, call.CallType)
-		}
-
-		// Only show ETH value if significant (> 0)
-		if call.Value != "" && call.Value != "0" && call.Value != "0x" && call.Value != "0x0" {
-			ethValue := t.weiToEther(call.Value)
-			if ethValue != "0" {
-				prompt += fmt.Sprintf(`
-- ETH Value: %s`, ethValue)
-			}
-		}
-
-		if !call.Success {
-			prompt += fmt.Sprintf(`
-- Failed: %s`, call.ErrorReason)
-		}
-
-		// Only include essential arguments, skip raw hex data
-		if len(call.Arguments) > 0 {
-			essentialArgs := make(map[string]interface{})
-			for key, value := range call.Arguments {
-				// Only include human-readable arguments, skip raw data
-				if key == "contract_name" || key == "contract_symbol" || key == "contract_type" {
-					if str, ok := value.(string); ok && str != "" {
-						essentialArgs[key] = str
-					}
-				}
-			}
-
-			if len(essentialArgs) > 0 {
-				prompt += `
-- Info:`
-				for key, value := range essentialArgs {
-					prompt += fmt.Sprintf(`
-  - %s: %v`, key, value)
-				}
-			}
-		}
-	}
-
-	prompt += `
-
-### Events Emitted:`
-
-	// Add events information - INCLUDE ALL DECODED FORMATS
-	for i, event := range decodedData.Events {
-		prompt += fmt.Sprintf(`
-
-Event #%d:
-- Contract: %s
-- Event: %s`,
-			i+1, event.Contract, event.Name)
-
-		// Include ALL meaningful parameters with their decoded formats
-		if len(event.Parameters) > 0 {
-			prompt += "\n- Parameters:"
-
-			// Group parameters by base name (param_1, param_2, etc.)
-			paramGroups := make(map[string]map[string]interface{})
-
-			for key, value := range event.Parameters {
-				// Include ALL parameters - let LLM decide what's meaningful for final explanation
-
-				// Extract base parameter name (e.g., "param_1" from "param_1_decimal")
-				var baseName string
-				if strings.Contains(key, "_") {
-					parts := strings.Split(key, "_")
-					if len(parts) >= 2 && (parts[0] == "param" || parts[0] == "topic") {
-						baseName = parts[0] + "_" + parts[1]
-					} else {
-						baseName = key
-					}
-				} else {
-					baseName = key
-				}
-
-				if paramGroups[baseName] == nil {
-					paramGroups[baseName] = make(map[string]interface{})
-				}
-				paramGroups[baseName][key] = value
-			}
-
-			// Display parameters with all their decoded formats
-			for baseName, group := range paramGroups {
-				if baseValue, exists := group[baseName]; exists {
-					prompt += fmt.Sprintf("\n  - %s: %v", baseName, baseValue)
-
-					// Add decoded formats on the same line for context
-					var decodedInfo []string
-
-					if decimal, exists := group[baseName+"_decimal"]; exists {
-						decodedInfo = append(decodedInfo, fmt.Sprintf("decimal: %v", decimal))
-					}
-
-					if address, exists := group[baseName+"_address"]; exists {
-						decodedInfo = append(decodedInfo, fmt.Sprintf("address: %v", address))
-					}
-
-					if boolean, exists := group[baseName+"_boolean"]; exists {
-						decodedInfo = append(decodedInfo, fmt.Sprintf("boolean: %v", boolean))
-					}
-
-					if utf8, exists := group[baseName+"_utf8"]; exists {
-						decodedInfo = append(decodedInfo, fmt.Sprintf("utf8: \"%v\"", utf8))
-					}
-
-					if paramType, exists := group[baseName+"_type"]; exists {
-						decodedInfo = append(decodedInfo, fmt.Sprintf("type: %v", paramType))
-					}
-
-					if len(decodedInfo) > 0 {
-						prompt += fmt.Sprintf(" (%s)", strings.Join(decodedInfo, ", "))
-					}
-				}
-			}
-		}
-	}
-
-	// Token transfers will be included via Additional Context from TokenTransferExtractor
-
-	// Add raw transaction context if available
-	if rawData != nil {
-		prompt += `
-
-### Transaction Context:`
-
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			// Always include transaction sender prominently
-			if from, ok := receipt["from"].(string); ok {
-				prompt += fmt.Sprintf(`
-- TRANSACTION SENDER: %s (the address that initiated this transaction)`, from)
-			}
-			if to, ok := receipt["to"].(string); ok {
-				prompt += fmt.Sprintf(`
-- Contract Called: %s`, to)
-			}
-			if gasUsed, ok := receipt["gasUsed"].(string); ok {
-				prompt += fmt.Sprintf(`
-- Total Gas Used: %s`, gasUsed)
-			}
-			if status, ok := receipt["status"].(string); ok {
-				prompt += fmt.Sprintf(`
-- Status: %s`, t.formatStatus(status))
-			}
-		}
-	}
+NOTE: Transaction context, function calls, and events data are provided by other tools in the Additional Context section below.`
 
 	// Add additional context from tools
 	for _, additionalContext := range additionalContexts {
@@ -1220,15 +1068,19 @@ func (t *TransactionExplainer) formatAmount(amount string, decimals int) string 
 	return amount
 }
 
-// GetPromptContext provides comprehensive context for the LLM prompt
+// GetPromptContext provides lightweight context for other tools
 func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
 	var contextParts []string
 
 	// Get all context from tools
-	if contextProviders, ok := baggage["context_providers"].([]ContextProvider); ok {
+	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
 		for _, provider := range contextProviders {
-			if context := provider.GetPromptContext(ctx, baggage); context != "" {
-				contextParts = append(contextParts, context)
+			if contextProvider, ok := provider.(interface {
+				GetPromptContext(context.Context, map[string]interface{}) string
+			}); ok {
+				if context := contextProvider.GetPromptContext(ctx, baggage); context != "" {
+					contextParts = append(contextParts, context)
+				}
 			}
 		}
 	}
@@ -1270,25 +1122,200 @@ func (t *TransactionExplainer) GetPromptContext(ctx context.Context, baggage map
 			}
 
 			// Add transfer enrichment debug info
-			if transferDebug, ok := debugInfo["transfer_enrichment"].([]string); ok {
-				debugParts = append(debugParts, "=== TRANSFER ENRICHMENT DEBUG ===")
-				for _, debug := range transferDebug {
-					debugParts = append(debugParts, "  - "+debug)
+			if transferDebug, ok := debugInfo["transfer_enricher"].(map[string]interface{}); ok {
+				debugParts = append(debugParts, "=== TRANSFER ENRICHER DEBUG ===")
+				if enrichedTransfers, ok := transferDebug["enriched_transfers"].([]string); ok {
+					debugParts = append(debugParts, "Enriched Transfers:")
+					for _, transfer := range enrichedTransfers {
+						debugParts = append(debugParts, "  - "+transfer)
+					}
 				}
 			}
 
 			if len(debugParts) > 0 {
 				contextParts = append(contextParts, strings.Join(debugParts, "\n"))
-
-				if t.verbose {
-					fmt.Printf("=== BAGGAGE DEBUG CONTEXT (%d sections) ===\n", len(debugParts))
-					fmt.Println(strings.Join(debugParts, "\n"))
-					fmt.Println("=== END OF BAGGAGE DEBUG CONTEXT ===")
-					fmt.Println()
-				}
 			}
 		}
 	}
 
 	return strings.Join(contextParts, "\n\n")
+}
+
+func (t *TransactionExplainer) GetRagContext(ctx context.Context, baggage map[string]interface{}) *RagContext {
+	ragContext := NewRagContext()
+	return ragContext
+}
+
+// generateExplanation generates explanation using autonomous LLM function calling with RAG
+func (t *TransactionExplainer) generateExplanation(ctx context.Context, decodedData *models.DecodedData, baggage map[string]interface{}, lightweightContext []string) (*models.ExplanationResult, error) {
+	// Build the prompt with lightweight context and RAG instructions
+	prompt := t.buildRAGEnabledPrompt(decodedData, lightweightContext)
+
+	if t.verbose {
+		fmt.Println("=== TRANSACTION EXPLAINER: TRUE RAG PROMPT ===")
+		fmt.Println(prompt)
+		fmt.Println("=== END OF PROMPT ===")
+		fmt.Println()
+	}
+
+	// Get RAG function tools for autonomous searching
+	ragTools := t.ragService.GetLangChainGoTools()
+
+	// Call LLM with function calling enabled - THE LLM DECIDES WHAT TO SEARCH
+	response, err := t.llm.GenerateContent(ctx, []llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart(prompt),
+			},
+		},
+	}, llms.WithTools(ragTools), llms.WithToolChoice("auto"))
+
+	if err != nil {
+		return nil, fmt.Errorf("LLM call failed: %w", err)
+	}
+
+	// Handle LLM response and potential function calls
+	return t.processRAGResponse(ctx, response, decodedData, baggage)
+}
+
+// processRAGResponse processes LLM response with potential function calls
+func (t *TransactionExplainer) processRAGResponse(ctx context.Context, response *llms.ContentResponse, decodedData *models.DecodedData, baggage map[string]interface{}) (*models.ExplanationResult, error) {
+	if response == nil || len(response.Choices) == 0 {
+		return nil, fmt.Errorf("no response from LLM")
+	}
+
+	choice := response.Choices[0]
+
+	// Check if LLM wants to call functions
+	if len(choice.ToolCalls) > 0 {
+		if t.verbose {
+			fmt.Printf("=== LLM REQUESTED %d FUNCTION CALLS ===\n", len(choice.ToolCalls))
+		}
+
+		// Process all function calls
+		var functionMessages []llms.MessageContent
+
+		// Add the assistant's response with tool calls
+		functionMessages = append(functionMessages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextPart(choice.Content)},
+		})
+
+		// Execute each function call
+		for _, toolCall := range choice.ToolCalls {
+			if t.verbose {
+				fmt.Printf("Executing function: %s with args: %s\n", toolCall.FunctionCall.Name, toolCall.FunctionCall.Arguments)
+			}
+
+			// Parse function arguments
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &args); err != nil {
+				return nil, fmt.Errorf("failed to parse function arguments: %w", err)
+			}
+
+			// Execute the RAG search function
+			result, err := t.ragService.HandleFunctionCall(ctx, toolCall.FunctionCall.Name, args)
+			if err != nil {
+				return nil, fmt.Errorf("RAG function call failed: %w", err)
+			}
+
+			// Convert result to JSON for LLM
+			resultJSON, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal function result: %w", err)
+			}
+
+			// Add function result message
+			functionMessages = append(functionMessages, llms.MessageContent{
+				Role: llms.ChatMessageTypeTool,
+				Parts: []llms.ContentPart{
+					llms.TextPart(string(resultJSON)),
+				},
+			})
+		}
+
+		if t.verbose {
+			fmt.Println("=== SENDING FUNCTION RESULTS BACK TO LLM ===")
+		}
+
+		// Send function results back to LLM for final response
+		finalResponse, err := t.llm.GenerateContent(ctx, functionMessages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get final response after function calls: %w", err)
+		}
+
+		// Parse the final response
+		if finalResponse != nil && len(finalResponse.Choices) > 0 {
+			responseText := finalResponse.Choices[0].Content
+
+			if t.verbose {
+				fmt.Println("=== TRANSACTION EXPLAINER: FINAL RAG-ENHANCED RESPONSE ===")
+				fmt.Println(responseText)
+				fmt.Println("=== END OF RESPONSE ===")
+				fmt.Println()
+			}
+
+			return t.parseExplanationResponse(ctx, responseText, decodedData, baggage, baggage), nil
+		}
+	} else {
+		// No function calls - process direct response
+		responseText := choice.Content
+
+		if t.verbose {
+			fmt.Println("=== TRANSACTION EXPLAINER: DIRECT RESPONSE (NO RAG CALLS) ===")
+			fmt.Println(responseText)
+			fmt.Println("=== END OF RESPONSE ===")
+			fmt.Println()
+		}
+
+		return t.parseExplanationResponse(ctx, responseText, decodedData, baggage, baggage), nil
+	}
+
+	return nil, fmt.Errorf("no valid response from LLM")
+}
+
+// buildRAGEnabledPrompt creates a prompt that encourages autonomous RAG usage
+func (t *TransactionExplainer) buildRAGEnabledPrompt(decodedData *models.DecodedData, lightweightContext []string) string {
+	prompt := `You are a blockchain transaction analyzer with autonomous search capabilities. Your task is to provide a VERY SHORT, precise summary of what this transaction accomplished.
+
+AUTONOMOUS SEARCH INSTRUCTIONS:
+- When you encounter UNKNOWN protocols, contracts, or addresses, USE the search functions available to you
+- Call search_protocols() when you see contract addresses you don't recognize that might be protocols
+- Call search_tokens() when you see token addresses or symbols you need more information about  
+- Call search_addresses() when you see addresses that might be well-known entities
+- The search functions do fuzzy matching, so partial matches work well
+- You can make multiple searches as needed to fully understand the transaction
+
+CRITICAL: Search autonomously when you encounter unknowns - don't guess or leave things unexplained.
+
+## Transaction Analysis:`
+
+	// Add lightweight context from other tools (events, calls, etc. already provided by relevant tools)
+	if len(lightweightContext) > 0 {
+		prompt += "\n\n### ADDITIONAL CONTEXT:\n"
+		for _, context := range lightweightContext {
+			prompt += context + "\n\n"
+		}
+	}
+
+	prompt += `
+
+## INSTRUCTIONS:
+
+1. **AUTONOMOUS SEARCHING**: When you see unknown contracts, tokens, or addresses, immediately search for them using the available functions
+2. **BE SPECIFIC**: Use exact numbers, amounts, and names from your searches
+3. **CONCISE OUTPUT**: Keep the final explanation under 30 words - users read it in 2 seconds
+4. **SEARCH FIRST, EXPLAIN SECOND**: Gather all needed information through searches, then provide the final explanation
+
+EXAMPLE WORKFLOW:
+1. See unknown contract 0x111111125... → search_protocols("0x111111125")
+2. Find it's "1inch Aggregation Router v6" → now you know it's a DEX aggregator  
+3. See token 0xa0b86a33... → search_tokens("0xa0b86a33")
+4. Find it's "Chainlink Token (LINK)" → now you have token details
+5. Provide final explanation: "User swapped 100 LINK via 1inch aggregator for 0.5 ETH + $1.20 gas"
+
+Search for anything you don't immediately recognize, then provide your concise explanation.`
+
+	return prompt
 }

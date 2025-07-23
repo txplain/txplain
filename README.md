@@ -44,6 +44,222 @@ Txplain uses a modular RPC-first design that prioritizes direct blockchain calls
 - 🌐 **Multi-Network Support**: Ethereum, Polygon, and Arbitrum
 - ⚡ **Minimal External Dependencies**: Only uses external APIs when RPC calls aren't sufficient
 
+## Architecture Principles
+
+⚠️ **CRITICAL**: All contributors and AI assistants MUST follow these architecture principles when working on this codebase.
+
+### Core Design Philosophy
+
+Txplain follows a **clean, decoupled pipeline architecture** where each tool is completely isolated and communicates through well-defined interfaces. This ensures zero logic leaks, maximum testability, and easy extensibility.
+
+### 🏗️ Tool Architecture Rules
+
+**Each tool MUST follow these 4 principles:**
+
+#### 1. **Dependencies Declaration** 
+```go
+func (t *MyTool) Dependencies() []string {
+    return []string{"dependency1", "dependency2"} // Enforces execution order
+}
+```
+
+#### 2. **Structured Data to Baggage**
+```go
+// ✅ GOOD: Add structured data for other tools' deterministic logic
+baggage["my_structured_data"] = MyStructuredData{...}
+```
+
+#### 3. **Text Context via GetPromptContext()**  
+```go
+// ✅ GOOD: Provide LLM context for other tools' probabilistic logic
+func (t *MyTool) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+    return "### MY TOOL CONTEXT:\n- Useful context for LLM analysis"
+}
+```
+
+#### 4. **Complete Tool Isolation**
+```go
+// ❌ FORBIDDEN: Never access baggage to build context from other tools
+func (t *MyTool) buildContextFromOtherTools(baggage map[string]interface{}) string {
+    // This violates isolation - DON'T DO THIS
+}
+
+// ✅ CORRECT: Use context from providers (same pattern as TransactionExplainer)
+func (t *MyTool) Process(ctx context.Context, baggage map[string]interface{}) error {
+    var additionalContext []string
+    if contextProviders, ok := baggage["context_providers"].([]ContextProvider); ok {
+        for _, provider := range contextProviders {
+            if context := provider.GetPromptContext(ctx, baggage); context != "" {
+                additionalContext = append(additionalContext, context)
+            }
+        }
+    }
+    contextData := strings.Join(additionalContext, "\n\n")
+    // Use contextData for LLM calls
+}
+```
+
+### 🔄 Context Flow Architecture
+
+```mermaid
+graph TD
+    A[Raw Transaction Data] --> B[Tool 1: Extracts addresses]
+    B --> C[Tool 2: Resolves ABIs] 
+    C --> D[Tool 3: Decodes events]
+    
+    B --> E[Baggage: Structured Data]
+    C --> E
+    D --> E
+    
+    B --> F[GetPromptContext: LLM Text]
+    C --> F  
+    D --> F
+    
+    E --> G[Tool N: Uses structured data for logic]
+    F --> H[Tool N: Uses LLM context for AI analysis]
+    
+    style E fill:#e3f2fd
+    style F fill:#f3e5f5
+    style G fill:#e8f5e8
+    style H fill:#fff3e0
+```
+
+### 📦 Data Flow Patterns
+
+#### ✅ **Correct Data Flow**
+
+**For Deterministic Logic:**
+```go
+// Tool A produces structured data
+baggage["token_transfers"] = []TokenTransfer{...}
+
+// Tool B consumes structured data  
+if transfers, ok := baggage["token_transfers"].([]TokenTransfer); ok {
+    // Process transfers deterministically
+}
+```
+
+**For LLM/AI Logic:**
+```go
+// Tool A provides context
+func (a *ToolA) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+    return "### TOKEN TRANSFERS:\n- USDT: 100 tokens transferred"
+}
+
+// Tool B uses context from providers
+var additionalContext []string
+if contextProviders, ok := baggage["context_providers"].([]ContextProvider); ok {
+    for _, provider := range contextProviders {
+        if context := provider.GetPromptContext(ctx, baggage); context != "" {
+            additionalContext = append(additionalContext, context)
+        }
+    }
+}
+// Use additionalContext for LLM calls
+```
+
+### 🚫 Anti-Patterns (DO NOT DO)
+
+#### ❌ **Hardcoded Logic**
+```go
+// DON'T: Hardcode specific event names or protocols
+if eventName == "Approval" {
+    // Hardcoded special case logic
+}
+```
+
+#### ❌ **Direct Baggage Context Building** 
+```go
+// DON'T: Build context by directly accessing other tools' baggage data
+func (t *MyTool) buildContext(baggage map[string]interface{}) string {
+    if events, ok := baggage["events"].([]Event); ok {
+        // This violates tool isolation
+    }
+}
+```
+
+#### ❌ **Logic Leaks Between Tools**
+```go
+// DON'T: Make tool behavior depend on internal details of other tools
+if protocolName == "Uniswap" && version == "v3" {
+    // This couples tools together
+}
+```
+
+### 🛠️ Adding New Tools
+
+When adding a new tool, follow this checklist:
+
+1. **✅ Implement Required Interfaces**
+   ```go
+   type MyNewTool struct {
+       // Tool state
+   }
+   
+   func (t *MyNewTool) Name() string { return "my_new_tool" }
+   func (t *MyNewTool) Dependencies() []string { return []string{"dependency1"} }
+   func (t *MyNewTool) Process(ctx context.Context, baggage map[string]interface{}) error { ... }
+   func (t *MyNewTool) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string { ... }
+   ```
+
+2. **✅ Add to Pipeline in Agent**
+   ```go
+   myTool := txtools.NewMyNewTool()
+   if err := pipeline.AddProcessor(myTool); err != nil {
+       return nil, fmt.Errorf("failed to add my tool: %w", err)
+   }
+   contextProviders = append(contextProviders, myTool)
+   ```
+
+3. **✅ Use Generic, AI-Driven Logic Only**
+   - Let the LLM handle classification and reasoning
+   - Avoid hardcoding protocol names, event types, or special cases
+   - Use structured data + context patterns exclusively
+
+### 🧪 Testing New Tools
+
+```go
+// Test data flow
+func TestMyToolDataFlow(t *testing.T) {
+    tool := NewMyNewTool()
+    baggage := map[string]interface{}{
+        "input_data": testData,
+    }
+    
+    // Test processing
+    err := tool.Process(ctx, baggage)
+    assert.NoError(t, err)
+    
+    // Test structured data output
+    result, ok := baggage["my_output"].(MyOutputType)
+    assert.True(t, ok)
+    assert.NotEmpty(t, result)
+    
+    // Test context output
+    context := tool.GetPromptContext(ctx, baggage)
+    assert.Contains(t, context, "### MY TOOL CONTEXT:")
+}
+```
+
+### 🎯 Benefits of This Architecture
+
+- **🔄 Zero Coupling**: Tools can be added/removed/modified independently
+- **🧪 100% Testable**: Each tool can be tested in isolation
+- **🚀 Scalable**: New functionality doesn't break existing tools
+- **🔍 Generic**: No hardcoded protocol or event logic anywhere
+- **🧠 AI-Powered**: LLM handles all classification and reasoning
+- **📦 Clean Interfaces**: Clear separation between structured data and LLM context
+
+### 🚨 Enforcement
+
+**Code reviewers and AI assistants MUST reject any code that:**
+- Hardcodes protocol names, event types, or special cases
+- Builds context by directly accessing other tools' baggage data  
+- Creates dependencies between tools beyond the explicit dependency system
+- Mixes deterministic logic with LLM context building
+
+**This architecture enables the entire system to be generic, maintainable, and extensible.** 🎯
+
 ## Installation
 
 ### Prerequisites

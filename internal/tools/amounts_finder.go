@@ -53,21 +53,31 @@ func (a *AmountsFinder) Dependencies() []string {
 
 // Process analyzes transaction context and identifies all relevant amounts
 func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interface{}) error {
+	fmt.Println("=== AMOUNTS FINDER: STARTING PROCESSING ===")
+
 	// Build comprehensive context for the LLM
 	contextData := a.buildAnalysisContext(baggage)
+
+	fmt.Printf("AMOUNTS FINDER: Built context with %d characters\n", len(contextData))
 
 	// Use LLM to identify all amounts
 	detectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData, baggage)
 	if err != nil {
+		fmt.Printf("AMOUNTS FINDER: LLM call failed: %v\n", err)
 		return fmt.Errorf("failed to identify amounts with LLM: %w", err)
 	}
+
+	fmt.Printf("AMOUNTS FINDER: LLM detected %d amounts\n", len(detectedAmounts))
 
 	// Validate token contracts and filter results
 	validatedAmounts := a.validateTokenContracts(detectedAmounts, baggage)
 
+	fmt.Printf("AMOUNTS FINDER: Validated %d amounts\n", len(validatedAmounts))
+
 	// Add to baggage for downstream tools
 	baggage["detected_amounts"] = validatedAmounts
 
+	fmt.Println("=== AMOUNTS FINDER: COMPLETED PROCESSING ===")
 	return nil
 }
 

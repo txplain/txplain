@@ -266,6 +266,76 @@ func (t *TraceDecoder) weiToEther(weiStr string) string {
 	return ether.String()
 }
 
+// GetPromptContext provides function calls context for LLM prompts
+func (t *TraceDecoder) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+	// Get decoded data from baggage
+	decodedData, ok := baggage["decoded_data"].(*models.DecodedData)
+	if !ok || len(decodedData.Calls) == 0 {
+		return ""
+	}
+
+	var contextParts []string
+	contextParts = append(contextParts, "### FUNCTION CALLS:")
+
+	// Add calls information - same logic as transaction explainer had
+	for i, call := range decodedData.Calls {
+		// Only include calls that are meaningful for explanation
+		if call.Contract == "" && call.Method == "" && call.Value == "" {
+			continue // Skip empty/meaningless calls
+		}
+
+		callInfo := fmt.Sprintf("Call #%d:", i+1)
+
+		if call.Contract != "" {
+			callInfo += fmt.Sprintf("\n- Contract: %s", call.Contract)
+		}
+
+		if call.Method != "" {
+			callInfo += fmt.Sprintf("\n- Method: %s", call.Method)
+		}
+
+		if call.CallType != "" {
+			callInfo += fmt.Sprintf("\n- Type: %s", call.CallType)
+		}
+
+		// Only show ETH value if significant (> 0)
+		if call.Value != "" && call.Value != "0" && call.Value != "0x" && call.Value != "0x0" {
+			ethValue := t.weiToEther(call.Value)
+			if ethValue != "0" {
+				callInfo += fmt.Sprintf("\n- ETH Value: %s", ethValue)
+			}
+		}
+
+		if !call.Success {
+			callInfo += fmt.Sprintf("\n- Failed: %s", call.ErrorReason)
+		}
+
+		// Only include essential arguments, skip raw hex data
+		if len(call.Arguments) > 0 {
+			essentialArgs := make(map[string]interface{})
+			for key, value := range call.Arguments {
+				// Only include human-readable arguments, skip raw data
+				if key == "contract_name" || key == "contract_symbol" || key == "contract_type" {
+					if str, ok := value.(string); ok && str != "" {
+						essentialArgs[key] = str
+					}
+				}
+			}
+
+			if len(essentialArgs) > 0 {
+				callInfo += "\n- Info:"
+				for key, value := range essentialArgs {
+					callInfo += fmt.Sprintf("\n  - %s: %v", key, value)
+				}
+			}
+		}
+
+		contextParts = append(contextParts, callInfo)
+	}
+
+	return strings.Join(contextParts, "\n\n")
+}
+
 // decodeArbitrumTrace decodes Arbitrum-specific trace format
 func (t *TraceDecoder) decodeArbitrumTrace(ctx context.Context, trace map[string]interface{}, calls *[]models.Call) error {
 	// Arbitrum trace format implementation would go here

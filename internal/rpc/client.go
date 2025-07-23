@@ -50,7 +50,7 @@ func NewClient(networkID int64) (*Client, error) {
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second, // Increased for complex transactions
+			Timeout: 300 * time.Second, // Increased for complex transactions
 		},
 		network: network,
 	}, nil

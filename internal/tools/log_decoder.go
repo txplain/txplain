@@ -129,89 +129,6 @@ func (t *LogDecoder) Run(ctx context.Context, input map[string]interface{}) (map
 	}, nil
 }
 
-// decodeLogs processes log entries and extracts events
-func (t *LogDecoder) decodeLogs(logs []interface{}, networkID int64) ([]models.Event, error) {
-	var events []models.Event
-
-	for _, logEntry := range logs {
-		logMap, ok := logEntry.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		event, err := t.decodeLog(logMap)
-		if err != nil {
-			// Skip invalid logs but continue processing
-			continue
-		}
-
-		if event != nil {
-			events = append(events, *event)
-		}
-	}
-
-	return events, nil
-}
-
-// decodeLog decodes a single log entry
-func (t *LogDecoder) decodeLog(log map[string]interface{}) (*models.Event, error) {
-	event := &models.Event{}
-
-	// Extract contract address
-	if address, ok := log["address"].(string); ok {
-		event.Contract = address
-	}
-
-	// Extract topics
-	if topicsInterface, ok := log["topics"].([]interface{}); ok {
-		for _, topic := range topicsInterface {
-			if topicStr, ok := topic.(string); ok {
-				event.Topics = append(event.Topics, topicStr)
-			}
-		}
-	}
-
-	// Extract data
-	if data, ok := log["data"].(string); ok {
-		event.Data = data
-	}
-
-	// Extract block number
-	if blockNumber, ok := log["blockNumber"].(string); ok {
-		if bn, err := t.hexToUint64(blockNumber); err == nil {
-			event.BlockNumber = bn
-		}
-	}
-
-	// Extract transaction index
-	if txIndex, ok := log["transactionIndex"].(string); ok {
-		if ti, err := t.hexToUint64(txIndex); err == nil {
-			event.TxIndex = uint(ti)
-		}
-	}
-
-	// Extract log index
-	if logIndex, ok := log["logIndex"].(string); ok {
-		if li, err := t.hexToUint64(logIndex); err == nil {
-			event.LogIndex = uint(li)
-		}
-	}
-
-	// Extract removed flag
-	if removed, ok := log["removed"].(bool); ok {
-		event.Removed = removed
-	}
-
-	// Decode event name and parameters based on topic signatures
-	if len(event.Topics) > 0 {
-		eventName, parameters := t.decodeEventFromTopics(event.Topics, event.Data)
-		event.Name = eventName
-		event.Parameters = parameters
-	}
-
-	return event, nil
-}
-
 // decodeEventFromTopics decodes event name and parameters generically from topics and data
 func (t *LogDecoder) decodeEventFromTopics(topics []string, data string) (string, map[string]interface{}) {
 	if len(topics) == 0 {
@@ -764,4 +681,90 @@ func (t *LogDecoder) isPrintableString(s string) bool {
 
 	// At least 80% of characters should be printable
 	return float64(printableCount)/float64(len([]rune(s))) >= 0.8
+}
+
+// GetPromptContext provides events context for LLM prompts
+func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
+	// Get decoded data from baggage
+	decodedData, ok := baggage["decoded_data"].(*models.DecodedData)
+	if !ok || len(decodedData.Events) == 0 {
+		return ""
+	}
+
+	var contextParts []string
+	contextParts = append(contextParts, "### EVENTS EMITTED:")
+
+	// Add events information - same logic as transaction explainer had
+	for i, event := range decodedData.Events {
+		eventInfo := fmt.Sprintf("Event #%d:\n- Contract: %s\n- Event: %s",
+			i+1, event.Contract, event.Name)
+
+		// Include ALL meaningful parameters with their decoded formats
+		if len(event.Parameters) > 0 {
+			eventInfo += "\n- Parameters:"
+
+			// Group parameters by base name (param_1, param_2, etc.)
+			paramGroups := make(map[string]map[string]interface{})
+
+			for key, value := range event.Parameters {
+				// Include ALL parameters - let LLM decide what's meaningful for final explanation
+
+				// Extract base parameter name (e.g., "param_1" from "param_1_decimal")
+				var baseName string
+				if strings.Contains(key, "_") {
+					parts := strings.Split(key, "_")
+					if len(parts) >= 2 && (parts[0] == "param" || parts[0] == "topic") {
+						baseName = parts[0] + "_" + parts[1]
+					} else {
+						baseName = key
+					}
+				} else {
+					baseName = key
+				}
+
+				if paramGroups[baseName] == nil {
+					paramGroups[baseName] = make(map[string]interface{})
+				}
+				paramGroups[baseName][key] = value
+			}
+
+			// Display parameters with all their decoded formats
+			for baseName, group := range paramGroups {
+				if baseValue, exists := group[baseName]; exists {
+					eventInfo += fmt.Sprintf("\n  - %s: %v", baseName, baseValue)
+
+					// Add decoded formats on the same line for context
+					var decodedInfo []string
+
+					if decimal, exists := group[baseName+"_decimal"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("decimal: %v", decimal))
+					}
+
+					if address, exists := group[baseName+"_address"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("address: %v", address))
+					}
+
+					if boolean, exists := group[baseName+"_boolean"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("boolean: %v", boolean))
+					}
+
+					if utf8, exists := group[baseName+"_utf8"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("utf8: \"%v\"", utf8))
+					}
+
+					if paramType, exists := group[baseName+"_type"]; exists {
+						decodedInfo = append(decodedInfo, fmt.Sprintf("type: %v", paramType))
+					}
+
+					if len(decodedInfo) > 0 {
+						eventInfo += fmt.Sprintf(" (%s)", strings.Join(decodedInfo, ", "))
+					}
+				}
+			}
+		}
+
+		contextParts = append(contextParts, eventInfo)
+	}
+
+	return strings.Join(contextParts, "\n\n")
 }

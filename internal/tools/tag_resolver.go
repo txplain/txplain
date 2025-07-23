@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
-	"github.com/txplain/txplain/internal/models"
 )
 
 // TagResolver identifies transaction tags probabilistically using AI and RAG
@@ -86,17 +85,27 @@ func (t *TagResolver) Dependencies() []string {
 
 // Process identifies tags probabilistically from transaction data
 func (t *TagResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
-	// Gather transaction context for AI analysis
-	contextData := t.buildTransactionContext(baggage)
+	// Collect context from all context providers in the baggage (same as TransactionExplainer)
+	var additionalContext []string
+	if contextProviders, ok := baggage["context_providers"].([]Tool); ok {
+		for _, provider := range contextProviders {
+			if context := provider.GetPromptContext(ctx, baggage); context != "" {
+				additionalContext = append(additionalContext, context)
+			}
+		}
+	}
+
+	// Combine all context for AI analysis
+	contextData := strings.Join(additionalContext, "\n\n")
 
 	if t.verbose {
-		fmt.Println("=== TAG RESOLVER: TRANSACTION CONTEXT ===")
+		fmt.Println("=== TAG RESOLVER: CONTEXT FROM PROVIDERS ===")
 		fmt.Printf("Context: %s\n", contextData)
 		fmt.Println("=== END CONTEXT ===")
 		fmt.Println()
 	}
 
-	// Use AI to identify tags
+	// Use AI to identify tags with context from previous tools
 	tags, err := t.identifyTagsWithAI(ctx, contextData)
 	if err != nil {
 		if t.verbose {
@@ -218,109 +227,6 @@ func (t *TagResolver) loadTagKnowledge() error {
 	}
 
 	return nil
-}
-
-// buildTransactionContext creates context for AI analysis
-func (t *TagResolver) buildTransactionContext(baggage map[string]interface{}) string {
-	var contextParts []string
-
-	// Add protocol information
-	if protocols, ok := baggage["protocols"].([]ProbabilisticProtocol); ok && len(protocols) > 0 {
-		contextParts = append(contextParts, "DETECTED PROTOCOLS:")
-		for _, protocol := range protocols {
-			protocolInfo := fmt.Sprintf("- %s (%s)", protocol.Name, protocol.Type)
-			if protocol.Version != "" {
-				protocolInfo += fmt.Sprintf(" %s", protocol.Version)
-			}
-			contextParts = append(contextParts, protocolInfo)
-		}
-	}
-
-	// Add contract addresses and their metadata
-	if contractAddresses, ok := baggage["contract_addresses"].([]string); ok {
-		contextParts = append(contextParts, "\nCONTRACT ADDRESSES:")
-		for _, addr := range contractAddresses {
-			contextParts = append(contextParts, fmt.Sprintf("- %s", addr))
-		}
-	}
-
-	// Add events context (critical for tag detection)
-	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
-		contextParts = append(contextParts, "\nEVENTS:")
-		for _, event := range events {
-			eventInfo := fmt.Sprintf("- %s on %s", event.Name, event.Contract)
-			if event.Parameters != nil {
-				// Add ALL event parameters generically - no hardcoded filtering
-				var paramDetails []string
-
-				// Include ALL parameters from the event - let LLM decide what's meaningful
-				for paramName, paramValue := range event.Parameters {
-					paramDetails = append(paramDetails, fmt.Sprintf("%s: %v", paramName, paramValue))
-				}
-
-				if len(paramDetails) > 0 {
-					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramDetails, ", "))
-				}
-			}
-			contextParts = append(contextParts, eventInfo)
-		}
-	}
-
-	// Add token transfers context
-	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok && len(transfers) > 0 {
-		contextParts = append(contextParts, "\nTOKEN TRANSFERS:")
-		for i, transfer := range transfers {
-			transferInfo := fmt.Sprintf("- Transfer #%d: %s -> %s", i+1, transfer.From, transfer.To)
-			if transfer.Symbol != "" {
-				transferInfo += fmt.Sprintf(" (%s)", transfer.Symbol)
-			}
-			if transfer.FormattedAmount != "" {
-				transferInfo += fmt.Sprintf(" Amount: %s", transfer.FormattedAmount)
-			}
-			if transfer.Type != "" {
-				transferInfo += fmt.Sprintf(" [%s]", transfer.Type)
-			}
-			contextParts = append(contextParts, transferInfo)
-		}
-	}
-
-	// Add decoded calls context
-	if decodedData, ok := baggage["decoded_data"].(*models.DecodedData); ok && len(decodedData.Calls) > 0 {
-		contextParts = append(contextParts, "\nMETHOD CALLS:")
-		for _, call := range decodedData.Calls {
-			callInfo := fmt.Sprintf("- %s on %s", call.Method, call.Contract)
-			if call.CallType != "" {
-				callInfo += fmt.Sprintf(" (%s)", call.CallType)
-			}
-			if call.Value != "" && call.Value != "0" {
-				callInfo += fmt.Sprintf(" with %s ETH", call.Value)
-			}
-			contextParts = append(contextParts, callInfo)
-		}
-	}
-
-	// Add token metadata context
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok {
-		contextParts = append(contextParts, "\nTOKEN METADATA:")
-		for addr, metadata := range tokenMetadata {
-			metaInfo := fmt.Sprintf("- %s: %s (%s)", addr, metadata.Name, metadata.Symbol)
-			if metadata.Type != "" {
-				metaInfo += fmt.Sprintf(" [%s]", metadata.Type)
-			}
-			contextParts = append(contextParts, metaInfo)
-		}
-	}
-
-	// Add raw transaction context
-	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			if to, ok := receipt["to"].(string); ok {
-				contextParts = append(contextParts, fmt.Sprintf("\nTRANSACTION TO: %s", to))
-			}
-		}
-	}
-
-	return strings.Join(contextParts, "\n")
 }
 
 // identifyTagsWithAI uses LLM to identify tags from context
@@ -540,40 +446,4 @@ func (t *TagResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	contextParts = append(contextParts, fmt.Sprintf("\n\nNote: Tags identified with %.1f%% minimum confidence threshold", t.confidenceThreshold*100))
 
 	return strings.Join(contextParts, "")
-}
-
-// GetAnnotationContext provides annotation context for tags
-func (t *TagResolver) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
-	tags, ok := baggage["probabilistic_tags"].([]ProbabilisticTag)
-	if !ok || len(tags) == 0 {
-		return &models.AnnotationContext{Items: make([]models.AnnotationContextItem, 0)}
-	}
-
-	annotationContext := &models.AnnotationContext{
-		Items: make([]models.AnnotationContextItem, 0),
-	}
-
-	for _, tag := range tags {
-		description := fmt.Sprintf("%s tag (%.1f%% confidence)", tag.Category, tag.Confidence*100)
-		if tag.Description != "" {
-			description += fmt.Sprintf(": %s", tag.Description)
-		}
-
-		item := models.AnnotationContextItem{
-			Type:        "tag",
-			Value:       tag.Tag,
-			Name:        tag.Tag,
-			Description: description,
-			Metadata: map[string]interface{}{
-				"category":        tag.Category,
-				"confidence":      tag.Confidence,
-				"evidence":        tag.Evidence,
-				"tag_description": tag.Description,
-			},
-		}
-
-		annotationContext.AddItem(item)
-	}
-
-	return annotationContext
 }
