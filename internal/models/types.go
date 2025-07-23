@@ -577,27 +577,13 @@ func (pt *ProgressTracker) startHeartbeat() {
 
 // generateProgressDescription creates dynamic progress descriptions for heartbeats
 func (pt *ProgressTracker) generateProgressDescription(component *ComponentUpdate) string {
-	elapsed := time.Since(*component.StartTime)
-
-	// Create more dynamic, varied descriptions based on elapsed time
+	// Just return the base description without adding redundant status words
+	// Users want real updates of real things, not "(processing)" noise
 	baseDesc := component.Description
 	if strings.Contains(baseDesc, "...") {
-		baseDesc = strings.TrimSuffix(baseDesc, "...")
+		return baseDesc // Keep existing ... if present
 	}
-
-	// Add time-based variations to make it feel more alive
-	switch {
-	case elapsed < 2*time.Second:
-		return baseDesc + "..."
-	case elapsed < 4*time.Second:
-		return baseDesc + " (processing)"
-	case elapsed < 6*time.Second:
-		return baseDesc + " (working)"
-	case elapsed < 10*time.Second:
-		return baseDesc + " (still processing)"
-	default:
-		return baseDesc + " (almost done)"
-	}
+	return baseDesc + "..." // Add ... for active indication
 }
 
 // GetAllComponents returns all component updates

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
+	"github.com/txplain/txplain/internal/models"
 )
 
 // MonetaryValueEnricher identifies and enriches all monetary values with USD equivalents
@@ -77,6 +78,27 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 		fmt.Println(strings.Repeat("💰", 60))
 	}
 
+	// Get progress tracker from baggage for sub-progress updates
+	var progressTracker *models.ProgressTracker
+	if tracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+		progressTracker = tracker
+	}
+
+	// Sub-step 1: Checking detected amounts
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"monetary_value_enricher",
+			models.ComponentGroupEnrichment,
+			"Calculating USD Values",
+			models.ComponentStatusRunning,
+			"Checking detected amounts for USD conversion...",
+		)
+	}
+
+	if m.verbose {
+		fmt.Println("🔍 Sub-step 1: Checking detected amounts for USD conversion...")
+	}
+
 	// Get detected amounts from amounts_finder
 	detectedAmounts, ok := baggage["detected_amounts"].([]DetectedAmount)
 	if !ok || len(detectedAmounts) == 0 {
@@ -89,6 +111,21 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 
 	if m.verbose {
 		fmt.Printf("📊 Processing %d detected amounts for USD conversion\n", len(detectedAmounts))
+	}
+
+	// Sub-step 2: Gathering price and metadata
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"monetary_value_enricher",
+			models.ComponentGroupEnrichment,
+			"Calculating USD Values",
+			models.ComponentStatusRunning,
+			"Gathering token prices and metadata...",
+		)
+	}
+
+	if m.verbose {
+		fmt.Println("📊 Sub-step 2: Gathering token prices and metadata...")
 	}
 
 	// Get token prices from erc20_price_lookup
@@ -114,13 +151,40 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 		fmt.Printf("🏷️  Token metadata for %d tokens\n", len(tokenMetadata))
 	}
 
+	// Sub-step 3: Fetching native token price if needed
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"monetary_value_enricher",
+			models.ComponentGroupEnrichment,
+			"Calculating USD Values",
+			models.ComponentStatusRunning,
+			"Fetching native token price for gas calculations...",
+		)
+	}
+
+	if m.verbose {
+		fmt.Println("⛽ Sub-step 3: Fetching native token price for gas calculations...")
+	}
+
 	// Get native token price for gas fee calculations
 	nativeTokenPrice := m.getNativeTokenPrice(ctx, baggage)
 	if m.verbose && nativeTokenPrice > 0 {
 		fmt.Printf("⛽ Native token price: $%.6f\n", nativeTokenPrice)
 	}
 
+	// Sub-step 4: Converting amounts to USD
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"monetary_value_enricher",
+			models.ComponentGroupEnrichment,
+			"Calculating USD Values",
+			models.ComponentStatusRunning,
+			"Converting detected amounts to USD values...",
+		)
+	}
+
 	if m.verbose {
+		fmt.Println("💰 Sub-step 4: Converting detected amounts to USD values...")
 		fmt.Println("🔄 Enriching amounts with USD values...")
 	}
 
@@ -158,12 +222,39 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	// Add enriched amounts to baggage
 	baggage["enriched_amounts"] = enrichedAmounts
 
+	// Sub-step 5: Enriching raw transaction data
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"monetary_value_enricher",
+			models.ComponentGroupEnrichment,
+			"Calculating USD Values",
+			models.ComponentStatusRunning,
+			"Adding USD values to transaction data...",
+		)
+	}
+
+	if m.verbose {
+		fmt.Println("📝 Sub-step 5: Adding USD values to transaction data...")
+	}
+
 	// Enrich raw data with gas fees (unchanged - still needed)
 	if err := m.enrichRawData(baggage, nativeTokenPrice); err != nil {
 		return fmt.Errorf("failed to enrich raw data: %w", err)
 	}
 
+	// Final progress update
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"monetary_value_enricher",
+			models.ComponentGroupEnrichment,
+			"Calculating USD Values",
+			models.ComponentStatusRunning,
+			"USD value calculations completed successfully",
+		)
+	}
+
 	if m.verbose {
+		fmt.Println("🎯 Sub-step 6: USD value calculations completed successfully")
 		fmt.Println("=== MONETARY VALUE ENRICHER: COMPLETED PROCESSING ===")
 	}
 	return nil
@@ -412,26 +503,6 @@ func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) flo
 	return 0
 }
 
-// getNativeTokenPriceFromAPI gets native token price using CoinMarketCap API
-// This is a completely generic approach that works for any network
-func (m *MonetaryValueEnricher) getNativeTokenPriceFromAPI(networkID int64) float64 {
-	// Get native token symbol for this network
-	nativeSymbol := m.networkMapper.GetNativeTokenSymbol(networkID)
-	if nativeSymbol == "" {
-		return 0
-	}
-
-	// Use existing CoinMarketCap API to get current price
-	if m.apiKey != "" {
-		if price, err := m.fetchNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
-			return price
-		}
-	}
-
-	// Fallback: use the existing fallback mechanism
-	return m.getFallbackNativeTokenPrice(networkID)
-}
-
 // enrichRawData enriches raw transaction data with USD values
 func (m *MonetaryValueEnricher) enrichRawData(baggage map[string]interface{}, nativeTokenPriceUSD float64) error {
 	rawData, ok := baggage["raw_data"].(map[string]interface{})
@@ -598,105 +669,6 @@ func (m *MonetaryValueEnricher) getGasFeeContext(baggage map[string]interface{})
 	}
 
 	return ""
-}
-
-// NetFlowData represents net flow information for an address
-type NetFlowData struct {
-	NetAmount       float64
-	FormattedAmount string
-	TransferCount   int
-}
-
-// getGasFeeInUSD extracts gas fee in USD if available
-func (m *MonetaryValueEnricher) getGasFeeInUSD(baggage map[string]interface{}) string {
-	// Use the enhanced calculateGasFeeUSD method
-	return m.calculateGasFeeUSD(baggage)
-}
-
-// PaymentFlowData represents payment flow analysis
-type PaymentFlowData struct {
-	Payer            string
-	FinalRecipient   string
-	ActualUser       string // The actual user/beneficiary (from protocol events)
-	UserRole         string // "borrower", "lender", "trader", etc.
-	Token            string
-	InitialAmount    string
-	InitialAmountUSD string
-	FinalAmount      string
-	FinalAmountUSD   string
-	TotalFees        string
-	TotalFeesUSD     string
-	FeeRecipients    []FeeRecipient
-	GasFeeUSD        string
-	NetworkFees      string
-	NetworkFeesUSD   string
-}
-
-// FeeRecipient represents an address that received fees
-type FeeRecipient struct {
-	Address   string
-	Amount    string
-	AmountUSD string
-}
-
-// calculateGasFeeUSD calculates gas fee in USD with proper native token pricing
-func (m *MonetaryValueEnricher) calculateGasFeeUSD(baggage map[string]interface{}) string {
-	rawData, ok := baggage["raw_data"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	receipt, ok := rawData["receipt"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	// First check if gas_fee_usd is already calculated (from enrichRawData)
-	if gasFeeUSD, ok := receipt["gas_fee_usd"].(string); ok && gasFeeUSD != "" {
-		return gasFeeUSD
-	}
-
-	gasUsedHex, hasGasUsed := receipt["gasUsed"].(string)
-	effectiveGasPriceHex, hasGasPrice := receipt["effectiveGasPrice"].(string)
-
-	if !hasGasUsed || !hasGasPrice {
-		return ""
-	}
-
-	// Parse gas values
-	gasUsed, err1 := strconv.ParseUint(gasUsedHex[2:], 16, 64)
-	gasPrice, err2 := strconv.ParseUint(effectiveGasPriceHex[2:], 16, 64)
-
-	if err1 != nil || err2 != nil {
-		return ""
-	}
-
-	// Calculate fee in native token (wei for Ethereum-based chains)
-	feeWei := gasUsed * gasPrice
-	feeEth := float64(feeWei) / 1e18
-
-	// Get network-specific native token price
-	networkID, ok := rawData["network_id"].(float64)
-	if !ok {
-		return ""
-	}
-
-	// Generic native token pricing using CoinMarketCap API
-	nativeTokenPrice := m.getNativeTokenPriceFromAPI(int64(networkID))
-	if nativeTokenPrice == 0 {
-		// If we can't get price, still show the ETH amount
-		if feeEth > 0.0001 {
-			return fmt.Sprintf("%.6f %s", feeEth, m.getNativeTokenSymbol(int64(networkID)))
-		}
-		return ""
-	}
-
-	feeUSD := feeEth * nativeTokenPrice
-	if feeUSD > 0.001 { // Only show if meaningful amount
-		return fmt.Sprintf("%.3f", feeUSD)
-	}
-
-	return "0.001" // Show minimal fee for very small amounts
 }
 
 // GetRagContext provides RAG context for monetary value information (minimal for this tool)

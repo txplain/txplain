@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+	"github.com/txplain/txplain/internal/models"
 )
 
 // AmountsFinder uses LLM intelligence to identify all relevant monetary amounts in transactions
@@ -65,6 +66,27 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 		fmt.Println(strings.Repeat("💰", 60))
 	}
 
+	// Get progress tracker from baggage for sub-progress updates
+	var progressTracker *models.ProgressTracker
+	if tracker, ok := baggage["progress_tracker"].(*models.ProgressTracker); ok {
+		progressTracker = tracker
+	}
+
+	// Sub-step 1: Building analysis context
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"amounts_finder",
+			models.ComponentGroupEnrichment,
+			"Detecting Transaction Amounts",
+			models.ComponentStatusRunning,
+			"Building comprehensive analysis context...",
+		)
+	}
+
+	if a.verbose {
+		fmt.Println("📋 Sub-step 1: Building comprehensive analysis context...")
+	}
+
 	// Build comprehensive context for the LLM
 	contextData := a.buildAnalysisContext(baggage)
 
@@ -72,8 +94,23 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 		fmt.Printf("📊 Built analysis context: %d characters\n", len(contextData))
 	}
 
+	// Sub-step 2: LLM Analysis (the time-consuming part)
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"amounts_finder",
+			models.ComponentGroupEnrichment,
+			"Detecting Transaction Amounts",
+			models.ComponentStatusRunning,
+			"Analyzing transaction with AI to identify amounts...",
+		)
+	}
+
+	if a.verbose {
+		fmt.Println("🧠 Sub-step 2: Analyzing transaction with AI to identify amounts...")
+	}
+
 	// Use LLM to identify all amounts
-	detectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData, baggage)
+	detectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData)
 	if err != nil {
 		if a.verbose {
 			fmt.Printf("❌ LLM analysis failed: %v\n", err)
@@ -84,6 +121,21 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 
 	if a.verbose {
 		fmt.Printf("🧠 LLM detected %d potential amounts\n", len(detectedAmounts))
+	}
+
+	// Sub-step 3: Validation
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"amounts_finder",
+			models.ComponentGroupEnrichment,
+			"Detecting Transaction Amounts",
+			models.ComponentStatusRunning,
+			"Validating detected amounts against token contracts...",
+		)
+	}
+
+	if a.verbose {
+		fmt.Println("✅ Sub-step 3: Validating detected amounts against token contracts...")
 	}
 
 	// Validate token contracts and filter results
@@ -104,6 +156,21 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 		fmt.Println("\n" + strings.Repeat("💰", 60))
 		fmt.Println("✅ AMOUNTS FINDER: Completed successfully")
 		fmt.Println(strings.Repeat("💰", 60) + "\n")
+	}
+
+	// Final progress update (will be automatically updated by pipeline to finished)
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"amounts_finder",
+			models.ComponentGroupEnrichment,
+			"Detecting Transaction Amounts",
+			models.ComponentStatusRunning,
+			"Amount detection completed successfully",
+		)
+	}
+
+	if a.verbose {
+		fmt.Println("🎯 Sub-step 4: Amount detection completed successfully")
 	}
 
 	// Add to baggage for downstream tools
@@ -169,7 +236,7 @@ func (a *AmountsFinder) buildAnalysisContext(baggage map[string]interface{}) str
 }
 
 // identifyAmountsWithLLM uses LLM to identify all relevant amounts
-func (a *AmountsFinder) identifyAmountsWithLLM(ctx context.Context, contextData string, baggage map[string]interface{}) ([]DetectedAmount, error) {
+func (a *AmountsFinder) identifyAmountsWithLLM(ctx context.Context, contextData string) ([]DetectedAmount, error) {
 	prompt := a.buildAmountAnalysisPrompt(contextData)
 
 	if a.verbose {
