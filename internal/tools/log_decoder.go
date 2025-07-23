@@ -302,8 +302,44 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 					}
 				}
 				
+				// If not found in proxy contract, check all resolved contracts (including implementation contracts)
+				if abiMethod == nil {
+					if t.verbose || os.Getenv("DEBUG") == "true" {
+						fmt.Printf("❌ Event not found in proxy contract, checking all resolved contracts...\n")
+					}
+					
+					for addr, info := range resolvedContracts {
+						if addr != strings.ToLower(contractAddress) && info.IsVerified {
+							if t.verbose || os.Getenv("DEBUG") == "true" {
+								fmt.Printf("Checking implementation contract %s with %d ABI methods\n", addr, len(info.ParsedABI))
+							}
+							
+							for i, method := range info.ParsedABI {
+								if method.Type == "event" && method.Hash == eventSig {
+									eventName = method.Name
+									signature = method.Signature
+									abiMethod = &info.ParsedABI[i]
+									
+									if t.verbose || os.Getenv("DEBUG") == "true" {
+										fmt.Printf("✅ Found matching ABI event in implementation: %s (%s)\n", method.Name, method.Signature)
+										fmt.Printf("Parameters from ABI: ")
+										for _, input := range method.Inputs {
+											fmt.Printf("%s:%s ", input.Name, input.Type)
+										}
+										fmt.Printf("\n")
+									}
+									break
+								}
+							}
+							if abiMethod != nil {
+								break // Found the event, stop searching
+							}
+						}
+					}
+				}
+				
 				if abiMethod == nil && (t.verbose || os.Getenv("DEBUG") == "true") {
-					fmt.Printf("❌ No matching event found in ABI. Available events:\n")
+					fmt.Printf("❌ No matching event found in any ABI. Available events:\n")
 					for _, method := range contractInfo.ParsedABI {
 						if method.Type == "event" {
 							fmt.Printf("  - %s: %s (hash: %s)\n", method.Name, method.Signature, method.Hash)
@@ -372,11 +408,20 @@ func (t *LogDecoder) decodeEventWithSignatureResolution(ctx context.Context, top
 	// ROBUST ABI-BASED PARSING - This is the key enhancement
 	if abiMethod != nil {
 		if t.verbose || os.Getenv("DEBUG") == "true" {
-			fmt.Printf("Using ABI-based parameter parsing\n")
+			fmt.Printf("✅ Using ABI-based parameter parsing for %s with %d inputs\n", eventName, len(abiMethod.Inputs))
+			for i, input := range abiMethod.Inputs {
+				fmt.Printf("  ABI Input[%d]: name='%s', type='%s', indexed=%t\n", i, input.Name, input.Type, input.Indexed)
+			}
 		}
 		// Use ABI-based parsing for maximum accuracy
 		abiParams, err := t.parseEventWithABI(topics, data, abiMethod)
 		if err == nil {
+			if t.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("✅ ABI parsing succeeded, got %d parameters:\n", len(abiParams))
+				for key, value := range abiParams {
+					fmt.Printf("  ABI Param: %s = %v\n", key, value)
+				}
+			}
 			// Merge ABI-parsed parameters with existing ones
 			for key, value := range abiParams {
 				parameters[key] = value
@@ -456,7 +501,7 @@ func (t *LogDecoder) parseEventWithSignatureTypes(eventName string, topics []str
 	
 	for i, paramType := range paramTypes {
 		// Use simple positional naming since we don't have ABI parameter names
-		paramName := fmt.Sprintf("_%d", i+1)
+		paramName := fmt.Sprintf("param_%d", i+1)
 		
 		var paramValue interface{}
 		var paramSuffix string
@@ -501,7 +546,7 @@ func (t *LogDecoder) parseEventWithSignatureTypes(eventName string, topics []str
 func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters map[string]interface{}) {
 	// Store all topics with positional names (topic_0 is event signature, skip it)
 	for i := 1; i < len(topics); i++ {
-		paramName := fmt.Sprintf("_%d", i)
+		paramName := fmt.Sprintf("param_%d", i)
 		paramValue := topics[i]
 
 		// Store original hex value
@@ -521,7 +566,7 @@ func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters 
 			for offset := 0; offset < dataLen; offset += 64 {
 				if offset+64 <= dataLen {
 					paramHex := "0x" + data[2+offset:2+offset+64]
-					paramName := fmt.Sprintf("_%d", paramIndex)
+					paramName := fmt.Sprintf("param_%d", paramIndex)
 
 					// Store original hex value
 					parameters[paramName] = paramHex
@@ -555,16 +600,26 @@ func (t *LogDecoder) parseEventWithABI(topics []string, data string, abiMethod *
 	// Clean and prepare data for parsing
 	cleanData := strings.TrimPrefix(data, "0x")
 
-	for _, input := range abiMethod.Inputs {
+	for i, input := range abiMethod.Inputs {
+		// Use human-readable parameter name if available, otherwise use fallback
+		paramName := input.Name
+		if paramName == "" {
+			paramName = fmt.Sprintf("param_%d", i+1)
+		}
+		
+		if t.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("Processing ABI parameter %d: name='%s', type='%s', indexed=%t\n", i, paramName, input.Type, input.Indexed)
+		}
+		
 		if input.Indexed {
 			// Parse indexed parameter from topics
 			if topicIndex < len(topics) {
 				value, err := t.parseABIParameter(input, topics[topicIndex], true)
 				if err == nil {
-					parameters[input.Name] = value
+					parameters[paramName] = value
 				} else {
 					// Store raw topic if parsing fails
-					parameters[input.Name] = topics[topicIndex]
+					parameters[paramName] = topics[topicIndex]
 				}
 				topicIndex++
 			}
@@ -572,12 +627,12 @@ func (t *LogDecoder) parseEventWithABI(topics []string, data string, abiMethod *
 			// Parse non-indexed parameter from data
 			value, bytesConsumed, err := t.parseABIParameterFromData(input, cleanData, dataOffset)
 			if err == nil {
-				parameters[input.Name] = value
+				parameters[paramName] = value
 				dataOffset += bytesConsumed
 			} else {
 				// If we can't parse further, store remaining data
 				if dataOffset*2 < len(cleanData) {
-					parameters[input.Name] = "0x" + cleanData[dataOffset*2:]
+					parameters[paramName] = "0x" + cleanData[dataOffset*2:]
 				}
 				break
 			}
@@ -854,9 +909,9 @@ func (t *LogDecoder) isPrintableString(s string) bool {
 
 // GetPromptContext provides events context for LLM prompts
 func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
-	// Get decoded data from baggage
-	decodedData, ok := baggage["decoded_data"].(*models.DecodedData)
-	if !ok || len(decodedData.Events) == 0 {
+	// Only use events data that THIS tool created and stored in baggage
+	events, ok := baggage["events"].([]models.Event)
+	if !ok || len(events) == 0 {
 		return ""
 	}
 
@@ -864,7 +919,7 @@ func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 	contextParts = append(contextParts, "### EVENTS EMITTED:")
 
 	// Add events information
-	for i, event := range decodedData.Events {
+	for i, event := range events {
 		eventInfo := fmt.Sprintf("Event #%d:\n- Contract: %s\n- Event: %s",
 			i+1, event.Contract, event.Name)
 

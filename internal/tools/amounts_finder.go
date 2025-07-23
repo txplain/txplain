@@ -7,12 +7,12 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
-	"github.com/txplain/txplain/internal/models"
 )
 
 // AmountsFinder uses LLM intelligence to identify all relevant monetary amounts in transactions
 type AmountsFinder struct {
-	llm llms.Model
+	llm     llms.Model
+	verbose bool
 }
 
 // DetectedAmount represents a monetary amount found by the LLM
@@ -32,8 +32,14 @@ type DetectedAmount struct {
 // NewAmountsFinder creates a new amounts finder
 func NewAmountsFinder(llm llms.Model) *AmountsFinder {
 	return &AmountsFinder{
-		llm: llm,
+		llm:     llm,
+		verbose: false,
 	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (a *AmountsFinder) SetVerbose(verbose bool) {
+	a.verbose = verbose
 }
 
 // Name returns the tool name
@@ -53,118 +59,78 @@ func (a *AmountsFinder) Dependencies() []string {
 
 // Process analyzes transaction context and identifies all relevant amounts
 func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interface{}) error {
-	fmt.Println("=== AMOUNTS FINDER: STARTING PROCESSING ===")
+	if a.verbose {
+		fmt.Println("\n" + strings.Repeat("💰", 60))
+		fmt.Println("🔍 AMOUNTS FINDER: Starting AI-powered amount detection")
+		fmt.Println(strings.Repeat("💰", 60))
+	}
 
 	// Build comprehensive context for the LLM
 	contextData := a.buildAnalysisContext(baggage)
 
-	fmt.Printf("AMOUNTS FINDER: Built context with %d characters\n", len(contextData))
+	if a.verbose {
+		fmt.Printf("📊 Built analysis context: %d characters\n", len(contextData))
+	}
 
 	// Use LLM to identify all amounts
 	detectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData, baggage)
 	if err != nil {
-		fmt.Printf("AMOUNTS FINDER: LLM call failed: %v\n", err)
+		if a.verbose {
+			fmt.Printf("❌ LLM analysis failed: %v\n", err)
+			fmt.Println(strings.Repeat("💰", 60) + "\n")
+		}
 		return fmt.Errorf("failed to identify amounts with LLM: %w", err)
 	}
 
-	fmt.Printf("AMOUNTS FINDER: LLM detected %d amounts\n", len(detectedAmounts))
+	if a.verbose {
+		fmt.Printf("🧠 LLM detected %d potential amounts\n", len(detectedAmounts))
+	}
 
 	// Validate token contracts and filter results
 	validatedAmounts := a.validateTokenContracts(detectedAmounts, baggage)
 
-	fmt.Printf("AMOUNTS FINDER: Validated %d amounts\n", len(validatedAmounts))
+	if a.verbose {
+		fmt.Printf("✅ Validated %d amounts after filtering\n", len(validatedAmounts))
+		
+		// Show summary of detected amounts
+		if len(validatedAmounts) > 0 {
+			fmt.Println("\n📋 DETECTED AMOUNTS SUMMARY:")
+			for i, amount := range validatedAmounts {
+				fmt.Printf("   %d. %s %s (%s) - Confidence: %.2f\n", 
+					i+1, amount.Amount, amount.TokenSymbol, amount.AmountType, amount.Confidence)
+			}
+		}
+		
+		fmt.Println("\n" + strings.Repeat("💰", 60))
+		fmt.Println("✅ AMOUNTS FINDER: Completed successfully")
+		fmt.Println(strings.Repeat("💰", 60) + "\n")
+	}
 
 	// Add to baggage for downstream tools
 	baggage["detected_amounts"] = validatedAmounts
 
-	fmt.Println("=== AMOUNTS FINDER: COMPLETED PROCESSING ===")
 	return nil
 }
 
-// buildAnalysisContext creates comprehensive context for LLM analysis
+// buildAnalysisContext creates context using proper tool isolation - only using context providers
 func (a *AmountsFinder) buildAnalysisContext(baggage map[string]interface{}) string {
 	var contextParts []string
 
-	// Add ABI resolver context (contract information)
-	if resolvedContracts, ok := baggage["resolved_contracts"].(map[string]*ContractInfo); ok && len(resolvedContracts) > 0 {
-		contextParts = append(contextParts, "### VERIFIED CONTRACTS:")
-		for address, contract := range resolvedContracts {
-			if contract.IsVerified {
-				contractInfo := fmt.Sprintf("- %s", address)
-				if contract.ContractName != "" {
-					contractInfo += fmt.Sprintf(" (%s)", contract.ContractName)
-				}
-				contextParts = append(contextParts, contractInfo)
-
-				// Add ABI methods and events for context
-				if len(contract.ParsedABI) > 0 {
-					var events, functions []string
-					for _, method := range contract.ParsedABI {
-						if method.Type == "event" {
-							events = append(events, method.Name)
-						} else if method.Type == "function" {
-							functions = append(functions, method.Name)
-						}
-					}
-					if len(events) > 0 {
-						contextParts = append(contextParts, fmt.Sprintf("  • Events: %s", strings.Join(events, ", ")))
-					}
-					if len(functions) > 0 {
-						contextParts = append(contextParts, fmt.Sprintf("  • Functions: %s", strings.Join(functions, ", ")))
-					}
+	// Use proper architecture: collect context from all context providers via GetPromptContext()
+	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
+		for _, provider := range contextProviders {
+			if toolProvider, ok := provider.(Tool); ok {
+				if context := toolProvider.GetPromptContext(context.Background(), baggage); context != "" {
+					contextParts = append(contextParts, context)
 				}
 			}
 		}
 	}
 
-	// Add token metadata context
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok && len(tokenMetadata) > 0 {
-		contextParts = append(contextParts, "\n### KNOWN TOKEN CONTRACTS:")
-		for address, metadata := range tokenMetadata {
-			tokenInfo := fmt.Sprintf("- %s: %s (%s) - %d decimals",
-				address, metadata.Name, metadata.Symbol, metadata.Decimals)
-			contextParts = append(contextParts, tokenInfo)
-		}
-	}
-
-	// Add decoded events with full parameter information
-	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
-		contextParts = append(contextParts, "\n### DECODED EVENTS:")
-		for i, event := range events {
-			eventInfo := fmt.Sprintf("Event #%d: %s on contract %s", i+1, event.Name, event.Contract)
-			contextParts = append(contextParts, eventInfo)
-
-			if event.Parameters != nil {
-				contextParts = append(contextParts, "  Parameters:")
-				for paramName, paramValue := range event.Parameters {
-					contextParts = append(contextParts, fmt.Sprintf("    - %s: %v", paramName, paramValue))
-				}
-			}
-		}
-	}
-
-	// Add trace data (function calls and their parameters)
-	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-		if trace, ok := rawData["trace"].(map[string]interface{}); ok {
-			contextParts = append(contextParts, "\n### FUNCTION CALLS:")
-			if traceResult, ok := trace["result"].(map[string]interface{}); ok {
-				contextParts = append(contextParts, fmt.Sprintf("- Main call: %v", traceResult))
-
-				if calls, ok := traceResult["calls"].([]interface{}); ok {
-					for i, call := range calls {
-						if callMap, ok := call.(map[string]interface{}); ok {
-							contextParts = append(contextParts, fmt.Sprintf("- Sub-call #%d: %v", i+1, callMap))
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Add raw transaction data for completeness
+	// Add minimal raw transaction data that THIS tool needs for amount detection
 	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
 		if tx, ok := rawData["transaction"].(map[string]interface{}); ok {
-			contextParts = append(contextParts, "\n### TRANSACTION DATA:")
+			contextParts = append(contextParts, "\n### TRANSACTION DATA (for amount detection):")
 			if value, ok := tx["value"].(string); ok && value != "0x0" {
 				contextParts = append(contextParts, fmt.Sprintf("- Native token value: %s", value))
 			}
@@ -180,6 +146,15 @@ func (a *AmountsFinder) buildAnalysisContext(baggage map[string]interface{}) str
 // identifyAmountsWithLLM uses LLM to identify all relevant amounts
 func (a *AmountsFinder) identifyAmountsWithLLM(ctx context.Context, contextData string, baggage map[string]interface{}) ([]DetectedAmount, error) {
 	prompt := a.buildAmountAnalysisPrompt(contextData)
+
+	if a.verbose {
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("🤖 AMOUNTS FINDER: LLM PROMPT")
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println(prompt)
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println()
+	}
 
 	// Call LLM
 	response, err := a.llm.GenerateContent(ctx, []llms.MessageContent{
@@ -197,6 +172,14 @@ func (a *AmountsFinder) identifyAmountsWithLLM(ctx context.Context, contextData 
 	// Parse response
 	var amounts []DetectedAmount
 	responseText := response.Choices[0].Content
+
+	if a.verbose {
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println("🤖 AMOUNTS FINDER: LLM RESPONSE")
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println(responseText)
+		fmt.Println(strings.Repeat("=", 80) + "\n")
+	}
 
 	// Extract JSON from response (handle potential markdown formatting)
 	jsonStart := strings.Index(responseText, "[")

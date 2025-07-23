@@ -87,12 +87,21 @@ func (p *ProtocolResolver) Dependencies() []string {
 
 // Process identifies protocols probabilistically from transaction data
 func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if p.verbose {
+		fmt.Println("\n" + strings.Repeat("🏛️", 60))
+		fmt.Printf("🔍 PROTOCOL RESOLVER: Starting AI-powered protocol detection (threshold: %.1f%%)\n", p.confidenceThreshold*100)
+		fmt.Printf("📚 Knowledge base: %d protocols loaded\n", len(p.protocolKnowledge))
+		fmt.Println(strings.Repeat("🏛️", 60))
+	}
+
 	// Collect context from all context providers in the baggage (same as TransactionExplainer)
 	var additionalContext []string
-	if contextProviders, ok := baggage["context_providers"].([]Tool); ok {
+	if contextProviders, ok := baggage["context_providers"].([]interface{}); ok {
 		for _, provider := range contextProviders {
-			if context := provider.GetPromptContext(ctx, baggage); context != "" {
-				additionalContext = append(additionalContext, context)
+			if toolProvider, ok := provider.(Tool); ok {
+				if context := toolProvider.GetPromptContext(ctx, baggage); context != "" {
+					additionalContext = append(additionalContext, context)
+				}
 			}
 		}
 	}
@@ -101,20 +110,22 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 	contextData := strings.Join(additionalContext, "\n\n")
 
 	if p.verbose {
-		fmt.Println("=== PROTOCOL RESOLVER: CONTEXT FROM PROVIDERS ===")
-		fmt.Printf("Context: %s\n", contextData)
-		fmt.Println("=== END CONTEXT ===")
-		fmt.Println()
+		fmt.Printf("📊 Built analysis context: %d characters\n", len(contextData))
 	}
 
 	// Use AI to identify protocols with context from previous tools
 	protocols, err := p.identifyProtocolsWithAI(ctx, contextData)
 	if err != nil {
 		if p.verbose {
-			fmt.Printf("Protocol Resolution failed: %v\n", err)
+			fmt.Printf("❌ AI protocol detection failed: %v\n", err)
+			fmt.Println("⚠️  Falling back to empty protocol list")
 		}
 		// Fall back to empty list - don't fail the whole pipeline
 		protocols = []ProbabilisticProtocol{}
+	}
+
+	if p.verbose && len(protocols) > 0 {
+		fmt.Printf("🧠 AI detected %d potential protocols\n", len(protocols))
 	}
 
 	// Filter by confidence threshold
@@ -126,12 +137,21 @@ func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]inter
 	}
 
 	if p.verbose {
-		fmt.Printf("Protocol Resolver: Found %d protocols above %.1f%% confidence\n",
+		fmt.Printf("✅ Filtered to %d protocols above %.1f%% confidence\n",
 			len(highConfidenceProtocols), p.confidenceThreshold*100)
-		for i, protocol := range highConfidenceProtocols {
-			fmt.Printf("  Protocol[%d]: %s (%s) - %.1f%% confidence\n",
-				i, protocol.Name, protocol.Type, protocol.Confidence*100)
+		
+		// Show summary of detected protocols
+		if len(highConfidenceProtocols) > 0 {
+			fmt.Println("\n📋 DETECTED PROTOCOLS SUMMARY:")
+			for i, protocol := range highConfidenceProtocols {
+				fmt.Printf("   %d. %s (%s %s) - Confidence: %.1f%%\n",
+					i+1, protocol.Name, protocol.Type, protocol.Version, protocol.Confidence*100)
+			}
 		}
+		
+		fmt.Println("\n" + strings.Repeat("🏛️", 60))
+		fmt.Println("✅ PROTOCOL RESOLVER: Completed successfully")
+		fmt.Println(strings.Repeat("🏛️", 60) + "\n")
 	}
 
 	// Store results in baggage
@@ -235,9 +255,11 @@ func (p *ProtocolResolver) identifyProtocolsWithAI(ctx context.Context, contextD
 	prompt := p.buildProtocolAnalysisPrompt(contextData)
 
 	if p.verbose {
-		fmt.Println("=== PROTOCOL RESOLVER: PROMPT ===")
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("🤖 PROTOCOL RESOLVER: LLM PROMPT")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println(prompt)
-		fmt.Println("=== END PROMPT ===")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println()
 	}
 
@@ -260,10 +282,11 @@ func (p *ProtocolResolver) identifyProtocolsWithAI(ctx context.Context, contextD
 	}
 
 	if p.verbose {
-		fmt.Println("=== PROTOCOL RESOLVER: LLM RESPONSE ===")
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println("🤖 PROTOCOL RESOLVER: LLM RESPONSE")
+		fmt.Println(strings.Repeat("=", 80))
 		fmt.Println(responseText)
-		fmt.Println("=== END RESPONSE ===")
-		fmt.Println()
+		fmt.Println(strings.Repeat("=", 80) + "\n")
 	}
 
 	// Parse AI response

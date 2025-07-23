@@ -3,19 +3,28 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // BaggagePipeline orchestrates the execution of baggage processors in dependency order
 type BaggagePipeline struct {
 	processors map[string]Tool
 	order      []string
+	verbose    bool
 }
 
 // NewBaggagePipeline creates a new baggage pipeline
 func NewBaggagePipeline() *BaggagePipeline {
 	return &BaggagePipeline{
 		processors: make(map[string]Tool),
+		verbose:    true, // Default to verbose for better debugging
 	}
+}
+
+// SetVerbose enables or disables verbose logging
+func (p *BaggagePipeline) SetVerbose(verbose bool) {
+	p.verbose = verbose
 }
 
 // AddProcessor adds a processor to the pipeline
@@ -26,6 +35,11 @@ func (p *BaggagePipeline) AddProcessor(processor Tool) error {
 	}
 
 	p.processors[name] = processor
+
+	// Set verbose mode on the processor if it supports it
+	if verboseProcessor, ok := processor.(interface{ SetVerbose(bool) }); ok {
+		verboseProcessor.SetVerbose(p.verbose)
+	}
 
 	// Recalculate execution order
 	return p.calculateOrder()
@@ -105,15 +119,63 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 		return fmt.Errorf("no processors registered or order not calculated")
 	}
 
-	for _, name := range p.order {
+	if p.verbose {
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Printf("🚀 STARTING TRANSACTION PROCESSING PIPELINE (%d tools)\n", len(p.order))
+		fmt.Println(strings.Repeat("=", 80))
+		
+		// Show execution order
+		fmt.Println("\n📋 EXECUTION ORDER:")
+		for i, name := range p.order {
+			processor := p.processors[name]
+			deps := processor.Dependencies()
+			if len(deps) == 0 {
+				fmt.Printf("   %d. %s (no dependencies)\n", i+1, name)
+			} else {
+				fmt.Printf("   %d. %s (depends on: %v)\n", i+1, name, deps)
+			}
+		}
+		fmt.Println()
+	}
+
+	startTime := time.Now()
+	
+	for i, name := range p.order {
 		processor, exists := p.processors[name]
 		if !exists {
 			return fmt.Errorf("processor %s not found", name)
 		}
 
-		if err := processor.Process(ctx, baggage); err != nil {
+		if p.verbose {
+			fmt.Printf("┌─ [%d/%d] %s\n", i+1, len(p.order), strings.ToUpper(name))
+			fmt.Printf("│  🔧 %s\n", processor.Description())
+		}
+
+		stepStart := time.Now()
+		err := processor.Process(ctx, baggage)
+		stepDuration := time.Since(stepStart)
+
+		if err != nil {
+			if p.verbose {
+				fmt.Printf("│  ❌ FAILED after %v: %v\n", stepDuration, err)
+				fmt.Printf("└─ ❌ %s FAILED\n\n", strings.ToUpper(name))
+			}
 			return fmt.Errorf("processor %s failed: %w", name, err)
 		}
+
+		if p.verbose {
+			fmt.Printf("│  ✅ Completed in %v\n", stepDuration)
+			fmt.Printf("└─ ✅ %s COMPLETED\n\n", strings.ToUpper(name))
+		}
+	}
+
+	totalDuration := time.Since(startTime)
+	
+	if p.verbose {
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Printf("🎉 PIPELINE COMPLETED SUCCESSFULLY in %v\n", totalDuration)
+		fmt.Printf("   Processed %d baggage items across %d tools\n", len(baggage), len(p.order))
+		fmt.Println(strings.Repeat("=", 80) + "\n")
 	}
 
 	return nil
