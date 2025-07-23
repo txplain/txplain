@@ -23,15 +23,17 @@ type ABIResolver struct {
 
 // ContractInfo represents resolved contract information
 type ContractInfo struct {
-	Address         string      `json:"address"`
-	ABI             string      `json:"abi"`           // Raw ABI JSON string
-	SourceCode      string      `json:"source_code"`   // Contract source code
-	ContractName    string      `json:"contract_name"` // Name from verification
-	CompilerVersion string      `json:"compiler_version"`
-	IsVerified      bool        `json:"is_verified"`
-	IsProxy         bool        `json:"is_proxy"`
-	Implementation  string      `json:"implementation,omitempty"` // For proxy contracts
-	ParsedABI       []ABIMethod `json:"parsed_abi"`               // Parsed ABI for easier access
+	Address          string      `json:"address"`
+	ABI              string      `json:"abi"`           // Raw ABI JSON string
+	SourceCode       string      `json:"source_code"`   // Contract source code
+	ContractName     string      `json:"contract_name"` // Name from verification
+	CompilerVersion  string      `json:"compiler_version"`
+	IsVerified       bool        `json:"is_verified"`
+	IsProxy          bool        `json:"is_proxy"`
+	Implementation   string      `json:"implementation,omitempty"`   // For proxy contracts
+	IsImplementation bool        `json:"is_implementation,omitempty"` // True if this is an implementation contract
+	ProxyAddress     string      `json:"proxy_address,omitempty"`     // Address of the proxy that uses this implementation
+	ParsedABI        []ABIMethod `json:"parsed_abi"`                  // Parsed ABI for easier access
 }
 
 // ABIMethod represents a parsed ABI method or event
@@ -129,6 +131,22 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 	for _, address := range contractAddresses {
 		if contractInfo, err := a.resolveContract(ctx, address, networkID); err == nil {
 			resolvedContracts[strings.ToLower(address)] = contractInfo
+			
+			// If this is a proxy contract, also resolve the implementation contract
+			if contractInfo.IsProxy && contractInfo.Implementation != "" {
+				// Add small delay before resolving implementation
+				time.Sleep(200 * time.Millisecond)
+				
+				if implInfo, err := a.resolveContract(ctx, contractInfo.Implementation, networkID); err == nil {
+					// Store implementation contract info with a clear key
+					implKey := strings.ToLower(contractInfo.Implementation)
+					resolvedContracts[implKey] = implInfo
+					
+					// Mark this as an implementation contract for context
+					implInfo.IsImplementation = true
+					implInfo.ProxyAddress = address
+				}
+			}
 		}
 
 		// Add small delay to respect API rate limits
@@ -569,31 +587,51 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 	var contextParts []string
 	contextParts = append(contextParts, "### Verified Contract Information:")
 
+	// Track detailed event information
+	var eventDetails []string
+
 	for address, contract := range resolvedContracts {
 		if contract.IsVerified {
 			var contractInfo []string
 			
-			// Contract address and name
-			if contract.ContractName != "" {
-				contractInfo = append(contractInfo, fmt.Sprintf("Contract: %s (%s)", address, contract.ContractName))
+			// Contract address and name with type context
+			if contract.IsImplementation {
+				// This is an implementation contract
+				if contract.ContractName != "" {
+					contractInfo = append(contractInfo, fmt.Sprintf("Implementation Contract: %s (%s)", address, contract.ContractName))
+				} else {
+					contractInfo = append(contractInfo, fmt.Sprintf("Implementation Contract: %s", address))
+				}
+				if contract.ProxyAddress != "" {
+					contractInfo = append(contractInfo, fmt.Sprintf("Used by Proxy: %s", contract.ProxyAddress))
+				}
+			} else if contract.IsProxy {
+				// This is a proxy contract
+				if contract.ContractName != "" {
+					contractInfo = append(contractInfo, fmt.Sprintf("Proxy Contract: %s (%s)", address, contract.ContractName))
+				} else {
+					contractInfo = append(contractInfo, fmt.Sprintf("Proxy Contract: %s", address))
+				}
+				if contract.Implementation != "" {
+					contractInfo = append(contractInfo, fmt.Sprintf("Implementation: %s", contract.Implementation))
+				}
 			} else {
-				contractInfo = append(contractInfo, fmt.Sprintf("Contract: %s", address))
+				// Regular contract
+				if contract.ContractName != "" {
+					contractInfo = append(contractInfo, fmt.Sprintf("Contract: %s (%s)", address, contract.ContractName))
+				} else {
+					contractInfo = append(contractInfo, fmt.Sprintf("Contract: %s", address))
+				}
 			}
 
-			// Contract type information
+			// Contract verification status
 			contractInfo = append(contractInfo, "Status: Verified on Etherscan")
 			
 			if contract.CompilerVersion != "" {
 				contractInfo = append(contractInfo, fmt.Sprintf("Compiler: %s", contract.CompilerVersion))
 			}
 
-			// Proxy information
-			if contract.IsProxy && contract.Implementation != "" {
-				contractInfo = append(contractInfo, fmt.Sprintf("Type: Proxy Contract"))
-				contractInfo = append(contractInfo, fmt.Sprintf("Implementation: %s", contract.Implementation))
-			}
-
-			// ABI information
+			// ABI information with detailed event parameters
 			if len(contract.ParsedABI) > 0 {
 				var functions, events []string
 				for _, method := range contract.ParsedABI {
@@ -601,6 +639,42 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 						functions = append(functions, method.Name)
 					} else if method.Type == "event" && method.Name != "" {
 						events = append(events, method.Name)
+						
+						// Build detailed event parameter information
+						eventDetail := fmt.Sprintf("%s(", method.Name)
+						var paramStrings []string
+						for _, input := range method.Inputs {
+							paramType := input.Type
+							paramName := input.Name
+							if input.Indexed {
+								paramType = "indexed " + paramType
+							}
+							if paramName != "" {
+								paramStrings = append(paramStrings, fmt.Sprintf("%s %s", paramType, paramName))
+							} else {
+								paramStrings = append(paramStrings, paramType)
+							}
+						}
+						eventDetail += strings.Join(paramStrings, ", ") + ")"
+						
+						// Create clear contract description for event source
+						contractDesc := contract.ContractName
+						if contract.IsImplementation {
+							contractDesc = fmt.Sprintf("%s (Implementation)", contract.ContractName)
+						} else if contract.IsProxy {
+							contractDesc = fmt.Sprintf("%s (Proxy)", contract.ContractName)
+						}
+						if contractDesc == "" {
+							if contract.IsImplementation {
+								contractDesc = "Implementation Contract"
+							} else if contract.IsProxy {
+								contractDesc = "Proxy Contract" 
+							} else {
+								contractDesc = "Contract"
+							}
+						}
+						
+						eventDetails = append(eventDetails, fmt.Sprintf("- %s on %s: %s", method.Name, contractDesc, eventDetail))
 					}
 				}
 				
@@ -632,6 +706,34 @@ func (a *ABIResolver) GetPromptContext(ctx context.Context, baggage map[string]i
 
 	if len(contextParts) == 1 {
 		return "" // No verified contracts
+	}
+
+	// Add detailed event parameter information
+	if len(eventDetails) > 0 {
+		contextParts = append(contextParts, "", "### Event Parameter Details:")
+		contextParts = append(contextParts, "Use these parameter names to extract specific information from events:")
+		contextParts = append(contextParts, strings.Join(eventDetails, "\n"))
+	}
+
+
+
+	// Add proxy-implementation guidance if relevant
+	hasProxies := false
+	hasImplementations := false
+	for _, contract := range resolvedContracts {
+		if contract.IsProxy {
+			hasProxies = true
+		}
+		if contract.IsImplementation {
+			hasImplementations = true
+		}
+	}
+	if hasProxies && hasImplementations {
+		contextParts = append(contextParts, "", "### Proxy Contract Architecture:")
+		contextParts = append(contextParts, "- Proxy contracts delegate calls to implementation contracts")
+		contextParts = append(contextParts, "- Events and functions are typically defined in the implementation contract")
+		contextParts = append(contextParts, "- Users interact with the proxy address, but the logic comes from the implementation")
+		contextParts = append(contextParts, "- When describing transactions, focus on the proxy address that users interact with")
 	}
 
 	contextParts = append(contextParts, "", "Note: Contract names from Etherscan verification are authoritative. Use verified contract names to distinguish between token contracts (e.g., 'USDC', 'DAI') and protocol contracts (e.g., 'AggregationRouterV6', 'UniswapV2Router02').")

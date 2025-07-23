@@ -17,8 +17,9 @@ import (
 
 // ERC20PriceLookup fetches token prices from CoinMarketCap API
 type ERC20PriceLookup struct {
-	apiKey     string
-	httpClient *http.Client
+	apiKey        string
+	httpClient    *http.Client
+	networkMapper *NetworkMapper
 }
 
 // DEXPriceData represents DEX-specific pricing information
@@ -179,6 +180,7 @@ func NewERC20PriceLookup(apiKey string) *ERC20PriceLookup {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		networkMapper: NewNetworkMapper(apiKey),
 	}
 }
 
@@ -195,28 +197,6 @@ func (t *ERC20PriceLookup) Description() string {
 // Dependencies returns the tools this processor depends on
 func (t *ERC20PriceLookup) Dependencies() []string {
 	return []string{"token_metadata_enricher"} // Needs token metadata for optimal lookups
-}
-
-// getBlockchainSlug converts network ID to CoinMarketCap blockchain slug
-func (t *ERC20PriceLookup) getBlockchainSlug(networkID int64) string {
-	// Get network configuration dynamically
-	network, exists := models.GetNetwork(networkID)
-	if !exists {
-		return "" // Unknown network
-	}
-	
-	// Use network name to generate slug dynamically
-	// Convert network name to lowercase and replace spaces with dashes for CoinMarketCap API
-	slug := strings.ToLower(network.Name)
-	slug = strings.ReplaceAll(slug, " ", "-")
-	
-	// Handle common naming variations for CoinMarketCap compatibility
-	switch slug {
-	case "binance-smart-chain", "bsc":
-		return "binance-smart-chain"
-	default:
-		return slug
-	}
 }
 
 // Process adds token price information to baggage
@@ -522,11 +502,14 @@ func (t *ERC20PriceLookup) getDEXPrice(ctx context.Context, contractAddress stri
 	}
 
 	// Get blockchain slug for DEX API
-	blockchainSlug := t.getBlockchainSlug(networkID)
+	blockchainSlug, err := t.networkMapper.GetNetworkSlug(networkID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network slug for DEX API: %w", err)
+	}
 	
 	// Build query parameters for DEX API
 	params := url.Values{}
-	params.Set("blockchain", blockchainSlug)
+	params.Set("network_slug", blockchainSlug) // Use network_slug instead of blockchain
 	params.Set("token_address", strings.ToLower(contractAddress))
 	params.Set("convert", "USD")
 	params.Set("sort", "liquidity_usd") // Sort by liquidity for best prices first
