@@ -482,7 +482,7 @@ Call #%d:`,
 
 ### Events Emitted:`
 
-	// Add events information - CLEANED UP VERSION
+	// Add events information - INCLUDE MORE CRITICAL PARAMETERS
 	for i, event := range decodedData.Events {
 		prompt += fmt.Sprintf(`
 
@@ -491,28 +491,60 @@ Event #%d:
 - Event: %s`,
 			i+1, event.Contract, event.Name)
 
-		// Only include essential parameters, skip raw data and topics
+		// Include critical parameters for detailed explanations
 		if len(event.Parameters) > 0 {
-			essentialParams := make(map[string]interface{})
+			criticalParams := make(map[string]interface{})
 			for key, value := range event.Parameters {
-				// Skip raw hex data, signatures, and internal fields
-				if key == "raw_data" || key == "signature" || key == "topic_0" || 
-				   strings.HasPrefix(key, "topic_") || strings.HasPrefix(key, "contract_") {
+				// Skip only truly irrelevant data
+				if key == "raw_data" || key == "signature" || 
+				   strings.HasPrefix(key, "topic_") && len(key) > 10 { // Skip topic_0, topic_1, etc. but allow "topics"
 					continue
 				}
 				
-				// Include human-readable parameters
-				if str, ok := value.(string); ok && str != "" && !strings.HasPrefix(str, "0x") {
-					essentialParams[key] = str
+				// Include ALL meaningful parameters for critical context
+				switch v := value.(type) {
+				case string:
+					if v != "" {
+						// Include addresses, role IDs, and other string values
+						criticalParams[key] = v
+					}
+				case bool:
+					// Include boolean values (enabled/disabled, etc.)
+					criticalParams[key] = v
+				case int, int64, uint64, float64:
+					// Include numeric values (role IDs, amounts, etc.)
+					criticalParams[key] = v
+				default:
+					// Include other types as-is
+					if v != nil {
+						criticalParams[key] = v
+					}
 				}
 			}
 			
-			if len(essentialParams) > 0 {
+			if len(criticalParams) > 0 {
 				prompt += `
 - Parameters:`
-				for key, value := range essentialParams {
-					prompt += fmt.Sprintf(`
-  - %s: %v`, key, value)
+				for key, value := range criticalParams {
+					// Format parameter display based on type
+					switch v := value.(type) {
+					case string:
+						if strings.HasPrefix(v, "0x") && len(v) == 66 {
+							// Show full addresses for important context (can be cleaned by address formatter)
+							prompt += fmt.Sprintf(`
+  - %s: %s`, key, v)
+						} else {
+							prompt += fmt.Sprintf(`
+  - %s: %s`, key, v)
+						}
+					case bool:
+						// Clear boolean display
+						prompt += fmt.Sprintf(`
+  - %s: %t`, key, v)
+					default:
+						prompt += fmt.Sprintf(`
+  - %s: %v`, key, v)
+					}
 				}
 			}
 		}
@@ -662,11 +694,19 @@ IMPORTANT:
 - Gas fees should be shown in USD format: "$0.85 gas", "$12.50 gas"
 
 EVENT PARAMETER USAGE:
-- Use the "Event Parameter Details" section to understand what each event parameter represents
-- When events have meaningful parameter names (user, role, enabled, etc.), use them to provide specific details
+- CRITICAL: Use event parameters to provide SPECIFIC DETAILS in your explanation
+- When events have meaningful parameter names (user, role, enabled, roleId, etc.), ALWAYS include them in the text
+- For role/permission events: Include role ID/name and whether it was enabled/disabled/granted/revoked
+- For user management: Include both the admin who made the change AND the affected user
+- For numeric parameters: Include specific numbers (role ID 7, token ID 1234, etc.)
+- For boolean parameters: Include the state (enabled/disabled, approved/revoked, active/inactive)
 - Always prioritize the transaction sender when describing WHO initiated the action
-- For management/governance events, clearly identify both the initiator and the affected party
-- Examples: "Admin 0x1234...5678 enabled permissions for user 0x9876...4321", "0x1234...5678 (dao.eth) updated settings"
+- Examples: 
+  - "Admin 0x1234...5678 enabled role 7 for user 0x9876...4321" (use role ID)
+  - "0x1234...5678 (dao.eth) granted admin permissions to user 0x9876...4321" (use specific permission type)
+  - "0x5678...1234 revoked role 3 from user 0x9876...4321" (use role ID and action)
+  - "Minted NFT #1234 to 0x1111...2222" (use token ID)
+- NEVER use vague terms like "updated a user role" when specific details are available
 
 CRITICAL ENS NAME REQUIREMENTS:
 - MANDATORY: Always include ENS names in the final explanation text when available

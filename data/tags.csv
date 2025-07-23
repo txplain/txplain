@@ -12,7 +12,9 @@ burning,Destruction,Token or NFT burning,"burn,Burn event,to zero address",0.9
 nft,NFT,Non-fungible token operations,"ERC721,ERC1155,NFT,collectible",0.9
 nft-marketplace,NFT,NFT marketplace transactions,"OpenSea,LooksRare,marketplace,bid,offer",0.85
 gaming,Gaming,Gaming-related transactions,"game,gaming,play,quest,reward",0.8
-dao,Governance,DAO governance operations,"vote,propose,execute,governance",0.8
+dao,Governance,DAO governance operations,"vote,propose,execute,governance,role,permission",0.8
+access-control,Authorization,Access control and permission management,"role,permission,grant,revoke,enable,disable,UserRoleUpdated,RoleGranted,admin",0.9
+authorization,Authorization,Authorization and approval operations,"approve,authorize,grant,permission,access,role",0.85
 airdrop,Distribution,Token airdrop or distribution,"claim,airdrop,distribute,merkle",0.85
 arbitrage,Trading,Arbitrage opportunities,"arbitrage,MEV,sandwich,frontrun",0.7
 flash-loan,DeFi,Flash loan operations,"flashloan,flash,borrow,repay same tx",0.9

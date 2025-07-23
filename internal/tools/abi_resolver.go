@@ -15,7 +15,7 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// ABIResolver fetches contract ABIs and source code from Etherscan API v2
+// ABIResolver fetches contract ABIs and source code from Etherscan API v2 and Sourcify
 type ABIResolver struct {
 	httpClient *http.Client
 	apiKey     string
@@ -99,7 +99,7 @@ func (a *ABIResolver) Name() string {
 
 // Description returns the tool description
 func (a *ABIResolver) Description() string {
-	return "Resolves contract ABIs and source code from Etherscan API v2 for verified contracts"
+	return "Resolves contract ABIs and source code from Etherscan API v2 and Sourcify for verified contracts"
 }
 
 // Dependencies returns the tools this processor depends on (none - runs first)
@@ -264,29 +264,45 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 	return addresses
 }
 
-// resolveContract fetches contract information from Etherscan API
+// resolveContract fetches contract information from Etherscan API with Sourcify fallback
 func (a *ABIResolver) resolveContract(ctx context.Context, address string, networkID int64) (*ContractInfo, error) {
-	if a.apiKey == "" {
-		return nil, fmt.Errorf("no Etherscan API key configured")
-	}
-
-	// Get the appropriate Etherscan API endpoint
-	baseURL := a.getEtherscanURL(networkID)
-	if baseURL == "" {
-		return nil, fmt.Errorf("unsupported network ID: %d", networkID)
-	}
-
 	contractInfo := &ContractInfo{
 		Address:    address,
 		IsVerified: false,
 	}
 
-	// First, try to get contract source code
-	if err := a.fetchSourceCode(ctx, baseURL, address, contractInfo); err != nil {
-		// If source code fetch fails, try ABI only
-		if err := a.fetchABI(ctx, baseURL, address, contractInfo); err != nil {
-			return nil, fmt.Errorf("failed to resolve contract: %w", err)
+	// First, try Etherscan if API key is available
+	if a.apiKey != "" {
+		// Get the appropriate Etherscan API endpoint
+		baseURL := a.getEtherscanURL(networkID)
+		if baseURL != "" {
+			// Try to get contract source code from Etherscan
+			if err := a.fetchSourceCode(ctx, baseURL, address, contractInfo); err == nil {
+				// Success - parse ABI and return
+				if contractInfo.ABI != "" {
+					if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
+						contractInfo.ParsedABI = parsedABI
+					}
+				}
+				return contractInfo, nil
+			}
+
+			// If source code fetch fails, try ABI only from Etherscan
+			if err := a.fetchABI(ctx, baseURL, address, contractInfo); err == nil {
+				// Success - parse ABI and return
+				if contractInfo.ABI != "" {
+					if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
+						contractInfo.ParsedABI = parsedABI
+					}
+				}
+				return contractInfo, nil
+			}
 		}
+	}
+
+	// Etherscan failed or no API key, try Sourcify as fallback
+	if err := a.fetchFromSourceify(ctx, address, networkID, contractInfo); err != nil {
+		return nil, fmt.Errorf("failed to resolve contract from Etherscan and Sourcify: %w", err)
 	}
 
 	// Parse ABI if we have it
@@ -297,6 +313,130 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 	}
 
 	return contractInfo, nil
+}
+
+// fetchFromSourceify fetches contract information from Sourcify
+func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, networkID int64, contractInfo *ContractInfo) error {
+	// Sourcify uses standard chain IDs - convert our network ID if needed
+	chainID := networkID
+
+	// Check if contract is verified on Sourcify first
+	serverURL := "https://sourcify.dev/server"
+	checkURL := fmt.Sprintf("%s/check-by-addresses?addresses=%s&chainIds=%d", serverURL, address, chainID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create Sourcify check request: %w", err)
+	}
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to check Sourcify: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Sourcify check failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read Sourcify check response: %w", err)
+	}
+
+	// Parse the response to check if contract is verified
+	var checkResult []map[string]interface{}
+	if err := json.Unmarshal(body, &checkResult); err != nil {
+		return fmt.Errorf("failed to parse Sourcify check response: %w", err)
+	}
+
+	// Check if we got any results
+	if len(checkResult) == 0 {
+		return fmt.Errorf("contract not found on Sourcify")
+	}
+
+	// Look for full match or partial match
+	result := checkResult[0]
+	status, ok := result["status"].(string)
+	if !ok || (status != "perfect" && status != "partial") {
+		return fmt.Errorf("contract not verified on Sourcify (status: %v)", status)
+	}
+
+	// Contract is verified, fetch the metadata.json file
+	repoURL := "https://repo.sourcify.dev"
+	var metadataURL string
+	
+	if status == "perfect" {
+		metadataURL = fmt.Sprintf("%s/contracts/full_match/%d/%s/metadata.json", repoURL, chainID, address)
+	} else {
+		metadataURL = fmt.Sprintf("%s/contracts/partial_match/%d/%s/metadata.json", repoURL, chainID, address)
+	}
+
+	// Fetch metadata.json
+	metadataReq, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create metadata request: %w", err)
+	}
+
+	metadataResp, err := a.httpClient.Do(metadataReq)
+	if err != nil {
+		return fmt.Errorf("failed to fetch metadata from Sourcify: %w", err)
+	}
+	defer metadataResp.Body.Close()
+
+	if metadataResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch metadata from Sourcify with status %d", metadataResp.StatusCode)
+	}
+
+	metadataBody, err := io.ReadAll(metadataResp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read metadata response: %w", err)
+	}
+
+	// Parse metadata to extract ABI
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(metadataBody, &metadata); err != nil {
+		return fmt.Errorf("failed to parse metadata JSON: %w", err)
+	}
+
+	// Extract ABI from output.abi field
+	if output, ok := metadata["output"].(map[string]interface{}); ok {
+		if abi, ok := output["abi"].([]interface{}); ok {
+			// Convert ABI back to JSON string
+			abiBytes, err := json.Marshal(abi)
+			if err != nil {
+				return fmt.Errorf("failed to marshal ABI: %w", err)
+			}
+			contractInfo.ABI = string(abiBytes)
+			contractInfo.IsVerified = true
+		}
+	}
+
+	// Extract contract name if available
+	if settings, ok := metadata["settings"].(map[string]interface{}); ok {
+		if compilationTarget, ok := settings["compilationTarget"].(map[string]interface{}); ok {
+			// Get the first contract name from compilation target
+			for _, name := range compilationTarget {
+				if nameStr, ok := name.(string); ok {
+					contractInfo.ContractName = nameStr
+					break
+				}
+			}
+		}
+	}
+
+	// Extract compiler version if available
+	if compiler, ok := metadata["compiler"].(map[string]interface{}); ok {
+		if version, ok := compiler["version"].(string); ok {
+			contractInfo.CompilerVersion = version
+		}
+	}
+
+	if contractInfo.ABI == "" {
+		return fmt.Errorf("no ABI found in Sourcify metadata")
+	}
+
+	return nil
 }
 
 // fetchSourceCode fetches contract source code and metadata
