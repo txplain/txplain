@@ -729,10 +729,84 @@ func (t *LogDecoder) parseEventBySignature(eventName string, topics []string, da
 	case "Swap":
 		t.parseSwapEvent(topics, data, parameters)
 	default:
-		// Store raw data for unknown events
-		parameters["raw_data"] = data
-		for i, topic := range topics {
-			parameters[fmt.Sprintf("topic_%d", i)] = topic
+		// For unknown events, extract all available parameters generically
+		t.parseGenericEvent(topics, data, parameters)
+	}
+}
+
+// parseGenericEvent extracts all available parameters from any event generically
+func (t *LogDecoder) parseGenericEvent(topics []string, data string, parameters map[string]interface{}) {
+	// Store all topics with generic names (topic_0 is event signature, skip it)
+	for i := 1; i < len(topics); i++ {
+		paramName := fmt.Sprintf("param_%d", i)
+		paramValue := topics[i]
+		
+		// Try to clean address values
+		if len(paramValue) == 66 && strings.HasPrefix(paramValue, "0x") {
+			// Could be a padded address or uint256
+			if strings.HasPrefix(paramValue, "0x000000000000000000000000") {
+				// Padded address - extract the address part
+				cleanAddr := t.cleanAddress(paramValue)
+				if cleanAddr != "0x0000000000000000000000000000000000000000" {
+					parameters[paramName] = cleanAddr
+					parameters[paramName+"_type"] = "address"
+				} else {
+					// Zero address or large number
+					parameters[paramName] = paramValue
+					parameters[paramName+"_type"] = "uint256"
+				}
+			} else {
+				// Try to parse as uint256
+				if parsed, err := strconv.ParseUint(paramValue[2:], 16, 64); err == nil && parsed < 1000000 {
+					// Small number, likely an ID or enum
+					parameters[paramName] = parsed
+					parameters[paramName+"_type"] = "uint256"
+				} else {
+					// Large number or other data
+					parameters[paramName] = paramValue
+					parameters[paramName+"_type"] = "bytes32"
+				}
+			}
+		} else {
+			parameters[paramName] = paramValue
+			parameters[paramName+"_type"] = "bytes32"
+		}
+	}
+	
+	// Parse data field if present
+	if data != "" && data != "0x" {
+		dataLen := len(data) - 2 // Remove 0x prefix
+		if dataLen >= 64 {
+			// Each 32-byte chunk is a parameter
+			paramIndex := len(topics) // Start numbering after indexed parameters
+			for offset := 0; offset < dataLen; offset += 64 {
+				if offset+64 <= dataLen {
+					paramHex := "0x" + data[2+offset:2+offset+64]
+					paramName := fmt.Sprintf("param_%d", paramIndex)
+					
+					// Try to parse as different types
+					if parsed, err := strconv.ParseUint(paramHex[2:], 16, 64); err == nil {
+						if parsed == 0 || parsed == 1 {
+							// Likely boolean
+							parameters[paramName] = parsed == 1
+							parameters[paramName+"_type"] = "bool"
+						} else if parsed < 1000000 {
+							// Small number, likely ID or enum
+							parameters[paramName] = parsed
+							parameters[paramName+"_type"] = "uint256"
+						} else {
+							// Large number
+							parameters[paramName] = paramHex
+							parameters[paramName+"_type"] = "uint256"
+						}
+					} else {
+						parameters[paramName] = paramHex
+						parameters[paramName+"_type"] = "bytes32"
+					}
+					
+					paramIndex++
+				}
+			}
 		}
 	}
 }
