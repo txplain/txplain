@@ -28,6 +28,8 @@ Read and follow the **Architecture Principles** section in README.md. This file 
 
 ## Development Guidelines
 
+* NEVER build a new binary in the current directory, use "go run ./cmd/main.go --tx 0x0824267bef6fc363ed974c5c25f3856b06e5beaa434e12100df01ba22056b1b2 -v" instead
+
 ### When Adding New Tools
 1. Follow the checklist in README.md "Adding New Tools" section
 2. Implement all required interfaces exactly as documented

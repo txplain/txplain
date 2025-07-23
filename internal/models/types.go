@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -376,4 +377,262 @@ func GetNetwork(networkID int64) (Network, bool) {
 func ToJSON(v interface{}) string {
 	bytes, _ := json.Marshal(v)
 	return string(bytes)
+}
+
+// Progress models for real-time updates
+
+// ComponentStatus represents the current status of a processing component
+type ComponentStatus string
+
+const (
+	ComponentStatusInitiated ComponentStatus = "initiated"
+	ComponentStatusRunning   ComponentStatus = "running"
+	ComponentStatusFinished  ComponentStatus = "finished"
+	ComponentStatusError     ComponentStatus = "error"
+)
+
+// ComponentGroup represents different processing phases with associated colors
+type ComponentGroup string
+
+const (
+	ComponentGroupData       ComponentGroup = "data"        // Blue - Data fetching
+	ComponentGroupDecoding   ComponentGroup = "decoding"    // Green - Decoding/parsing
+	ComponentGroupEnrichment ComponentGroup = "enrichment"  // Purple - Data enrichment
+	ComponentGroupAnalysis   ComponentGroup = "analysis"    // Orange - AI analysis
+	ComponentGroupFinishing  ComponentGroup = "finishing"   // Gray - Final steps
+)
+
+// ComponentUpdate represents a single component's progress update
+type ComponentUpdate struct {
+	ID          string          `json:"id"`          // Unique component ID
+	Group       ComponentGroup  `json:"group"`       // Visual grouping
+	Title       string          `json:"title"`       // Display title
+	Status      ComponentStatus `json:"status"`      // Current status
+	Description string          `json:"description"` // Optional detailed description
+	Timestamp   time.Time       `json:"timestamp"`   // When this update occurred
+	StartTime   *time.Time      `json:"start_time,omitempty"` // When this component started
+	Duration    *int64          `json:"duration_ms,omitempty"` // Duration in milliseconds (only for finished/error)
+	Metadata    interface{}     `json:"metadata,omitempty"` // Optional tool-specific data
+}
+
+// ProgressEvent represents a complete progress event sent via SSE
+type ProgressEvent struct {
+	Type      string           `json:"type"`      // "component_update", "complete", "error"
+	Component *ComponentUpdate `json:"component,omitempty"` // For component updates
+	Result    interface{}      `json:"result,omitempty"`    // For completion
+	Error     string           `json:"error,omitempty"`     // For errors
+	Timestamp time.Time        `json:"timestamp"`
+}
+
+// ProgressTracker tracks all component updates for a transaction
+type ProgressTracker struct {
+	components  map[string]*ComponentUpdate
+	updateChan  chan<- ProgressEvent
+	lastUpdate  time.Time
+	heartbeatID string
+	startTimes  map[string]time.Time // Track when each component started
+	done        chan struct{}
+	ctx         context.Context
+	cancel      context.CancelFunc
+}
+
+// NewProgressTracker creates a new progress tracker
+func NewProgressTracker(updateChan chan<- ProgressEvent) *ProgressTracker {
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	pt := &ProgressTracker{
+		components:  make(map[string]*ComponentUpdate),
+		updateChan:  updateChan,
+		lastUpdate:  time.Now(),
+		heartbeatID: "heartbeat",
+		startTimes:  make(map[string]time.Time),
+		done:        make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	
+	// Start heartbeat goroutine to ensure updates every 500ms
+	go pt.startHeartbeat()
+	
+	return pt
+}
+
+// Close stops the heartbeat goroutine and cleans up resources
+func (pt *ProgressTracker) Close() {
+	pt.cancel()
+	close(pt.done)
+}
+
+// UpdateComponent updates a component's status and sends progress event
+func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, title string, status ComponentStatus, description string) {
+	now := time.Now()
+	
+	// Track start time for new components
+	var startTime *time.Time
+	var duration *int64
+	
+	if _, exists := pt.startTimes[id]; !exists {
+		// This is the first time we see this component, record start time
+		pt.startTimes[id] = now
+		startTime = &now
+	} else {
+		// Component already exists, use existing start time
+		existingStart := pt.startTimes[id]
+		startTime = &existingStart
+		
+		// Calculate duration for finished/error components
+		if status == ComponentStatusFinished || status == ComponentStatusError {
+			durationMs := now.Sub(existingStart).Milliseconds()
+			duration = &durationMs
+		}
+	}
+	
+	component := &ComponentUpdate{
+		ID:          id,
+		Group:       group,
+		Title:       title,
+		Status:      status,
+		Description: description,
+		Timestamp:   now,
+		StartTime:   startTime,
+		Duration:    duration,
+	}
+	
+	pt.components[id] = component
+	pt.lastUpdate = now
+
+	// Send update via channel with panic protection
+	select {
+	case <-pt.ctx.Done():
+		// Tracker has been closed, don't send
+		return
+	default:
+		// Try to send, but recover from panic if channel is closed
+		func() {
+			defer func() {
+				if recover() != nil {
+					// Channel was closed, cancel context to stop further attempts
+					pt.cancel()
+				}
+			}()
+			
+			if pt.updateChan != nil {
+				pt.updateChan <- ProgressEvent{
+					Type:      "component_update",
+					Component: component,
+					Timestamp: time.Now(),
+				}
+			}
+		}()
+	}
+}
+
+// startHeartbeat ensures there's always a progress update within 500ms
+func (pt *ProgressTracker) startHeartbeat() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-pt.ctx.Done():
+			// Context cancelled, stop heartbeat
+			return
+		case <-pt.done:
+			// Explicit done signal, stop heartbeat
+			return
+		case <-ticker.C:
+			// Check if we need to send a heartbeat
+			if time.Since(pt.lastUpdate) >= 450*time.Millisecond {
+				// Find the most recent running component to update
+				var latestRunning *ComponentUpdate
+				var latestTime time.Time
+				
+				for _, component := range pt.components {
+					if component.Status == ComponentStatusRunning && component.Timestamp.After(latestTime) {
+						latestRunning = component
+						latestTime = component.Timestamp
+					}
+				}
+				
+				if latestRunning != nil {
+					// Send a subtle heartbeat update
+					heartbeatDesc := latestRunning.Description
+					if !strings.Contains(heartbeatDesc, "...") {
+						heartbeatDesc += "..."
+					}
+					
+					pt.UpdateComponent(
+						latestRunning.ID,
+						latestRunning.Group,
+						latestRunning.Title,
+						ComponentStatusRunning,
+						heartbeatDesc,
+					)
+				}
+			}
+		}
+	}
+}
+
+// GetAllComponents returns all component updates
+func (pt *ProgressTracker) GetAllComponents() []*ComponentUpdate {
+	var components []*ComponentUpdate
+	for _, component := range pt.components {
+		components = append(components, component)
+	}
+	return components
+}
+
+// SendComplete sends completion event
+func (pt *ProgressTracker) SendComplete(result interface{}) {
+	select {
+	case <-pt.ctx.Done():
+		// Tracker has been closed, don't send
+		return
+	default:
+		// Try to send, but recover from panic if channel is closed
+		func() {
+			defer func() {
+				if recover() != nil {
+					// Channel was closed, cancel context to stop further attempts
+					pt.cancel()
+				}
+			}()
+			
+			if pt.updateChan != nil {
+				pt.updateChan <- ProgressEvent{
+					Type:      "complete",
+					Result:    result,
+					Timestamp: time.Now(),
+				}
+			}
+		}()
+	}
+}
+
+// SendError sends error event
+func (pt *ProgressTracker) SendError(err error) {
+	select {
+	case <-pt.ctx.Done():
+		// Tracker has been closed, don't send
+		return
+	default:
+		// Try to send, but recover from panic if channel is closed
+		func() {
+			defer func() {
+				if recover() != nil {
+					// Channel was closed, cancel context to stop further attempts
+					pt.cancel()
+				}
+			}()
+			
+			if pt.updateChan != nil {
+				pt.updateChan <- ProgressEvent{
+					Type:      "error",
+					Error:     err.Error(),
+					Timestamp: time.Now(),
+				}
+			}
+		}()
+	}
 }

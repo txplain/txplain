@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/txplain/txplain/internal/models"
 	"github.com/txplain/txplain/internal/rpc"
 )
 
@@ -91,8 +92,17 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		fmt.Println("🔄 Analyzing contracts for token properties...")
 	}
 
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+	
 	// Test each contract address individually
 	for i, address := range contractAddresses {
+		// Send progress updates for each contract
+		if hasProgress {
+			progress := fmt.Sprintf("Analyzing contract %d of %d (%s)", i+1, len(contractAddresses), address[:10]+"...")
+			progressTracker.UpdateComponent("token_metadata_enricher", models.ComponentGroupEnrichment, "Fetching Token Metadata", models.ComponentStatusRunning, progress)
+		}
+		
 		if t.verbose {
 			fmt.Printf("   [%d/%d] Analyzing %s...", i+1, len(contractAddresses), address)
 		}
@@ -213,8 +223,8 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		allContractInfo[address] = contractInfo
 
 		// Create TokenMetadata for contracts that have token-like characteristics
-		// Use proper token type classification based on available data
-		if hasAnyTokenLikeData || (abiContract != nil && abiContract.IsVerified) {
+		// ONLY add contracts that actually have token-like methods, not just any verified contract
+		if hasAnyTokenLikeData {
 			metadata := &TokenMetadata{
 				Address:  address,
 				Type:     tokenType, // Use determined token type instead of generic "Contract"
