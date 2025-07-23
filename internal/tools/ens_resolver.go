@@ -96,6 +96,9 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 		return nil
 	}
 
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
 	if e.verbose {
 		fmt.Println("🔄 Resolving ENS names...")
 	}
@@ -103,8 +106,14 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 	ensNames := make(map[string]string)
 	successCount := 0
 
-	// Resolve ENS names for each address
+	// Resolve ENS names for each address with granular progress updates
 	for i, address := range addressList {
+		// Send progress update for each address being resolved
+		if hasProgress {
+			progress := fmt.Sprintf("Checking address %d of %d: %s", i+1, len(addressList), address[:10]+"...")
+			progressTracker.UpdateComponent("ens_resolver", models.ComponentGroupEnrichment, "Resolving ENS Names", models.ComponentStatusRunning, progress)
+		}
+
 		if e.verbose {
 			fmt.Printf("   [%d/%d] Resolving %s...", i+1, len(addressList), address)
 		}
@@ -123,8 +132,24 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 			if e.verbose {
 				fmt.Printf(" ✅ %s\n", ensName)
 			}
+			// Send progress update when we find an ENS name
+			if hasProgress {
+				progress := fmt.Sprintf("Found ENS name: %s → %s", address[:10]+"...", ensName)
+				progressTracker.UpdateComponent("ens_resolver", models.ComponentGroupEnrichment, "Resolving ENS Names", models.ComponentStatusRunning, progress)
+			}
 		} else if e.verbose {
 			fmt.Printf(" ⚪ No ENS name\n")
+		}
+	}
+
+	// Send final progress update with results summary
+	if hasProgress {
+		if successCount > 0 {
+			progress := fmt.Sprintf("Completed: Found %d ENS names out of %d addresses", successCount, len(addresses))
+			progressTracker.UpdateComponent("ens_resolver", models.ComponentGroupEnrichment, "Resolving ENS Names", models.ComponentStatusFinished, progress)
+		} else {
+			progress := fmt.Sprintf("Completed: No ENS names found for %d addresses", len(addresses))
+			progressTracker.UpdateComponent("ens_resolver", models.ComponentGroupEnrichment, "Resolving ENS Names", models.ComponentStatusFinished, progress)
 		}
 	}
 
