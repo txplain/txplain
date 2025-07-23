@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
-	"github.com/txplain/txplain/internal/models"
 )
 
 // ProtocolResolver identifies DeFi protocols probabilistically using AI and RAG
@@ -88,17 +87,27 @@ func (p *ProtocolResolver) Dependencies() []string {
 
 // Process identifies protocols probabilistically from transaction data
 func (p *ProtocolResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
-	// Gather transaction context for AI analysis
-	contextData := p.buildTransactionContext(baggage)
+	// Collect context from all context providers in the baggage (same as TransactionExplainer)
+	var additionalContext []string
+	if contextProviders, ok := baggage["context_providers"].([]Tool); ok {
+		for _, provider := range contextProviders {
+			if context := provider.GetPromptContext(ctx, baggage); context != "" {
+				additionalContext = append(additionalContext, context)
+			}
+		}
+	}
+
+	// Combine all context for AI analysis
+	contextData := strings.Join(additionalContext, "\n\n")
 
 	if p.verbose {
-		fmt.Println("=== PROTOCOL RESOLVER: TRANSACTION CONTEXT ===")
+		fmt.Println("=== PROTOCOL RESOLVER: CONTEXT FROM PROVIDERS ===")
 		fmt.Printf("Context: %s\n", contextData)
 		fmt.Println("=== END CONTEXT ===")
 		fmt.Println()
 	}
 
-	// Use AI to identify protocols
+	// Use AI to identify protocols with context from previous tools
 	protocols, err := p.identifyProtocolsWithAI(ctx, contextData)
 	if err != nil {
 		if p.verbose {
@@ -219,178 +228,6 @@ func findColumnIndex(headers []string, columnName string) int {
 		}
 	}
 	return -1
-}
-
-// NOTE: Removed inferProtocolType method - protocol classification should be handled by LLM
-// based on protocol names, descriptions, and transaction patterns rather than hardcoded keywords.
-
-// buildTransactionContext creates context for AI analysis
-func (p *ProtocolResolver) buildTransactionContext(baggage map[string]interface{}) string {
-	var contextParts []string
-
-	// Add contract addresses and their metadata
-	if contractAddresses, ok := baggage["contract_addresses"].([]string); ok {
-		contextParts = append(contextParts, "CONTRACT ADDRESSES:")
-		for _, addr := range contractAddresses {
-			contextParts = append(contextParts, fmt.Sprintf("- %s", addr))
-		}
-	}
-
-	// Add token transfers context
-	if transfers, ok := baggage["transfers"].([]models.TokenTransfer); ok && len(transfers) > 0 {
-		contextParts = append(contextParts, "\nTOKEN TRANSFERS:")
-		for i, transfer := range transfers {
-			transferInfo := fmt.Sprintf("Transfer #%d: %s -> %s", i+1, transfer.From, transfer.To)
-			if transfer.Symbol != "" {
-				transferInfo += fmt.Sprintf(" (%s)", transfer.Symbol)
-			}
-			if transfer.FormattedAmount != "" {
-				transferInfo += fmt.Sprintf(" Amount: %s", transfer.FormattedAmount)
-			}
-			contextParts = append(contextParts, fmt.Sprintf("- %s", transferInfo))
-		}
-	}
-
-	// Add token metadata context - CRITICAL for distinguishing tokens from protocols
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok {
-		contextParts = append(contextParts, "\nTOKEN METADATA (these are TOKEN CONTRACTS, not protocol contracts):")
-		for addr, metadata := range tokenMetadata {
-			metaInfo := fmt.Sprintf("%s: %s (%s)", addr, metadata.Name, metadata.Symbol)
-			if metadata.Type != "" {
-				metaInfo += fmt.Sprintf(" [%s]", metadata.Type)
-			}
-			contextParts = append(contextParts, fmt.Sprintf("- %s", metaInfo))
-		}
-	}
-
-	// Add events context with complete parameter information
-	if events, ok := baggage["events"].([]models.Event); ok && len(events) > 0 {
-		contextParts = append(contextParts, "\nEVENTS:")
-		for _, event := range events {
-			eventInfo := fmt.Sprintf("- %s on %s", event.Name, event.Contract)
-
-			// Include ALL event parameters for comprehensive protocol classification
-			if event.Parameters != nil {
-				var paramDetails []string
-
-				// Include ALL parameters from the event - let LLM decide what's meaningful for protocol classification
-				for paramName, paramValue := range event.Parameters {
-					paramDetails = append(paramDetails, fmt.Sprintf("%s: %v", paramName, paramValue))
-				}
-
-				if len(paramDetails) > 0 {
-					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramDetails, ", "))
-				}
-			}
-
-			contextParts = append(contextParts, eventInfo)
-		}
-	}
-
-	// Extract potential protocol contract addresses from ALL events generically
-	var protocolCandidates []string
-	if events, ok := baggage["events"].([]models.Event); ok {
-		addressMap := make(map[string]bool)
-		for _, event := range events {
-			if event.Parameters != nil {
-				// Extract ALL address-like parameters that could be protocol contracts
-				for paramName, paramValue := range event.Parameters {
-					if addressStr, ok := paramValue.(string); ok && addressStr != "" {
-						// Common parameter names that often contain protocol addresses
-						if p.isLikelyProtocolParameter(paramName) {
-							cleanAddress := p.cleanAddress(addressStr)
-							if cleanAddress != "" && cleanAddress != "0x" {
-								addressMap[cleanAddress] = true
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for address := range addressMap {
-			protocolCandidates = append(protocolCandidates, address)
-		}
-	}
-
-	if len(protocolCandidates) > 0 {
-		contextParts = append(contextParts, "\nPOTENTIAL PROTOCOL CONTRACTS (extracted from event parameters):")
-		for _, address := range protocolCandidates {
-			contextParts = append(contextParts, fmt.Sprintf("- %s", address))
-		}
-		contextParts = append(contextParts, "(Note: These addresses extracted from event parameters are potential protocol contracts)")
-	}
-
-	// Add raw transaction context
-	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			if to, ok := receipt["to"].(string); ok {
-				contextParts = append(contextParts, fmt.Sprintf("\nTRANSACTION TO: %s", to))
-			}
-		}
-	}
-
-	return strings.Join(contextParts, "\n")
-}
-
-// isLikelyProtocolParameter checks if a parameter name commonly contains protocol addresses
-func (p *ProtocolResolver) isLikelyProtocolParameter(paramName string) bool {
-	// Common parameter names that often contain protocol contract addresses
-	protocolParams := map[string]bool{
-		"spender":    true, // Approval events
-		"operator":   true, // ERC1155 events
-		"router":     true, // Router addresses
-		"pool":       true, // Pool addresses
-		"vault":      true, // Vault addresses
-		"proxy":      true, // Proxy addresses
-		"contract":   true, // Generic contract references
-		"handler":    true, // Handler contracts
-		"manager":    true, // Manager contracts
-		"controller": true, // Controller contracts
-		"gateway":    true, // Gateway contracts
-	}
-
-	// Check exact match first
-	if protocolParams[strings.ToLower(paramName)] {
-		return true
-	}
-
-	// Check if parameter name contains protocol-related keywords
-	lowerParam := strings.ToLower(paramName)
-	for keyword := range protocolParams {
-		if strings.Contains(lowerParam, keyword) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// cleanAddress removes padding from addresses and validates format
-func (p *ProtocolResolver) cleanAddress(address string) string {
-	if address == "" {
-		return ""
-	}
-
-	// Remove 0x prefix for processing
-	addr := address
-	hasPrefix := strings.HasPrefix(addr, "0x")
-	if hasPrefix {
-		addr = addr[2:]
-	}
-
-	// If it's a padded 64-character address, extract the last 40 characters
-	if len(addr) == 64 {
-		addr = addr[24:] // Remove padding, keep last 40 chars
-	}
-
-	// Validate it's a proper hex address (40 characters)
-	if len(addr) != 40 {
-		return ""
-	}
-
-	// Re-add prefix and return
-	return "0x" + addr
 }
 
 // identifyProtocolsWithAI uses AI to identify protocols from transaction context
@@ -647,50 +484,4 @@ func (p *ProtocolResolver) GetPromptContext(ctx context.Context, baggage map[str
 	contextParts = append(contextParts, fmt.Sprintf("\n\nNote: Protocols identified with %.1f%% minimum confidence threshold", p.confidenceThreshold*100))
 
 	return strings.Join(contextParts, "")
-}
-
-// GetAnnotationContext provides annotation context for protocols
-func (p *ProtocolResolver) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
-	protocols, ok := baggage["protocols"].([]ProbabilisticProtocol)
-	if !ok || len(protocols) == 0 {
-		return &models.AnnotationContext{Items: make([]models.AnnotationContextItem, 0)}
-	}
-
-	annotationContext := &models.AnnotationContext{
-		Items: make([]models.AnnotationContextItem, 0),
-	}
-
-	for _, protocol := range protocols {
-		description := fmt.Sprintf("%s protocol (%.1f%% confidence)", protocol.Type, protocol.Confidence*100)
-		if protocol.Category != "" {
-			description += fmt.Sprintf(" in %s category", protocol.Category)
-		}
-
-		item := models.AnnotationContextItem{
-			Type:        "protocol",
-			Value:       protocol.Name,
-			Name:        fmt.Sprintf("%s %s", protocol.Name, protocol.Version),
-			Link:        protocol.Website,
-			Description: description,
-			Metadata: map[string]interface{}{
-				"type":       protocol.Type,
-				"version":    protocol.Version,
-				"confidence": protocol.Confidence,
-				"evidence":   protocol.Evidence,
-				"category":   protocol.Category,
-			},
-		}
-
-		annotationContext.AddItem(item)
-
-		// Also add version-specific variants for better matching
-		if protocol.Version != "" {
-			versionItem := item
-			versionItem.Value = fmt.Sprintf("%s %s", protocol.Name, protocol.Version)
-			versionItem.Name = fmt.Sprintf("%s %s", protocol.Name, protocol.Version)
-			annotationContext.AddItem(versionItem)
-		}
-	}
-
-	return annotationContext
 }

@@ -13,28 +13,22 @@ import (
 
 // AnnotationGenerator creates interactive annotations for explanation text using AI
 type AnnotationGenerator struct {
-	llm              llms.Model
-	contextCollector *AnnotationContextCollector
-	verbose          bool
+	llm llms.Model
+
+	verbose bool
 }
 
 // NewAnnotationGenerator creates a new annotation generator
 func NewAnnotationGenerator(llm llms.Model) *AnnotationGenerator {
 	return &AnnotationGenerator{
-		llm:              llm,
-		contextCollector: NewAnnotationContextCollector(),
-		verbose:          false,
+		llm:     llm,
+		verbose: false,
 	}
 }
 
 // SetVerbose enables or disables verbose logging
 func (ag *AnnotationGenerator) SetVerbose(verbose bool) {
 	ag.verbose = verbose
-}
-
-// AddContextProvider adds a context provider to the collector
-func (ag *AnnotationGenerator) AddContextProvider(provider AnnotationContextProvider) {
-	ag.contextCollector.AddProvider(provider)
 }
 
 // Dependencies returns the tools this processor depends on
@@ -53,45 +47,39 @@ func (ag *AnnotationGenerator) Process(ctx context.Context, baggage map[string]i
 		return nil // Not an error, just nothing to annotate
 	}
 
-	// Collect annotation context from all providers
-	annotationContext := ag.contextCollector.Collect(ctx, baggage)
-
-	if ag.verbose {
-		fmt.Printf("AnnotationGenerator: Collected %d context items from %d providers\n",
-			len(annotationContext.Items), len(ag.contextCollector.providers))
-
-		// Count by type
-		typeCounts := make(map[string]int)
-		for _, item := range annotationContext.Items {
-			typeCounts[item.Type]++
-		}
-		for itemType, count := range typeCounts {
-			fmt.Printf("  %s items: %d\n", itemType, count)
+	// Collect context from all context providers using GetPromptContext
+	var contextParts []string
+	if contextProviders, ok := baggage["context_providers"].([]Tool); ok {
+		for _, provider := range contextProviders {
+			if context := provider.GetPromptContext(ctx, baggage); context != "" {
+				contextParts = append(contextParts, context)
+			}
 		}
 	}
 
-	// Add network-specific context for explorer links
+	// Parse the text context to create annotation context
+	contextText := strings.Join(contextParts, "\n\n")
+
+	if ag.verbose {
+		fmt.Printf("AnnotationGenerator: Collected context from providers\n")
+		fmt.Printf("Context text length: %d characters\n", len(contextText))
+	}
+
+	// Add network-specific context to the text
+	networkContext := ""
 	networkID := explanation.NetworkID
 	if networkID > 0 {
 		if network, exists := models.GetNetwork(networkID); exists {
-			// Add network context for explorer links
-			annotationContext.AddItem(models.AnnotationContextItem{
-				Type:        "network",
-				Value:       fmt.Sprintf("%d", networkID),
-				Name:        network.Name,
-				Link:        network.Explorer,
-				Description: fmt.Sprintf("%s blockchain explorer", network.Name),
-				Metadata: map[string]interface{}{
-					"network_id": networkID,
-					"explorer":   network.Explorer,
-					"name":       network.Name,
-				},
-			})
+			networkContext = fmt.Sprintf("\n### NETWORK CONTEXT:\n- Network: %s (ID: %d, Explorer: %s)",
+				network.Name, networkID, network.Explorer)
 		}
 	}
 
-	// Generate annotations using AI
-	annotations, err := ag.generateAnnotations(ctx, explanation.Summary, annotationContext)
+	// Combine all context text
+	fullContextText := contextText + networkContext
+
+	// Generate annotations using AI with the text context
+	annotations, err := ag.generateAnnotationsFromText(ctx, explanation.Summary, fullContextText)
 	if err != nil {
 		return fmt.Errorf("failed to generate annotations: %w", err)
 	}
@@ -123,10 +111,10 @@ func (ag *AnnotationGenerator) Description() string {
 	return "Generates interactive annotations (links, tooltips, icons) for explanation text using AI"
 }
 
-// generateAnnotations uses AI to create annotations based on explanation text and available context
-func (ag *AnnotationGenerator) generateAnnotations(ctx context.Context, explanationText string, annotationContext *models.AnnotationContext) ([]models.Annotation, error) {
-	// Build the prompt
-	prompt := ag.buildAnnotationPrompt(explanationText, annotationContext)
+// generateAnnotationsFromText uses AI to create annotations based on explanation text and context text
+func (ag *AnnotationGenerator) generateAnnotationsFromText(ctx context.Context, explanationText string, contextText string) ([]models.Annotation, error) {
+	// Build the prompt using the text context
+	prompt := ag.buildAnnotationPromptFromText(explanationText, contextText)
 
 	if ag.verbose {
 		fmt.Println("=== ANNOTATION GENERATOR: PROMPT SENT TO LLM ===")
@@ -170,14 +158,11 @@ func (ag *AnnotationGenerator) generateAnnotations(ctx context.Context, explanat
 	return annotations, nil
 }
 
-// buildAnnotationPrompt creates the prompt for generating annotations
-func (ag *AnnotationGenerator) buildAnnotationPrompt(explanationText string, annotationContext *models.AnnotationContext) string {
+// buildAnnotationPromptFromText creates the prompt for generating annotations from text context
+func (ag *AnnotationGenerator) buildAnnotationPromptFromText(explanationText string, contextText string) string {
 	if ag.verbose {
-		fmt.Printf("AnnotationGenerator: Building prompt with %d context items\n", len(annotationContext.Items))
-		for i, item := range annotationContext.Items {
-			fmt.Printf("  Context[%d]: Type=%s, Value=%s, Name=%s, Icon=%s, Link=%s\n",
-				i, item.Type, item.Value, item.Name, item.Icon, item.Link)
-		}
+		fmt.Printf("AnnotationGenerator: Building prompt with context text\n")
+		fmt.Printf("Context length: %d characters\n", len(contextText))
 	}
 
 	prompt := fmt.Sprintf(`You are an expert at creating interactive annotations for blockchain transaction explanations. Your task is to identify elements in the text that would benefit from links, tooltips, or icons to enhance user understanding.
@@ -186,122 +171,7 @@ EXPLANATION TEXT TO ANNOTATE:
 "%s"
 
 AVAILABLE CONTEXT DATA:
-`, explanationText)
-
-	// Add context data organized by type
-	tokenItems := []models.AnnotationContextItem{}
-	addressItems := []models.AnnotationContextItem{}
-	protocolItems := []models.AnnotationContextItem{}
-	amountItems := []models.AnnotationContextItem{}
-	networkItems := []models.AnnotationContextItem{}
-	addressMappingItems := []models.AnnotationContextItem{}
-	gasFeeItems := []models.AnnotationContextItem{}
-
-	for _, item := range annotationContext.Items {
-		switch item.Type {
-		case "token", "native_token": // Include both ERC20 tokens and native tokens like ETH
-			tokenItems = append(tokenItems, item)
-		case "address":
-			addressItems = append(addressItems, item)
-		case "protocol":
-			protocolItems = append(protocolItems, item)
-		case "amount":
-			amountItems = append(amountItems, item)
-		case "network":
-			networkItems = append(networkItems, item)
-		case "address_mapping", "ens":
-			addressMappingItems = append(addressMappingItems, item)
-		case "gas_fee":
-			gasFeeItems = append(gasFeeItems, item)
-		}
-	}
-
-	if len(tokenItems) > 0 {
-		prompt += "\nTOKEN CONTEXT:\n"
-		for _, item := range tokenItems {
-			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
-			if item.Icon != "" {
-				prompt += fmt.Sprintf(" (Icon: %s)", item.Icon)
-			}
-			if item.Description != "" {
-				prompt += fmt.Sprintf(" - %s", item.Description)
-			}
-			prompt += "\n"
-		}
-	}
-
-	if len(addressItems) > 0 {
-		prompt += "\nADDRESS CONTEXT:\n"
-		for _, item := range addressItems {
-			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
-			if item.Link != "" {
-				prompt += fmt.Sprintf(" (Link: %s)", item.Link)
-			}
-			if item.Description != "" {
-				prompt += fmt.Sprintf(" - %s", item.Description)
-			}
-			prompt += "\n"
-		}
-	}
-
-	if len(protocolItems) > 0 {
-		prompt += "\nPROTOCOL CONTEXT:\n"
-		for _, item := range protocolItems {
-			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
-			if item.Icon != "" {
-				prompt += fmt.Sprintf(" (Icon: %s)", item.Icon)
-			}
-			if item.Link != "" {
-				prompt += fmt.Sprintf(" (Link: %s)", item.Link)
-			}
-			if item.Description != "" {
-				prompt += fmt.Sprintf(" - %s", item.Description)
-			}
-			prompt += "\n"
-		}
-	}
-
-	if len(networkItems) > 0 {
-		prompt += "\nNETWORK CONTEXT:\n"
-		for _, item := range networkItems {
-			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
-			if item.Link != "" {
-				prompt += fmt.Sprintf(" (Explorer: %s)", item.Link)
-			}
-			if item.Description != "" {
-				prompt += fmt.Sprintf(" - %s", item.Description)
-			}
-			prompt += "\n"
-		}
-	}
-
-	if len(addressMappingItems) > 0 {
-		prompt += "\nADDRESS MAPPING CONTEXT:\n"
-		for _, item := range addressMappingItems {
-			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
-			if item.Link != "" {
-				prompt += fmt.Sprintf(" (Link: %s)", item.Link)
-			}
-			if item.Description != "" {
-				prompt += fmt.Sprintf(" - %s", item.Description)
-			}
-			prompt += "\n"
-		}
-	}
-
-	if len(gasFeeItems) > 0 {
-		prompt += "\nGAS FEE CONTEXT:\n"
-		for _, item := range gasFeeItems {
-			prompt += fmt.Sprintf("- %s: %s", item.Value, item.Name)
-			if tooltip, ok := item.Metadata["tooltip"].(string); ok {
-				prompt += fmt.Sprintf(" (Tooltip: %s)", tooltip)
-			}
-			if item.Description != "" {
-				prompt += fmt.Sprintf(" - %s", item.Description)
-			}
-			prompt += "\n"
-		}
-	}
+%s`, explanationText, contextText)
 
 	prompt += `
 

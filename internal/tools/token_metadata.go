@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/txplain/txplain/internal/models"
 	"github.com/txplain/txplain/internal/rpc"
 )
 
@@ -223,87 +222,6 @@ func getStringValue(info map[string]interface{}, key string) string {
 		return val
 	}
 	return ""
-}
-
-func getIntValue(info map[string]interface{}, key string) int {
-	if val, ok := info[key].(int); ok {
-		return val
-	}
-	return 0
-}
-
-// GetAnnotationContext provides context for annotations
-func (t *TokenMetadataEnricher) GetAnnotationContext(ctx context.Context, baggage map[string]interface{}) *models.AnnotationContext {
-	annotationContext := &models.AnnotationContext{
-		Items: make([]models.AnnotationContextItem, 0),
-	}
-
-	// Add token metadata to annotation context
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok {
-		for address, metadata := range tokenMetadata {
-			description := fmt.Sprintf("%s token", metadata.Type)
-			if metadata.Decimals > 0 {
-				description += fmt.Sprintf(" with %d decimals", metadata.Decimals)
-			}
-
-			annotationContext.AddToken(
-				address,
-				metadata.Symbol,
-				metadata.Name,
-				"", // Icon will be added by static context provider
-				description,
-				map[string]interface{}{
-					"decimals": metadata.Decimals,
-					"type":     metadata.Type,
-				},
-			)
-
-			// Also add by symbol for easier matching
-			if metadata.Symbol != "" {
-				annotationContext.AddToken(
-					address,
-					metadata.Symbol,
-					metadata.Name,
-					"",
-					description,
-					map[string]interface{}{
-						"address":  address,
-						"decimals": metadata.Decimals,
-						"type":     metadata.Type,
-					},
-				)
-			}
-		}
-	}
-
-	// Also add information from all_contract_info for contracts that might not be full tokens
-	if allContractInfo, ok := baggage["all_contract_info"].(map[string]map[string]interface{}); ok {
-		for address, info := range allContractInfo {
-			// Skip if already added as token metadata
-			if _, alreadyAdded := baggage["token_metadata"].(map[string]*TokenMetadata)[address]; alreadyAdded {
-				continue
-			}
-
-			// Add partial contract information
-			if name := getStringValue(info, "name"); name != "" {
-				annotationContext.AddAddress(
-					address,
-					fmt.Sprintf("Contract: %s", name),
-					"",
-					fmt.Sprintf("Contract address for %s", name),
-				)
-			} else if symbol := getStringValue(info, "symbol"); symbol != "" {
-				annotationContext.AddAddress(
-					address,
-					fmt.Sprintf("Contract with symbol: %s", symbol),
-					"",
-					fmt.Sprintf("Contract address with symbol %s", symbol),
-				)
-			}
-		}
-	}
-
-	return annotationContext
 }
 
 // GetPromptContext provides context for the LLM prompt

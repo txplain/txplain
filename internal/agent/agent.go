@@ -112,6 +112,13 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 		return nil, fmt.Errorf("failed to add static context provider: %w", err)
 	}
 
+	// Add transaction context provider (processes raw transaction data)
+	transactionContextProvider := txtools.NewTransactionContextProvider()
+	if err := pipeline.AddProcessor(transactionContextProvider); err != nil {
+		return nil, fmt.Errorf("failed to add transaction context provider: %w", err)
+	}
+	contextProviders = append(contextProviders, transactionContextProvider)
+
 	// Add ABI resolver (runs early - fetches contract ABIs from Etherscan)
 	abiResolver := txtools.NewABIResolver()
 	if err := pipeline.AddProcessor(abiResolver); err != nil {
@@ -124,12 +131,14 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	if err := pipeline.AddProcessor(traceDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add trace decoder: %w", err)
 	}
+	contextProviders = append(contextProviders, traceDecoder)
 
 	// Add log decoder (processes events using resolved ABIs)
 	logDecoder := txtools.NewLogDecoderWithRPC(client)
 	if err := pipeline.AddProcessor(logDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add log decoder: %w", err)
 	}
+	contextProviders = append(contextProviders, logDecoder)
 
 	// Add token transfer extractor (extracts transfers from events)
 	transferExtractor := txtools.NewTokenTransferExtractor()
@@ -218,27 +227,9 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 
 	// Add annotation generator (runs after explanation is generated)
+	// Now uses GetPromptContext from all context providers - much simpler!
 	annotationGenerator := txtools.NewAnnotationGenerator(a.llm)
-	// Enable verbose mode for debugging annotation issues
-	annotationGenerator.SetVerbose(true) // Enable for debugging token symbol annotation issues
-	// Add all annotation context providers to the generator
-	annotationGenerator.AddContextProvider(staticContextProvider)
-	annotationGenerator.AddContextProvider(tokenMetadata)
-	annotationGenerator.AddContextProvider(iconResolver)
-	annotationGenerator.AddContextProvider(protocolResolver)
-	annotationGenerator.AddContextProvider(tagResolver)
-	annotationGenerator.AddContextProvider(ensResolver) // CRITICAL: Add ENS resolver for address mapping
-	if priceLookup != nil {
-		annotationGenerator.AddContextProvider(priceLookup)
-	}
-
-	// Add monetary enricher if available (for gas fee tooltips)
-	for _, provider := range contextProviders {
-		if monetaryProvider, ok := provider.(*txtools.MonetaryValueEnricher); ok {
-			annotationGenerator.AddContextProvider(monetaryProvider)
-			break
-		}
-	}
+	annotationGenerator.SetVerbose(true) // Enable for debugging
 	if err := pipeline.AddProcessor(annotationGenerator); err != nil {
 		return nil, fmt.Errorf("failed to add annotation generator: %w", err)
 	}
@@ -289,51 +280,5 @@ func (a *TxplainAgent) GetSupportedNetworks() map[int64]models.Network {
 // Close cleans up resources
 func (a *TxplainAgent) Close() error {
 	// Close RPC clients if needed
-	return nil
-}
-
-// enhanceExplanationWithRPC adds additional insights using RPC calls
-func (a *TxplainAgent) enhanceExplanationWithRPC(ctx context.Context, client *rpc.Client, explanation *models.ExplanationResult) error {
-	// Enhance token transfers with metadata from RPC
-	for i, transfer := range explanation.Transfers {
-		if transfer.Contract != "" && transfer.Type == "ERC20" {
-			// Fetch token metadata via RPC
-			if contractInfo, err := client.GetContractInfo(ctx, transfer.Contract); err == nil {
-				explanation.Transfers[i].Name = contractInfo.Name
-				explanation.Transfers[i].Symbol = contractInfo.Symbol
-				explanation.Transfers[i].Decimals = contractInfo.Decimals
-			}
-		}
-	}
-
-	// Add metadata about contracts involved
-	if explanation.Metadata == nil {
-		explanation.Metadata = make(map[string]interface{})
-	}
-
-	// Collect all unique contract addresses
-	contractAddresses := make(map[string]bool)
-	for _, transfer := range explanation.Transfers {
-		if transfer.Contract != "" {
-			contractAddresses[transfer.Contract] = true
-		}
-	}
-
-	// Fetch contract info for all involved contracts
-	contractInfo := make(map[string]interface{})
-	for address := range contractAddresses {
-		if info, err := client.GetContractInfo(ctx, address); err == nil && info.Type != "Unknown" {
-			contractInfo[address] = map[string]interface{}{
-				"type":   info.Type,
-				"name":   info.Name,
-				"symbol": info.Symbol,
-			}
-		}
-	}
-
-	if len(contractInfo) > 0 {
-		explanation.Metadata["contracts"] = contractInfo
-	}
-
 	return nil
 }

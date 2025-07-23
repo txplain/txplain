@@ -7,19 +7,19 @@ import (
 
 // BaggagePipeline orchestrates the execution of baggage processors in dependency order
 type BaggagePipeline struct {
-	processors map[string]BaggageProcessor
+	processors map[string]Tool
 	order      []string
 }
 
 // NewBaggagePipeline creates a new baggage pipeline
 func NewBaggagePipeline() *BaggagePipeline {
 	return &BaggagePipeline{
-		processors: make(map[string]BaggageProcessor),
+		processors: make(map[string]Tool),
 	}
 }
 
 // AddProcessor adds a processor to the pipeline
-func (p *BaggagePipeline) AddProcessor(processor BaggageProcessor) error {
+func (p *BaggagePipeline) AddProcessor(processor Tool) error {
 	name := processor.Name()
 	if _, exists := p.processors[name]; exists {
 		return fmt.Errorf("processor with name %s already exists", name)
@@ -165,7 +165,7 @@ func (p *BaggagePipeline) HasProcessor(name string) bool {
 }
 
 // GetProcessor returns a processor by name
-func (p *BaggagePipeline) GetProcessor(name string) (BaggageProcessor, bool) {
+func (p *BaggagePipeline) GetProcessor(name string) (Tool, bool) {
 	processor, exists := p.processors[name]
 	return processor, exists
 }

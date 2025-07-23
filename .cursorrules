@@ -1,0 +1,70 @@
+# Txplain Architecture Rules
+
+## Overview
+Read and follow the **Architecture Principles** section in README.md. This file supplements those principles with specific development guidelines.
+
+## CRITICAL: Architecture Principles from README.md
+
+⚠️ **MANDATORY**: All code changes MUST follow the architecture principles documented in README.md section "Architecture Principles".
+
+### Core Requirements
+
+1. **Read README.md Architecture Section First**
+   - Always consult the "Architecture Principles" section before making changes
+   - Follow the 4 tool architecture principles exactly as documented
+   - Understand the context flow architecture and data flow patterns
+
+2. **Tool Architecture (from README.md)**
+   - Every tool MUST implement: Dependencies(), Process(), GetPromptContext()
+   - Add structured data to baggage for deterministic logic
+   - Provide LLM context via GetPromptContext() for AI analysis
+   - Maintain complete tool isolation - NO direct baggage context building
+
+3. **Forbidden Anti-Patterns (from README.md)**
+   - ❌ NO hardcoded protocol names, event types, or special cases
+   - ❌ NO direct baggage access for context building between tools
+   - ❌ NO logic leaks between tools beyond explicit dependencies
+   - ❌ NO mixing deterministic logic with LLM context building
+
+## Development Guidelines
+
+### When Adding New Tools
+1. Follow the checklist in README.md "Adding New Tools" section
+2. Implement all required interfaces exactly as documented
+3. Add to pipeline in agent.go following established patterns
+4. Use only generic, AI-driven logic
+5. Write tests following the testing patterns in README.md
+
+### Code Review Requirements
+- Verify adherence to README.md architecture principles
+- Check for anti-patterns listed in README.md
+- Ensure proper tool isolation and data flow patterns
+- Validate structured data vs context separation
+
+### RPC-First Architecture
+- Always prefer RPC calls over hardcoded mappings
+- Use contract introspection for token detection
+- Fetch metadata dynamically from contracts
+- Only use external APIs when RPC calls aren't sufficient
+
+### Context and Data Flow
+- Structured data goes to baggage for deterministic logic
+- Text context goes through GetPromptContext() for LLM analysis
+- Use context providers pattern (like TransactionExplainer)
+- Maintain clear separation between data types
+
+## Quick Reference Links
+- Architecture Principles: README.md lines 65-280
+- Tool Architecture Rules: README.md lines 75-120
+- Data Flow Patterns: README.md lines 150-190
+- Anti-Patterns: README.md lines 192-220
+- Adding New Tools: README.md lines 222-250
+
+## Memory Integration
+- Follow user memory preferences for generic transaction explanations
+- Avoid hardcoding; use RPC-first approach per user preferences
+- Include ENS names and convert hex to decimal per user preferences
+- Keep context DRY and avoid redundant information per user preferences
+
+---
+**Before making ANY changes, read the Architecture Principles section in README.md**
