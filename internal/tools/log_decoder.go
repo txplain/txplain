@@ -281,8 +281,18 @@ func (t *LogDecoder) decodeLogsWithRPC(ctx context.Context, logs []interface{}, 
 	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
 
 	for i, logEntry := range logs {
-		// Send progress updates every 10 logs or every 500ms
-		if hasProgress && (i%10 == 0 || i == totalLogs-1) {
+		// Send progress updates more frequently for better user experience
+		// Update every log for small batches (<=20), every 5 logs for medium batches (<=50), every 10 logs for large batches
+		var shouldUpdate bool
+		if totalLogs <= 20 {
+			shouldUpdate = true // Update every log for small batches
+		} else if totalLogs <= 50 {
+			shouldUpdate = i%5 == 0 || i == totalLogs-1 // Every 5 logs for medium batches
+		} else {
+			shouldUpdate = i%10 == 0 || i == totalLogs-1 // Every 10 logs for large batches
+		}
+
+		if hasProgress && shouldUpdate {
 			progress := fmt.Sprintf("Processing log %d of %d", i+1, totalLogs)
 			if i == totalLogs-1 {
 				progress = fmt.Sprintf("Finalizing %d decoded events", len(events))

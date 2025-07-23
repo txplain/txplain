@@ -157,7 +157,7 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 		}
 
 		// Attempt to resolve contract info using existing method
-		contractInfo, err := a.resolveContract(ctx, address, networkID)
+		contractInfo, err := a.resolveContract(ctx, address, networkID, progressTracker, hasProgress)
 		if err != nil {
 			if a.verbose {
 				fmt.Printf(" ❌ Error: %v\n", err)
@@ -319,7 +319,7 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 }
 
 // resolveContract fetches contract information from Etherscan API with Sourcify fallback
-func (a *ABIResolver) resolveContract(ctx context.Context, address string, networkID int64) (*ContractInfo, error) {
+func (a *ABIResolver) resolveContract(ctx context.Context, address string, networkID int64, progressTracker *models.ProgressTracker, hasProgress bool) (*ContractInfo, error) {
 	// Check cache first if available
 	if a.cache != nil {
 		cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
@@ -356,11 +356,22 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 				fmt.Printf("  Trying Etherscan API: %s\n", baseURL)
 			}
 
+			// Send progress update before trying Etherscan source code
+			if hasProgress {
+				progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Calling Etherscan API for source code: %s", address[:10]+"..."))
+			}
+
 			// Try to get contract source code from Etherscan
-			if err := a.fetchSourceCode(ctx, baseURL, address, contractInfo); err == nil {
+			if err := a.fetchSourceCode(ctx, baseURL, address, contractInfo, progressTracker, hasProgress); err == nil {
 				if a.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("  ✅ Etherscan source code fetch succeeded\n")
 				}
+
+				// Send progress update for successful source code fetch
+				if hasProgress {
+					progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Successfully fetched source code from Etherscan: %s", address[:10]+"..."))
+				}
+
 				// Success - parse ABI and cache result
 				if contractInfo.ABI != "" {
 					if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
@@ -388,13 +399,29 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 				if a.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("  ❌ Etherscan source code fetch failed: %v\n", err)
 				}
+
+				// Send progress update for failed source code fetch
+				if hasProgress {
+					progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Etherscan source code failed, trying ABI-only: %s", address[:10]+"..."))
+				}
+			}
+
+			// Send progress update before trying Etherscan ABI-only
+			if hasProgress {
+				progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Calling Etherscan API for ABI-only: %s", address[:10]+"..."))
 			}
 
 			// If source code fetch fails, try ABI only from Etherscan
-			if err := a.fetchABI(ctx, baseURL, address, contractInfo); err == nil {
+			if err := a.fetchABI(ctx, baseURL, address, contractInfo, progressTracker, hasProgress); err == nil {
 				if a.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("  ✅ Etherscan ABI fetch succeeded\n")
 				}
+
+				// Send progress update for successful ABI fetch
+				if hasProgress {
+					progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Successfully fetched ABI from Etherscan: %s", address[:10]+"..."))
+				}
+
 				// Success - parse ABI and cache result
 				if contractInfo.ABI != "" {
 					if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
@@ -422,16 +449,36 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 				if a.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("  ❌ Etherscan ABI fetch failed: %v\n", err)
 				}
+
+				// Send progress update for failed ABI fetch
+				if hasProgress {
+					progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Etherscan API failed, trying Sourcify: %s", address[:10]+"..."))
+				}
 			}
 		} else {
 			if a.verbose || os.Getenv("DEBUG") == "true" {
 				fmt.Printf("  ❌ No Etherscan URL for network %d\n", networkID)
+			}
+
+			// Send progress update for missing Etherscan URL
+			if hasProgress {
+				progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("No Etherscan endpoint for network, trying Sourcify: %s", address[:10]+"..."))
 			}
 		}
 	} else {
 		if a.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("  ❌ No Etherscan API key available\n")
 		}
+
+		// Send progress update for missing API key
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("No Etherscan API key, trying Sourcify: %s", address[:10]+"..."))
+		}
+	}
+
+	// Send progress update before trying Sourcify
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Calling Sourcify API as fallback: %s", address[:10]+"..."))
 	}
 
 	// Etherscan failed or no API key, try Sourcify as fallback
@@ -439,16 +486,27 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 		fmt.Printf("  Trying Sourcify as fallback...\n")
 	}
 
-	if err := a.fetchFromSourceify(ctx, address, networkID, contractInfo); err != nil {
+	if err := a.fetchFromSourceify(ctx, address, networkID, contractInfo, progressTracker, hasProgress); err != nil {
 		if a.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("  ❌ Sourcify also failed: %v\n", err)
 			fmt.Printf("  === END RESOLVING CONTRACT %s ===\n", address)
 		}
+
+		// Send progress update for final failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("All ABI sources failed for %s: %s", address[:10]+"...", err.Error()))
+		}
+
 		return nil, fmt.Errorf("failed to resolve contract from Etherscan and Sourcify: %w", err)
 	}
 
 	if a.verbose || os.Getenv("DEBUG") == "true" {
 		fmt.Printf("  ✅ Sourcify succeeded\n")
+	}
+
+	// Send progress update for successful Sourcify fetch
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Successfully fetched ABI from Sourcify: %s", address[:10]+"..."))
 	}
 
 	// Parse ABI if we have it
@@ -481,7 +539,7 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 }
 
 // fetchFromSourceify fetches contract information from Sourcify
-func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, networkID int64, contractInfo *ContractInfo) error {
+func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, networkID int64, contractInfo *ContractInfo, progressTracker *models.ProgressTracker, hasProgress bool) error {
 	// Sourcify uses standard chain IDs - convert our network ID if needed
 	chainID := networkID
 
@@ -489,19 +547,41 @@ func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, ne
 	serverURL := "https://sourcify.dev/server"
 	checkURL := fmt.Sprintf("%s/check-by-addresses?addresses=%s&chainIds=%d", serverURL, address, chainID)
 
+	// Send progress update before making HTTP request to Sourcify check
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Making HTTP request to Sourcify verification check: %s", address[:10]+"..."))
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
 	if err != nil {
+		// Send progress update for request creation failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Failed to create Sourcify check request: %v", err))
+		}
 		return fmt.Errorf("failed to create Sourcify check request: %w", err)
 	}
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
+		// Send progress update for HTTP request failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Sourcify check HTTP request failed: %v", err))
+		}
 		return fmt.Errorf("failed to check Sourcify: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Send progress update for bad status code
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Sourcify check failed with status %d", resp.StatusCode))
+		}
 		return fmt.Errorf("Sourcify check failed with status %d", resp.StatusCode)
+	}
+
+	// Send progress update for successful HTTP response
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, "Received Sourcify check response, processing...")
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -537,20 +617,42 @@ func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, ne
 		metadataURL = fmt.Sprintf("%s/contracts/partial_match/%d/%s/metadata.json", repoURL, chainID, address)
 	}
 
+	// Send progress update before fetching metadata
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Making HTTP request to fetch Sourcify metadata: %s", address[:10]+"..."))
+	}
+
 	// Fetch metadata.json
 	metadataReq, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
+		// Send progress update for request creation failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Failed to create Sourcify metadata request: %v", err))
+		}
 		return fmt.Errorf("failed to create metadata request: %w", err)
 	}
 
 	metadataResp, err := a.httpClient.Do(metadataReq)
 	if err != nil {
+		// Send progress update for HTTP request failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Sourcify metadata HTTP request failed: %v", err))
+		}
 		return fmt.Errorf("failed to fetch metadata from Sourcify: %w", err)
 	}
 	defer metadataResp.Body.Close()
 
 	if metadataResp.StatusCode != http.StatusOK {
+		// Send progress update for bad status code
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Sourcify metadata fetch failed with status %d", metadataResp.StatusCode))
+		}
 		return fmt.Errorf("failed to fetch metadata from Sourcify with status %d", metadataResp.StatusCode)
+	}
+
+	// Send progress update for successful HTTP response
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, "Received Sourcify metadata response, processing...")
 	}
 
 	metadataBody, err := io.ReadAll(metadataResp.Body)
@@ -605,7 +707,7 @@ func (a *ABIResolver) fetchFromSourceify(ctx context.Context, address string, ne
 }
 
 // fetchSourceCode fetches contract source code and metadata
-func (a *ABIResolver) fetchSourceCode(ctx context.Context, baseURL, address string, contractInfo *ContractInfo) error {
+func (a *ABIResolver) fetchSourceCode(ctx context.Context, baseURL, address string, contractInfo *ContractInfo, progressTracker *models.ProgressTracker, hasProgress bool) error {
 	// Build URL for getsourcecode API
 	params := url.Values{}
 	params.Set("module", "contract")
@@ -619,8 +721,17 @@ func (a *ABIResolver) fetchSourceCode(ctx context.Context, baseURL, address stri
 		fmt.Printf("    API URL: %s\n", apiURL)
 	}
 
+	// Send progress update before making HTTP request
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Making HTTP request to Etherscan for source code: %s", address[:10]+"..."))
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
+		// Send progress update for request creation failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Failed to create Etherscan request: %v", err))
+		}
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -629,9 +740,18 @@ func (a *ABIResolver) fetchSourceCode(ctx context.Context, baseURL, address stri
 		if a.verbose || os.Getenv("DEBUG") == "true" {
 			fmt.Printf("    HTTP request failed: %v\n", err)
 		}
+		// Send progress update for HTTP request failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Etherscan HTTP request failed: %v", err))
+		}
 		return fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Send progress update for successful HTTP response
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Received Etherscan response (status %d), processing...", resp.StatusCode))
+	}
 
 	if a.verbose || os.Getenv("DEBUG") == "true" {
 		fmt.Printf("    HTTP status: %d\n", resp.StatusCode)
@@ -719,7 +839,7 @@ func (a *ABIResolver) fetchSourceCode(ctx context.Context, baseURL, address stri
 }
 
 // fetchABI fetches only the contract ABI (fallback)
-func (a *ABIResolver) fetchABI(ctx context.Context, baseURL, address string, contractInfo *ContractInfo) error {
+func (a *ABIResolver) fetchABI(ctx context.Context, baseURL, address string, contractInfo *ContractInfo, progressTracker *models.ProgressTracker, hasProgress bool) error {
 	// Build URL for getabi API
 	params := url.Values{}
 	params.Set("module", "contract")
@@ -729,16 +849,34 @@ func (a *ABIResolver) fetchABI(ctx context.Context, baseURL, address string, con
 
 	apiURL := baseURL + "?" + params.Encode()
 
+	// Send progress update before making HTTP request
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Making HTTP request to Etherscan for ABI: %s", address[:10]+"..."))
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
+		// Send progress update for request creation failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Failed to create Etherscan ABI request: %v", err))
+		}
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
+		// Send progress update for HTTP request failure
+		if hasProgress {
+			progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Etherscan ABI HTTP request failed: %v", err))
+		}
 		return fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Send progress update for successful HTTP response
+	if hasProgress {
+		progressTracker.UpdateComponent("abi_resolver", models.ComponentGroupDecoding, "Resolving Contract ABIs", models.ComponentStatusRunning, fmt.Sprintf("Received Etherscan ABI response (status %d), processing...", resp.StatusCode))
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

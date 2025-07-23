@@ -69,7 +69,7 @@ func (a *AmountsFinder) calculateGasFee(baggage map[string]interface{}) *Detecte
 	// Get gas used and effective gas price as hex strings
 	gasUsedStr, hasGasUsed := receipt["gasUsed"].(string)
 	effectiveGasPriceStr, hasEffectiveGasPrice := receipt["effectiveGasPrice"].(string)
-	
+
 	if !hasGasUsed || !hasEffectiveGasPrice {
 		return nil
 	}
@@ -77,11 +77,11 @@ func (a *AmountsFinder) calculateGasFee(baggage map[string]interface{}) *Detecte
 	// Convert hex to big.Int for precise calculation
 	gasUsed := new(big.Int)
 	effectiveGasPrice := new(big.Int)
-	
+
 	// Parse hex values (remove 0x prefix if present)
 	gasUsedHex := strings.TrimPrefix(gasUsedStr, "0x")
 	effectiveGasPriceHex := strings.TrimPrefix(effectiveGasPriceStr, "0x")
-	
+
 	if _, ok := gasUsed.SetString(gasUsedHex, 16); !ok {
 		return nil
 	}
@@ -318,7 +318,6 @@ func (a *AmountsFinder) buildAnalysisContext(baggage map[string]interface{}) str
 				contextParts = append(contextParts, fmt.Sprintf("- Input data: %s", input))
 			}
 		}
-
 
 	}
 

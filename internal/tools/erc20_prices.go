@@ -201,7 +201,7 @@ func (t *ERC20PriceLookup) Description() string {
 
 // Dependencies returns the tools this processor depends on
 func (t *ERC20PriceLookup) Dependencies() []string {
-	return []string{"token_metadata_enricher"} // Needs token metadata for optimal lookups
+	return []string{"token_metadata_enricher", "amounts_finder"} // Needs token metadata for optimal lookups and amounts for native token pricing
 }
 
 // Process adds token price information to baggage
@@ -242,30 +242,37 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 		fmt.Printf("🌐 Network ID: %d\n", networkID)
 	}
 
+	// Check if we need native token price for gas fees BEFORE checking token metadata
+	needsNativeTokenPrice := t.checkForNativeTokenNeeds(baggage, networkID)
+
 	// Get token metadata from baggage
 	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
-	if !ok || len(tokenMetadata) == 0 {
+	if (!ok || len(tokenMetadata) == 0) && !needsNativeTokenPrice {
 		if t.verbose {
-			fmt.Println("⚠️  No token metadata found, skipping price lookup")
+			fmt.Println("⚠️  No token metadata found and no native token price needed, skipping price lookup")
 			fmt.Println(strings.Repeat("💰", 60) + "\n")
 		}
-		return nil // No token metadata, nothing to price
+		return nil // No token metadata and no native token needed, nothing to price
 	}
 
 	// Get progress tracker from baggage if available
 	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
 
 	if t.verbose {
-		fmt.Printf("📊 Found %d tokens to price\n", len(tokenMetadata))
+		if tokenMetadata != nil && len(tokenMetadata) > 0 {
+			fmt.Printf("📊 Found %d tokens to price\n", len(tokenMetadata))
 
-		// Show tokens to be priced
-		erc20Count := 0
-		for _, metadata := range tokenMetadata {
-			if metadata.Type == "ERC20" || (metadata.Type == "Contract" && metadata.Decimals > 0) {
-				erc20Count++
+			// Show tokens to be priced
+			erc20Count := 0
+			for _, metadata := range tokenMetadata {
+				if metadata.Type == "ERC20" || (metadata.Type == "Contract" && metadata.Decimals > 0) {
+					erc20Count++
+				}
 			}
+			fmt.Printf("💹 %d tokens eligible for pricing\n", erc20Count)
+		} else {
+			fmt.Printf("📊 No ERC20 tokens found, but native token price needed\n")
 		}
-		fmt.Printf("💹 %d tokens eligible for pricing\n", erc20Count)
 		fmt.Println("🔄 Looking up token prices...")
 	}
 
@@ -275,13 +282,14 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	totalToProcess := 0
 
 	// Count total tokens to process for progress updates
-	needsNativeTokenPrice := t.checkForNativeTokenNeeds(baggage, networkID)
 	if needsNativeTokenPrice {
 		totalToProcess++
 	}
-	for _, metadata := range tokenMetadata {
-		if metadata.Type == "ERC20" || (metadata.Type == "Contract" && metadata.Decimals > 0) {
-			totalToProcess++
+	if tokenMetadata != nil {
+		for _, metadata := range tokenMetadata {
+			if metadata.Type == "ERC20" || (metadata.Type == "Contract" && metadata.Decimals > 0) {
+				totalToProcess++
+			}
 		}
 	}
 
@@ -327,81 +335,83 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	}
 
 	// Then process regular ERC20 tokens
-	for address, metadata := range tokenMetadata {
-		if metadata.Type == "ERC20" {
-			currentIndex++
+	if tokenMetadata != nil {
+		for address, metadata := range tokenMetadata {
+			if metadata.Type == "ERC20" {
+				currentIndex++
 
-			// Send progress update for each ERC20 token
-			if hasProgress {
-				progress := fmt.Sprintf("Fetching ERC20 price (%d/%d): %s", currentIndex, totalToProcess, metadata.Symbol)
-				progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
-			}
+				// Send progress update for each ERC20 token
+				if hasProgress {
+					progress := fmt.Sprintf("Fetching ERC20 price (%d/%d): %s", currentIndex, totalToProcess, metadata.Symbol)
+					progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
+				}
 
-			if t.verbose {
-				fmt.Printf("   ERC20 %s (%s)...", metadata.Symbol, address[:10]+"...")
-			}
+				if t.verbose {
+					fmt.Printf("   ERC20 %s (%s)...", metadata.Symbol, address[:10]+"...")
+				}
 
-			priceInput := map[string]interface{}{
-				"contract_address": address,
-				"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
-			}
-			if metadata.Symbol != "" {
-				priceInput["symbol"] = metadata.Symbol
-			}
+				priceInput := map[string]interface{}{
+					"contract_address": address,
+					"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
+				}
+				if metadata.Symbol != "" {
+					priceInput["symbol"] = metadata.Symbol
+				}
 
-			result, err := t.Run(ctx, priceInput)
-			if err == nil {
-				if tokenData, ok := result["token"].(*TokenPrice); ok {
-					tokenData.Contract = address // Ensure contract address is set
-					tokenPrices[address] = tokenData
-					successCount++
+				result, err := t.Run(ctx, priceInput)
+				if err == nil {
+					if tokenData, ok := result["token"].(*TokenPrice); ok {
+						tokenData.Contract = address // Ensure contract address is set
+						tokenPrices[address] = tokenData
+						successCount++
 
-					if t.verbose {
-						fmt.Printf(" ✅ $%.6f\n", tokenData.Price)
+						if t.verbose {
+							fmt.Printf(" ✅ $%.6f\n", tokenData.Price)
+						}
+					} else if t.verbose {
+						fmt.Printf(" ❌ Invalid response format\n")
 					}
 				} else if t.verbose {
-					fmt.Printf(" ❌ Invalid response format\n")
+					fmt.Printf(" ❌ %v\n", err)
 				}
-			} else if t.verbose {
-				fmt.Printf(" ❌ %v\n", err)
-			}
-		} else if metadata.Type == "Contract" && metadata.Decimals > 0 {
-			currentIndex++
+			} else if metadata.Type == "Contract" && metadata.Decimals > 0 {
+				currentIndex++
 
-			// Send progress update for contract tokens
-			if hasProgress {
-				progress := fmt.Sprintf("Fetching contract price (%d/%d): %s", currentIndex, totalToProcess, address[:10]+"...")
-				progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
-			}
+				// Send progress update for contract tokens
+				if hasProgress {
+					progress := fmt.Sprintf("Fetching contract price (%d/%d): %s", currentIndex, totalToProcess, address[:10]+"...")
+					progressTracker.UpdateComponent("erc20_price_lookup", models.ComponentGroupEnrichment, "Fetching Token Prices", models.ComponentStatusRunning, progress)
+				}
 
-			if t.verbose {
-				fmt.Printf("   Contract %s (has decimals)...", address[:10]+"...")
-			}
+				if t.verbose {
+					fmt.Printf("   Contract %s (has decimals)...", address[:10]+"...")
+				}
 
-			// Try DEX pricing for contracts that might be tokens (have decimals but no name/symbol)
-			priceInput := map[string]interface{}{
-				"contract_address": address,
-				"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
-			}
+				// Try DEX pricing for contracts that might be tokens (have decimals but no name/symbol)
+				priceInput := map[string]interface{}{
+					"contract_address": address,
+					"network_id":       float64(networkID), // Convert to float64 to match Run method expectation
+				}
 
-			result, err := t.Run(ctx, priceInput)
-			if err == nil {
-				if tokenData, ok := result["token"].(*TokenPrice); ok {
-					tokenData.Contract = address // Ensure contract address is set
-					tokenPrices[address] = tokenData
-					successCount++
+				result, err := t.Run(ctx, priceInput)
+				if err == nil {
+					if tokenData, ok := result["token"].(*TokenPrice); ok {
+						tokenData.Contract = address // Ensure contract address is set
+						tokenPrices[address] = tokenData
+						successCount++
 
-					if t.verbose {
-						fmt.Printf(" ✅ $%.6f (DEX)\n", tokenData.Price)
+						if t.verbose {
+							fmt.Printf(" ✅ $%.6f (DEX)\n", tokenData.Price)
+						}
+					} else if t.verbose {
+						fmt.Printf(" ❌ Invalid response format\n")
 					}
 				} else if t.verbose {
-					fmt.Printf(" ❌ Invalid response format\n")
+					fmt.Printf(" ❌ %v\n", err)
 				}
-			} else if t.verbose {
-				fmt.Printf(" ❌ %v\n", err)
 			}
 		}
-	}
+	} // End of tokenMetadata != nil check
 
 	// Send final progress update with results summary
 	if hasProgress {

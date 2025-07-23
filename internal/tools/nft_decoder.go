@@ -99,8 +99,31 @@ func (n *NFTDecoder) Process(ctx context.Context, baggage map[string]interface{}
 			fmt.Println("🔄 Enriching NFT transfers with contract metadata...")
 		}
 
+		// Get progress tracker from baggage if available
+		progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+		totalTransfers := len(nftTransfers)
+
 		successCount := 0
 		for i, transfer := range nftTransfers {
+			// Send progress updates more frequently for better user experience
+			// Update every transfer for small batches (<=20), every 5 transfers for medium batches (<=50), every 10 transfers for large batches
+			var shouldUpdate bool
+			if totalTransfers <= 20 {
+				shouldUpdate = true // Update every transfer for small batches
+			} else if totalTransfers <= 50 {
+				shouldUpdate = i%5 == 0 || i == totalTransfers-1 // Every 5 transfers for medium batches
+			} else {
+				shouldUpdate = i%10 == 0 || i == totalTransfers-1 // Every 10 transfers for large batches
+			}
+
+			if hasProgress && shouldUpdate {
+				progress := fmt.Sprintf("Enriching NFT metadata %d of %d", i+1, totalTransfers)
+				if i == totalTransfers-1 {
+					progress = fmt.Sprintf("Finalizing %d enriched NFTs", successCount)
+				}
+				progressTracker.UpdateComponent("nft_decoder", models.ComponentGroupEnrichment, "Enriching NFT Metadata", models.ComponentStatusRunning, progress)
+			}
+
 			if n.verbose {
 				fmt.Printf("   [%d/%d] Enriching %s (Token ID: %s)...", i+1, len(nftTransfers), transfer.Contract[:10]+"...", transfer.TokenID)
 			}
