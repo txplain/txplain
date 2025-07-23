@@ -19,6 +19,7 @@ import (
 type SignatureResolver struct {
 	httpClient *http.Client
 	verbose    bool
+	cache      Cache // Cache for signature lookups
 }
 
 // FourByteSignature represents a signature from 4byte.directory API
@@ -53,7 +54,13 @@ func NewSignatureResolver() *SignatureResolver {
 			Timeout: 300 * time.Second, // 5 minutes for signature lookups
 		},
 		verbose: false,
+		cache:   nil, // Set via SetCache
 	}
+}
+
+// SetCache sets the cache instance for the signature resolver
+func (s *SignatureResolver) SetCache(cache Cache) {
+	s.cache = cache
 }
 
 // SetVerbose enables or disables verbose logging
@@ -226,6 +233,24 @@ func (s *SignatureResolver) resolveFunctionSignatures(ctx context.Context, bagga
 
 // lookupEventSignature looks up an event signature on 4byte.directory
 func (s *SignatureResolver) lookupEventSignature(ctx context.Context, hexSignature string) (*ResolvedSignature, error) {
+	// Check cache first if available
+	if s.cache != nil {
+		cacheKey := fmt.Sprintf(EventSigKeyPattern, hexSignature)
+		if s.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  Checking cache for event signature %s with key: %s\n", hexSignature, cacheKey)
+		}
+		
+		var cachedSig ResolvedSignature
+		if err := s.cache.GetJSON(ctx, cacheKey, &cachedSig); err == nil {
+			if s.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ✅ Found cached event signature: %s -> %s\n", hexSignature, cachedSig.TextSignature)
+			}
+			return &cachedSig, nil
+		} else if s.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  Cache miss for event signature %s: %v\n", hexSignature, err)
+		}
+	}
+
 	baseURL := "https://www.4byte.directory/api/v1/event-signatures/"
 
 	params := url.Values{}
@@ -273,16 +298,48 @@ func (s *SignatureResolver) lookupEventSignature(ctx context.Context, hexSignatu
 		fmt.Printf("  ✅ Found event: %s\n", result.TextSignature)
 	}
 
-	return &ResolvedSignature{
+	resolvedSig := &ResolvedSignature{
 		Signature:     hexSignature,
 		TextSignature: result.TextSignature,
 		Type:          "event",
 		Source:        "4byte",
-	}, nil
+	}
+
+	// Cache successful result if cache is available
+	if s.cache != nil {
+		cacheKey := fmt.Sprintf(EventSigKeyPattern, hexSignature)
+		if err := s.cache.SetJSON(ctx, cacheKey, resolvedSig, &SignatureTTLDuration); err != nil {
+			if s.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ⚠️  Failed to cache event signature %s: %v\n", hexSignature, err)
+			}
+		} else if s.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  ✅ Cached event signature: %s -> %s\n", hexSignature, result.TextSignature)
+		}
+	}
+
+	return resolvedSig, nil
 }
 
 // lookupFunctionSignature looks up a function signature on 4byte.directory
 func (s *SignatureResolver) lookupFunctionSignature(ctx context.Context, hexSignature string) (*ResolvedSignature, error) {
+	// Check cache first if available
+	if s.cache != nil {
+		cacheKey := fmt.Sprintf(FunctionSigKeyPattern, hexSignature)
+		if s.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  Checking cache for function signature %s with key: %s\n", hexSignature, cacheKey)
+		}
+		
+		var cachedSig ResolvedSignature
+		if err := s.cache.GetJSON(ctx, cacheKey, &cachedSig); err == nil {
+			if s.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ✅ Found cached function signature: %s -> %s\n", hexSignature, cachedSig.TextSignature)
+			}
+			return &cachedSig, nil
+		} else if s.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  Cache miss for function signature %s: %v\n", hexSignature, err)
+		}
+	}
+
 	baseURL := "https://www.4byte.directory/api/v1/signatures/"
 
 	params := url.Values{}
@@ -330,12 +387,26 @@ func (s *SignatureResolver) lookupFunctionSignature(ctx context.Context, hexSign
 		fmt.Printf("  ✅ Found function: %s\n", result.TextSignature)
 	}
 
-	return &ResolvedSignature{
+	resolvedSig := &ResolvedSignature{
 		Signature:     hexSignature,
 		TextSignature: result.TextSignature,
 		Type:          "function",
 		Source:        "4byte",
-	}, nil
+	}
+
+	// Cache successful result if cache is available
+	if s.cache != nil {
+		cacheKey := fmt.Sprintf(FunctionSigKeyPattern, hexSignature)
+		if err := s.cache.SetJSON(ctx, cacheKey, resolvedSig, &SignatureTTLDuration); err != nil {
+			if s.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ⚠️  Failed to cache function signature %s: %v\n", hexSignature, err)
+			}
+		} else if s.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  ✅ Cached function signature: %s -> %s\n", hexSignature, result.TextSignature)
+		}
+	}
+
+	return resolvedSig, nil
 }
 
 // GetPromptContext provides context about resolved signatures for LLM

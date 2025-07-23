@@ -13,18 +13,25 @@ import (
 type ENSResolver struct {
 	rpcClient *rpc.Client
 	verbose   bool
+	cache     Cache // Cache for ENS lookups
 }
 
 // NewENSResolver creates a new ENS resolver
 func NewENSResolver() *ENSResolver {
 	return &ENSResolver{
 		verbose: false,
+		cache:   nil, // Set via SetCache
 	}
 }
 
 // SetRPCClient sets the RPC client for ENS resolution
 func (e *ENSResolver) SetRPCClient(client *rpc.Client) {
 	e.rpcClient = client
+}
+
+// SetCache sets the cache instance for the ENS resolver
+func (e *ENSResolver) SetCache(cache Cache) {
+	e.cache = cache
 }
 
 // SetVerbose enables or disables verbose logging
@@ -118,12 +125,49 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 			fmt.Printf("   [%d/%d] Resolving %s...", i+1, len(addressList), address)
 		}
 
-		ensName, err := e.rpcClient.ResolveENSName(ctx, address)
-		if err != nil {
-			if e.verbose {
-				fmt.Printf(" ❌ Failed: %v\n", err)
+		var ensName string
+		var err error
+
+		// Check cache first if available
+		if e.cache != nil {
+			networkID := int64(1) // Default to Ethereum mainnet for ENS
+			if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+				if nid, ok := rawData["network_id"].(float64); ok {
+					networkID = int64(nid)
+				}
 			}
-			continue // Skip this address if resolution fails
+			
+			cacheKey := fmt.Sprintf(ENSNameKeyPattern, networkID, strings.ToLower(address))
+			if err := e.cache.GetJSON(ctx, cacheKey, &ensName); err == nil {
+				if e.verbose {
+					fmt.Printf(" ✅ (cached) %s\n", ensName)
+				}
+			} else {
+				// Cache miss, make RPC call
+				ensName, err = e.rpcClient.ResolveENSName(ctx, address)
+				if err != nil {
+					if e.verbose {
+						fmt.Printf(" ❌ Failed: %v\n", err)
+					}
+					continue // Skip this address if resolution fails
+				}
+				
+				// Cache successful result (including empty results to avoid repeated lookups)
+				if cacheErr := e.cache.SetJSON(ctx, cacheKey, ensName, &ENSTTLDuration); cacheErr != nil {
+					if e.verbose {
+						fmt.Printf(" ⚠️ Cache store failed: %v\n", cacheErr)
+					}
+				}
+			}
+		} else {
+			// No cache, make RPC call directly
+			ensName, err = e.rpcClient.ResolveENSName(ctx, address)
+			if err != nil {
+				if e.verbose {
+					fmt.Printf(" ❌ Failed: %v\n", err)
+				}
+				continue // Skip this address if resolution fails
+			}
 		}
 
 		if ensName != "" {

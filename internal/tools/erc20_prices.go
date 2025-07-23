@@ -21,6 +21,7 @@ type ERC20PriceLookup struct {
 	httpClient    *http.Client
 	networkMapper *NetworkMapper
 	verbose       bool
+	cache         Cache // Cache for price data
 }
 
 // DEXPriceData represents DEX-specific pricing information
@@ -183,7 +184,13 @@ func NewERC20PriceLookup(apiKey string) *ERC20PriceLookup {
 		},
 		networkMapper: NewNetworkMapper(apiKey),
 		verbose:       false,
+		cache:         nil, // Set via SetCache
 	}
+}
+
+// SetCache sets the cache instance for the price lookup
+func (t *ERC20PriceLookup) SetCache(cache Cache) {
+	t.cache = cache
 }
 
 // SetVerbose enables or disables verbose logging
@@ -884,6 +891,27 @@ func (t *ERC20PriceLookup) findToken(ctx context.Context, symbol, name, contract
 		return 0, fmt.Errorf("CoinMarketCap API key not configured")
 	}
 
+	// Check cache first if available
+	if t.cache != nil {
+		// Create cache key based on search parameters
+		cacheKeyParams := fmt.Sprintf("%s:%s:%s", symbol, name, contractAddress)
+		cacheKey := fmt.Sprintf(CMCMappingKeyPattern, 0, cacheKeyParams) // Use 0 for network-agnostic mapping
+		
+		if t.verbose {
+			fmt.Printf("  Checking cache for token mapping with key: %s\n", cacheKey)
+		}
+		
+		var cachedTokenID int
+		if err := t.cache.GetJSON(ctx, cacheKey, &cachedTokenID); err == nil {
+			if t.verbose {
+				fmt.Printf("  ✅ Found cached token mapping: %s -> ID %d\n", cacheKeyParams, cachedTokenID)
+			}
+			return cachedTokenID, nil
+		} else if t.verbose {
+			fmt.Printf("  Cache miss for token mapping %s: %v\n", cacheKeyParams, err)
+		}
+	}
+
 	// Build query parameters
 	params := url.Values{}
 	params.Set("listing_status", "active")
@@ -937,7 +965,24 @@ func (t *ERC20PriceLookup) findToken(ctx context.Context, symbol, name, contract
 		return 0, fmt.Errorf("no matching token found")
 	}
 
-	return bestMatch.ID, nil
+	tokenID := bestMatch.ID
+
+	// Cache successful result if cache is available
+	if t.cache != nil {
+		cacheKeyParams := fmt.Sprintf("%s:%s:%s", symbol, name, contractAddress)
+		cacheKey := fmt.Sprintf(CMCMappingKeyPattern, 0, cacheKeyParams)
+		
+		// Cache token mapping with metadata TTL (60 days)
+		if err := t.cache.SetJSON(ctx, cacheKey, tokenID, &MetadataTTLDuration); err != nil {
+			if t.verbose {
+				fmt.Printf("  ⚠️  Failed to cache token mapping %s: %v\n", cacheKeyParams, err)
+			}
+		} else if t.verbose {
+			fmt.Printf("  ✅ Cached token mapping: %s -> ID %d\n", cacheKeyParams, tokenID)
+		}
+	}
+
+	return tokenID, nil
 }
 
 // findBestMatch finds the best matching token from the search results
@@ -1027,6 +1072,25 @@ func (t *ERC20PriceLookup) findBestMatch(tokens []struct {
 
 // getTokenPrice fetches the latest price for a token by ID
 func (t *ERC20PriceLookup) getTokenPrice(ctx context.Context, tokenID int, convert string) (*TokenPrice, error) {
+	// Check cache first if available
+	if t.cache != nil {
+		cacheKey := fmt.Sprintf(TokenPriceKeyPattern, 0, fmt.Sprintf("id:%d:%s", tokenID, convert))
+		
+		if t.verbose {
+			fmt.Printf("  Checking cache for token price with key: %s\n", cacheKey)
+		}
+		
+		var cachedPrice TokenPrice
+		if err := t.cache.GetJSON(ctx, cacheKey, &cachedPrice); err == nil {
+			if t.verbose {
+				fmt.Printf("  ✅ Found cached token price: ID %d -> $%.6f\n", tokenID, cachedPrice.Price)
+			}
+			return &cachedPrice, nil
+		} else if t.verbose {
+			fmt.Printf("  Cache miss for token price ID %d: %v\n", tokenID, err)
+		}
+	}
+
 	// Build query parameters
 	params := url.Values{}
 	params.Set("id", strconv.Itoa(tokenID))
@@ -1099,6 +1163,19 @@ func (t *ERC20PriceLookup) getTokenPrice(ctx context.Context, tokenID int, conve
 		Volume24h:         quoteData.Volume24h,
 		LastUpdated:       lastUpdated,
 		Quote:             map[string]interface{}{convert: quoteData},
+	}
+
+	// Cache successful result if cache is available - use 1 hour TTL for prices
+	if t.cache != nil {
+		cacheKey := fmt.Sprintf(TokenPriceKeyPattern, 0, fmt.Sprintf("id:%d:%s", tokenID, convert))
+		
+		if err := t.cache.SetJSON(ctx, cacheKey, result, &PriceTTLDuration); err != nil {
+			if t.verbose {
+				fmt.Printf("  ⚠️  Failed to cache token price ID %d: %v\n", tokenID, err)
+			}
+		} else if t.verbose {
+			fmt.Printf("  ✅ Cached token price: ID %d -> $%.6f\n", tokenID, result.Price)
+		}
 	}
 
 	return result, nil
