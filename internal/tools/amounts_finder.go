@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -53,6 +54,87 @@ func (a *AmountsFinder) Dependencies() []string {
 	return []string{"abi_resolver", "log_decoder", "trace_decoder", "token_metadata_enricher"}
 }
 
+// calculateGasFee calculates the gas fee programmatically from hex values
+func (a *AmountsFinder) calculateGasFee(baggage map[string]interface{}) *DetectedAmount {
+	rawData, ok := baggage["raw_data"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	receipt, ok := rawData["receipt"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// Get gas used and effective gas price as hex strings
+	gasUsedStr, hasGasUsed := receipt["gasUsed"].(string)
+	effectiveGasPriceStr, hasEffectiveGasPrice := receipt["effectiveGasPrice"].(string)
+	
+	if !hasGasUsed || !hasEffectiveGasPrice {
+		return nil
+	}
+
+	// Convert hex to big.Int for precise calculation
+	gasUsed := new(big.Int)
+	effectiveGasPrice := new(big.Int)
+	
+	// Parse hex values (remove 0x prefix if present)
+	gasUsedHex := strings.TrimPrefix(gasUsedStr, "0x")
+	effectiveGasPriceHex := strings.TrimPrefix(effectiveGasPriceStr, "0x")
+	
+	if _, ok := gasUsed.SetString(gasUsedHex, 16); !ok {
+		return nil
+	}
+	if _, ok := effectiveGasPrice.SetString(effectiveGasPriceHex, 16); !ok {
+		return nil
+	}
+
+	// Calculate gas fee: gasUsed * effectiveGasPrice
+	gasFeeWei := new(big.Int).Mul(gasUsed, effectiveGasPrice)
+
+	// Get transaction sender who paid the gas
+	fromAddress := ""
+	if from, ok := receipt["from"].(string); ok {
+		fromAddress = from
+	}
+
+	// Get network ID for native token symbol
+	networkID, ok := rawData["network_id"].(float64)
+	if !ok {
+		return nil
+	}
+
+	// Determine native token symbol based on network
+	var tokenSymbol string
+	switch int64(networkID) {
+	case 1:
+		tokenSymbol = "ETH"
+	case 56:
+		tokenSymbol = "BNB"
+	case 137:
+		tokenSymbol = "MATIC"
+	case 10:
+		tokenSymbol = "ETH"
+	case 42161:
+		tokenSymbol = "ETH"
+	default:
+		tokenSymbol = "ETH" // Default to ETH
+	}
+
+	return &DetectedAmount{
+		Amount:        gasFeeWei.String(),
+		TokenContract: "native",
+		TokenSymbol:   tokenSymbol,
+		AmountType:    "fee",
+		Context:       "Gas fee - calculated programmatically from gasUsed × effectiveGasPrice",
+		Confidence:    1.0,
+		FromAddress:   fromAddress,
+		ToAddress:     "",
+		EventContract: "",
+		IsValidToken:  false,
+	}
+}
+
 // Process analyzes transaction context and identifies all relevant amounts
 func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interface{}) error {
 	if a.verbose {
@@ -67,7 +149,28 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 		progressTracker = tracker
 	}
 
-	// Sub-step 1: Building analysis context
+	// Sub-step 1: Calculate gas fee programmatically (before AI analysis)
+	if progressTracker != nil {
+		progressTracker.UpdateComponent(
+			"amounts_finder",
+			models.ComponentGroupEnrichment,
+			"Detecting Transaction Amounts",
+			models.ComponentStatusRunning,
+			"Calculating gas fees...",
+		)
+	}
+
+	var detectedAmounts []DetectedAmount
+
+	// Calculate gas fee programmatically to avoid AI math errors
+	if gasFee := a.calculateGasFee(baggage); gasFee != nil {
+		detectedAmounts = append(detectedAmounts, *gasFee)
+		if a.verbose {
+			fmt.Println("⛽ Pre-calculated gas fee programmatically")
+		}
+	}
+
+	// Sub-step 2: Building analysis context
 	if progressTracker != nil {
 		progressTracker.UpdateComponent(
 			"amounts_finder",
@@ -79,7 +182,7 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 	}
 
 	if a.verbose {
-		fmt.Println("📋 Sub-step 1: Building comprehensive analysis context...")
+		fmt.Println("📋 Sub-step 2: Building comprehensive analysis context...")
 	}
 
 	// Build comprehensive context for the LLM
@@ -89,7 +192,7 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 		fmt.Printf("📊 Built analysis context: %d characters\n", len(contextData))
 	}
 
-	// Sub-step 2: LLM Analysis (the time-consuming part)
+	// Sub-step 3: LLM Analysis (the time-consuming part)
 	if progressTracker != nil {
 		progressTracker.UpdateComponent(
 			"amounts_finder",
@@ -101,11 +204,11 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 	}
 
 	if a.verbose {
-		fmt.Println("🧠 Sub-step 2: Analyzing transaction with AI to identify amounts...")
+		fmt.Println("🧠 Sub-step 3: Analyzing transaction with AI to identify amounts...")
 	}
 
-	// Use LLM to identify all amounts
-	detectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData)
+	// Use LLM to identify all amounts EXCEPT gas fees (which we already calculated)
+	llmDetectedAmounts, err := a.identifyAmountsWithLLM(ctx, contextData)
 	if err != nil {
 		// Update progress tracker to show the error before returning
 		if progressTracker != nil {
@@ -117,12 +220,16 @@ func (a *AmountsFinder) Process(ctx context.Context, baggage map[string]interfac
 				fmt.Sprintf("AI analysis failed: %v", err),
 			)
 		}
-
-		if a.verbose {
-			fmt.Printf("❌ LLM analysis failed: %v\n", err)
-			fmt.Println(strings.Repeat("💰", 60) + "\n")
-		}
 		return fmt.Errorf("failed to identify amounts with LLM: %w", err)
+	}
+
+	// Filter out any AI-detected gas fees since we calculated them programmatically
+	for _, amount := range llmDetectedAmounts {
+		if amount.AmountType != "fee" {
+			detectedAmounts = append(detectedAmounts, amount)
+		} else if a.verbose {
+			fmt.Println("🔍 Filtered out AI-detected gas fee (using programmatic calculation instead)")
+		}
 	}
 
 	if a.verbose {
@@ -212,30 +319,7 @@ func (a *AmountsFinder) buildAnalysisContext(baggage map[string]interface{}) str
 			}
 		}
 
-		// Add gas fee information for detection as an amount
-		if receipt, ok := rawData["receipt"].(map[string]interface{}); ok {
-			contextParts = append(contextParts, "\n### GAS FEE DATA (for gas fee amount detection):")
 
-			// Gas used and effective gas price
-			if gasUsed, ok := receipt["gasUsed"].(string); ok {
-				contextParts = append(contextParts, fmt.Sprintf("- Gas Used: %s", gasUsed))
-			}
-			if effectiveGasPrice, ok := receipt["effectiveGasPrice"].(string); ok {
-				contextParts = append(contextParts, fmt.Sprintf("- Effective Gas Price: %s", effectiveGasPrice))
-			}
-
-			// Network ID for native token identification
-			if networkID, ok := rawData["network_id"].(float64); ok {
-				contextParts = append(contextParts, fmt.Sprintf("- Network ID: %.0f", networkID))
-			}
-
-			// Transaction sender (who paid gas)
-			if from, ok := receipt["from"].(string); ok {
-				contextParts = append(contextParts, fmt.Sprintf("- Gas Paid By: %s", from))
-			}
-
-			contextParts = append(contextParts, "- Note: Gas fees should be detected as 'fee' type amounts using native token contract")
-		}
 	}
 
 	return strings.Join(contextParts, "\n")
@@ -383,8 +467,9 @@ ANALYSIS INSTRUCTIONS:
    - Event parameters like "value", "amount", "quantity", "balance", etc.
    - Function call parameters that contain amounts
    - Native token values in transaction data
-   - Gas fees (calculate from gasUsed × effectiveGasPrice for native token amounts)
    - Any hex or decimal numbers that could represent token amounts
+   
+   Note: Gas fees are calculated programmatically and do not need to be detected by the AI.
 
 2. **ASSOCIATE WITH TOKENS**: For each amount, determine:
    - The token contract address that this amount refers to
@@ -403,24 +488,14 @@ ANALYSIS INSTRUCTIONS:
    - "withdraw" - tokens withdrawn from a protocol
    - "other" - any other type of amount
 
-4. **GAS FEE DETECTION**: ALWAYS detect gas fees when gasUsed and effectiveGasPrice are available:
-   - Calculate total gas fee: gasUsed × effectiveGasPrice (result in wei for Ethereum)
-   - Use amount_type: "fee"
-   - Use token_contract: "native" 
-   - Use token_symbol based on network: "ETH" for network 1, "MATIC" for 137, "BNB" for 56, etc.
-   - Use from_address: the transaction sender (who paid the gas)
-   - Context: "Gas fee - calculated from gasUsed × effectiveGasPrice"
-   - Confidence: 1.0 (gas fees are always certain)
-
-5. **VALIDATION RULES**:
-   - Only include amounts that have clear token contract associations OR are gas fees
+4. **VALIDATION RULES**:
+   - Only include amounts that have clear token contract associations
    - Skip amounts of zero or empty values
    - Skip raw transaction data that doesn't represent token amounts
    - Focus on meaningful amounts that represent actual value transfers
-   - ALWAYS include gas fees when gas data is available
 
-6. **CONFIDENCE SCORING**:
-   - 1.0: Gas fees and verified amounts with clear contract associations
+5. **CONFIDENCE SCORING**:
+   - 1.0: Verified amounts with clear contract associations
    - 0.9-1.0: Clear token contract + verified metadata + explicit amount parameter
    - 0.7-0.9: Clear token contract + amount parameter, but less context
    - 0.5-0.7: Inferred token contract + probable amount
@@ -467,21 +542,7 @@ Good Example - ERC20 Transfer:
   }
 ]
 
-Good Example - Gas Fee:
-[
-  {
-    "amount": "21000000000000000",
-    "token_contract": "native",
-    "token_symbol": "ETH",
-    "amount_type": "fee",
-    "context": "Gas fee - calculated from gasUsed × effectiveGasPrice",
-    "confidence": 1.0,
-    "from_address": "0x55fe002aeff02f77364de339a1292923a15844b8",
-    "to_address": "",
-    "event_contract": "",
-    "is_valid_token": false
-  }
-]
+
 
 Good Example - DEX Swap:
 [
@@ -511,7 +572,7 @@ Good Example - DEX Swap:
   }
 ]
 
-Be thorough but precise. Only include amounts where you can confidently identify the associated token contract and the amount represents actual value flow. ALWAYS include gas fees when gas data is available.
+Be thorough but precise. Only include amounts where you can confidently identify the associated token contract and the amount represents actual value flow.
 
 *** CRITICAL RESPONSE FORMAT REQUIREMENT ***
 

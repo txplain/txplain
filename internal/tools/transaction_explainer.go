@@ -786,7 +786,13 @@ func (t *TransactionExplainer) buildRAGEnabledPrompt(decodedData *models.Decoded
 7. **TRANSACTION FLOW**: Show intermediate steps in multi-step transactions (converting through WETH, etc.)
 8. **RECIPIENT INFORMATION**: Always mention who received what ("received by", "sent to", "transferred to")
 9. **GAS FEE**: Always end with "+ $X.XX gas"
-10. **CONTEXT CLUES**: Add helpful context like "preparing for future trades", "expanding permissions", "as collateral proof" 
+10. **CONTEXT CLUES**: Add helpful context like "preparing for future trades", "expanding permissions", "as collateral proof"
+
+**CRITICAL: AVOID TECHNICAL LANGUAGE**: 
+- NEVER use technical event names like "RelayNativeDeposit event", "Transfer event", "UserRoleUpdated event"
+- Instead, describe what happened in plain English: "deposited to bridge", "transferred tokens", "updated permissions"  
+- Use human-friendly language that normal web3 users can understand
+- Focus on the action and outcome, not the technical implementation details
 
 TRANSACTION TYPE DETECTION:
 - **TOKEN TRANSACTIONS**: Look for Transfer events, token method calls (transfer, approve, etc.)
