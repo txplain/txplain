@@ -479,7 +479,7 @@ func (pt *ProgressTracker) Close() {
 	close(pt.done)
 }
 
-// UpdateComponent updates a component's status and sends progress event
+// UpdateComponent updates a component's status and sends progress event IMMEDIATELY
 func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, title string, status ComponentStatus, description string) {
 	now := time.Now()
 
@@ -521,13 +521,13 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 	pt.components[id] = component
 	pt.lastUpdate = now
 
-	// Send update via channel with panic protection
+	// Send update via channel IMMEDIATELY with aggressive error recovery
 	select {
 	case <-pt.ctx.Done():
 		// Tracker has been closed, don't send
 		return
 	default:
-		// Try to send, but recover from panic if channel is closed
+		// Try to send with immediate retry mechanism
 		func() {
 			defer func() {
 				if recover() != nil {
@@ -537,19 +537,31 @@ func (pt *ProgressTracker) UpdateComponent(id string, group ComponentGroup, titl
 			}()
 
 			if pt.updateChan != nil {
-				pt.updateChan <- ProgressEvent{
+				// Try non-blocking send first for immediate delivery
+				select {
+				case pt.updateChan <- ProgressEvent{
 					Type:      "component_update",
 					Component: component,
 					Timestamp: time.Now(),
+				}:
+					// Sent successfully
+				default:
+					// Channel full, force send anyway (blocking) to prevent loss
+					// This ensures critical updates are never lost
+					pt.updateChan <- ProgressEvent{
+						Type:      "component_update",
+						Component: component,
+						Timestamp: time.Now(),
+					}
 				}
 			}
 		}()
 	}
 }
 
-// startHeartbeat ensures there's always a progress update within 500ms
+// startHeartbeat ensures there's always a progress update with aggressive timing
 func (pt *ProgressTracker) startHeartbeat() {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond) // Much more frequent - every 500ms
 	defer ticker.Stop()
 
 	for {
@@ -561,8 +573,8 @@ func (pt *ProgressTracker) startHeartbeat() {
 			// Explicit done signal, stop heartbeat
 			return
 		case <-ticker.C:
-			// Check if we need to send a heartbeat - reduced threshold for more updates
-			if time.Since(pt.lastUpdate) >= 200*time.Millisecond {
+			// Send heartbeat much more aggressively - every 300ms of inactivity
+			if time.Since(pt.lastUpdate) >= 300*time.Millisecond {
 				// Find the most recent running component to update
 				var latestRunning *ComponentUpdate
 				var latestTime time.Time

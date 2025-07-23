@@ -161,55 +161,136 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 
 // handleExplainTransactionSSE handles transaction explanation with Server-Sent Events
 func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Request) {
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
-
-	// Parse request body
+	// Parse request body FIRST before any SSE setup
 	var request models.TransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		s.writeSSEError(w, "Invalid request body", err)
+		// Since we haven't set SSE headers yet, we can return a regular HTTP error
+		s.writeErrorResponse(w, http.StatusBadRequest, "Invalid request body", err)
 		return
 	}
 
 	// Validate request
 	if request.TxHash == "" {
-		s.writeSSEError(w, "Transaction hash is required", nil)
+		s.writeErrorResponse(w, http.StatusBadRequest, "Transaction hash is required", nil)
 		return
 	}
 
 	if !models.IsValidNetwork(request.NetworkID) {
-		s.writeSSEError(w, "Unsupported network ID", nil)
+		s.writeErrorResponse(w, http.StatusBadRequest, "Unsupported network ID", nil)
 		return
 	}
 
-	// Send immediate feedback to user - this shows up instantly!
-	now := time.Now()
+	// Now set SSE headers with additional anti-buffering configuration
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate, private")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
+	// Additional headers to prevent buffering
+	w.Header().Set("X-Accel-Buffering", "no") // Nginx
+	w.Header().Set("X-Proxy-Buffering", "no") // Generic proxy
+	w.Header().Set("Proxy-Buffering", "off")  // Apache/other proxies
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Transfer-Encoding", "chunked")
+
+	// Immediately write status to establish connection
+	w.WriteHeader(http.StatusOK)
+
+	// Force immediate flush helper with padding
+	forceFlushWithPadding := func() {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		// Add padding to ensure packet size exceeds buffer thresholds
+		padding := strings.Repeat(" ", 1024) // 1KB padding
+		fmt.Fprintf(w, ": padding-%d %s\n\n", time.Now().UnixNano(), padding)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+
+	// Send multiple large immediate pings to establish connection and prevent buffering
+	timestamp := time.Now().UnixNano()
+	largePadding := strings.Repeat("x", 2048) // 2KB of data to force immediate transmission
+	fmt.Fprintf(w, ": connection-established-%d %s\n\n", timestamp, largePadding)
+	forceFlushWithPadding()
+	time.Sleep(50 * time.Millisecond)
+	
+	fmt.Fprintf(w, ": anti-buffer-ping-%d %s\n\n", time.Now().UnixNano(), largePadding)
+	forceFlushWithPadding()
+	time.Sleep(50 * time.Millisecond)
+	
+	fmt.Fprintf(w, ": ready-for-events-%d %s\n\n", time.Now().UnixNano(), largePadding)
+	forceFlushWithPadding()
+
+	// Send immediate feedback to user with large data payload
+	requestStartTime := time.Now()
 	immediateEvent := models.ProgressEvent{
 		Type:      "component_update",
-		Timestamp: now,
+		Timestamp: requestStartTime,
 		Component: &models.ComponentUpdate{
 			ID:          "request_received",
 			Group:       models.ComponentGroupData,
 			Title:       "Request Received",
 			Status:      models.ComponentStatusRunning,
 			Description: fmt.Sprintf("Processing transaction %s...", request.TxHash[:10]+"..."),
-			StartTime:   &now,
-			Timestamp:   now,
+			StartTime:   &requestStartTime,
+			Timestamp:   requestStartTime,
 		},
 	}
 
 	eventData, _ := json.Marshal(immediateEvent)
 	fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", eventData)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
+	forceFlushWithPadding()
+
+	// Send pipeline initialization update immediately with padding
+	pipelineStartTime := time.Now()
+	pipelineStartEvent := models.ProgressEvent{
+		Type:      "component_update",
+		Timestamp: pipelineStartTime,
+		Component: &models.ComponentUpdate{
+			ID:          "pipeline_init",
+			Group:       models.ComponentGroupData,
+			Title:       "Setting up processing pipeline",
+			Status:      models.ComponentStatusRunning,
+			Description: "Initializing analysis tools...",
+			StartTime:   &pipelineStartTime,
+			Timestamp:   pipelineStartTime,
+		},
 	}
 
-	// Create progress channel
-	progressChan := make(chan models.ProgressEvent, 50)
+	pipelineData, _ := json.Marshal(pipelineStartEvent)
+	fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", pipelineData)
+	forceFlushWithPadding()
+
+	// Create unbuffered progress channel
+	progressChan := make(chan models.ProgressEvent)
+
+	// Start aggressive anti-buffer goroutine
+	antiBufferCtx, antiBufferCancel := context.WithCancel(r.Context())
+	defer antiBufferCancel()
+	
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond) // Very frequent
+		defer ticker.Stop()
+		counter := 0
+		
+		for {
+			select {
+			case <-antiBufferCtx.Done():
+				return
+			case <-ticker.C:
+				counter++
+				// Send timestamp with large payload to force transmission
+				largePing := strings.Repeat("a", 512)
+				fmt.Fprintf(w, ": heartbeat-%d-%d %s\n\n", time.Now().UnixNano(), counter, largePing)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+		}
+	}()
 
 	// Start processing in goroutine
 	go func() {
@@ -229,31 +310,65 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		}
 	}()
 
-	// Stream progress updates
+	// Stream progress updates with immediate flushing and server-side logging
 	firstRealUpdate := true
+	eventCount := 0
+	
 	for event := range progressChan {
-		// Mark request_received as complete on first real component update
-		if firstRealUpdate && event.Type == "component_update" && event.Component != nil && event.Component.ID != "request_received" {
-			// Send completion for request_received
+		eventCount++
+		serverTime := time.Now()
+		
+		// Log server-side timing for debugging
+		log.Printf("[SSE-DEBUG] Sending event %d at %v: %s", eventCount, serverTime, event.Type)
+		
+		// Mark request_received and pipeline_init as complete on first real component update
+		if firstRealUpdate && event.Type == "component_update" && event.Component != nil && 
+		   event.Component.ID != "request_received" && event.Component.ID != "pipeline_init" {
+			
+			// Calculate durations
+			currentTime := time.Now()
+			requestDuration := currentTime.Sub(requestStartTime)
+			pipelineDuration := currentTime.Sub(pipelineStartTime)
+			
+			// Send completion for request_received with immediate flush
 			requestCompleteEvent := models.ProgressEvent{
 				Type:      "component_update",
-				Timestamp: time.Now(),
+				Timestamp: currentTime,
 				Component: &models.ComponentUpdate{
 					ID:          "request_received",
 					Group:       models.ComponentGroupData,
 					Title:       "Request Received",
 					Status:      models.ComponentStatusFinished,
 					Description: "Transaction processing started",
-					StartTime:   &now,
-					Timestamp:   time.Now(),
+					StartTime:   &requestStartTime,
+					Timestamp:   currentTime,
+					Duration:    int64(requestDuration.Nanoseconds() / 1000000), // Convert to milliseconds
 				},
 			}
 
 			requestCompleteData, _ := json.Marshal(requestCompleteEvent)
 			fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", requestCompleteData)
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
+			forceFlushWithPadding()
+
+			// Complete pipeline initialization with immediate flush
+			pipelineCompleteEvent := models.ProgressEvent{
+				Type:      "component_update",
+				Timestamp: currentTime,
+				Component: &models.ComponentUpdate{
+					ID:          "pipeline_init",
+					Group:       models.ComponentGroupData,
+					Title:       "Setting up processing pipeline",
+					Status:      models.ComponentStatusFinished,
+					Description: "Processing pipeline ready",
+					StartTime:   &pipelineStartTime,
+					Timestamp:   currentTime,
+					Duration:    int64(pipelineDuration.Nanoseconds() / 1000000), // Convert to milliseconds
+				},
 			}
+
+			pipelineCompleteData, _ := json.Marshal(pipelineCompleteEvent)
+			fmt.Fprintf(w, "event: component_update\ndata: %s\n\n", pipelineCompleteData)
+			forceFlushWithPadding()
 
 			firstRealUpdate = false
 		}
@@ -263,19 +378,32 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 			continue // Skip malformed events
 		}
 
-		// Send SSE event
+		// Send SSE event with timestamp and immediate flush
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, eventData)
+		forceFlushWithPadding()
 
-		// Flush immediately
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
+		// Send a duplicate event with slight variation to force network transmission
+		if event.Type == "component_update" {
+			duplicateData := fmt.Sprintf(`{"duplicate":true,"original_time":"%v","server_time":"%v","event_data":%s}`, 
+				event.Timestamp, serverTime, string(eventData))
+			fmt.Fprintf(w, ": duplicate-%d %s\n\n", eventCount, duplicateData)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
 		}
+
+		// Log successful send
+		log.Printf("[SSE-DEBUG] Event %d sent and flushed at %v", eventCount, time.Now())
 
 		// Break on completion or error
 		if event.Type == "complete" || event.Type == "error" {
 			break
 		}
 	}
+
+	// Final flush with confirmation
+	log.Printf("[SSE-DEBUG] Stream completed, sending final flush")
+	forceFlushWithPadding()
 }
 
 // writeSSEError writes an error event via SSE
@@ -498,13 +626,18 @@ func (s *Server) Start() error {
 		Addr:    s.address,
 		Handler: s.router,
 
-		// Security settings
-		ReadTimeout:  300 * time.Second, // 5 minutes for complex requests
-		WriteTimeout: 300 * time.Second, // Long timeout for AI processing
-		IdleTimeout:  300 * time.Second, // 5 minutes idle timeout
+		// Security settings optimized for SSE streaming
+		ReadTimeout:       300 * time.Second, // 5 minutes for complex requests
+		WriteTimeout:      300 * time.Second, // Long timeout for AI processing
+		IdleTimeout:       300 * time.Second, // 5 minutes idle timeout
+		ReadHeaderTimeout: 30 * time.Second,  // Prevent slow header attacks
+		
+		// Disable HTTP/2 for better SSE compatibility if needed
+		// TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 	}
 
 	log.Printf("Starting Txplain API server on %s", s.address)
+	log.Printf("SSE buffering optimizations enabled")
 	return s.server.ListenAndServe()
 }
 

@@ -58,11 +58,14 @@ function App() {
       }
 
       let buffer = ''
+      let eventCount = 0
+      let firstEventTime: number | null = null
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
+        const readTime = Date.now()
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         
@@ -70,11 +73,22 @@ function App() {
         buffer = lines.pop() || ''
 
         for (const line of lines) {
+          // Log all SSE lines for debugging
+          if (line.trim()) {
+            console.log(`[SSE-CLIENT-DEBUG] Line received at ${readTime}: ${line.substring(0, 100)}...`)
+          }
+          
           if (line.startsWith('data: ')) {
             try {
+              eventCount++
+              const parseTime = Date.now()
+              if (!firstEventTime) firstEventTime = parseTime
+              
               const eventData = JSON.parse(line.slice(6)) as ProgressEvent
+              console.log(`[SSE-CLIENT-DEBUG] Event ${eventCount} parsed at ${parseTime} (${parseTime - readTime}ms after read, ${parseTime - firstEventTime}ms since first event):`, eventData.type, eventData.component?.id)
               
               if (eventData.type === 'component_update' && eventData.component) {
+                const updateTime = Date.now()
                 setComponents(prev => {
                   const existing = prev.find(c => c.id === eventData.component!.id)
                   if (existing) {
@@ -83,17 +97,20 @@ function App() {
                     return [...prev, eventData.component!]
                   }
                 })
+                console.log(`[SSE-CLIENT-DEBUG] Component updated at ${updateTime} (${updateTime - parseTime}ms after parse)`)
               } else if (eventData.type === 'complete' && eventData.result) {
+                console.log('[SSE-CLIENT-DEBUG] Analysis completed, total components received:', components.length)
                 setResult(eventData.result as ExplanationResult)
                 setLoading(false)
                 return
               } else if (eventData.type === 'error') {
+                console.log('[SSE-CLIENT-DEBUG] Analysis error:', eventData.error, 'Components received:', components.length)
                 setError(eventData.error || 'Analysis failed')
                 setLoading(false)
                 return
               }
             } catch (e) {
-              console.error('Failed to parse SSE data:', e)
+              console.error('[SSE-CLIENT-DEBUG] Failed to parse SSE data:', e, 'Line:', line)
             }
           }
         }
@@ -147,7 +164,7 @@ function App() {
           />
 
           {/* Progress Display */}
-          {loading && (
+          {(loading || components.length > 0) && (
             <ProgressDisplay 
               components={components} 
               isComplete={!loading && result !== null}

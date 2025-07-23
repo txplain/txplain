@@ -10,10 +10,14 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
   const [isExpanded, setIsExpanded] = useState(true)
   const [liveTimers, setLiveTimers] = useState<Record<string, number>>({})
 
-  // Auto-collapse when analysis is complete
+  // Auto-collapse when analysis is complete, but keep component visible for exploration
   useEffect(() => {
     if (isComplete) {
-      setIsExpanded(false)
+      const timer = setTimeout(() => {
+        setIsExpanded(false)
+      }, 2000) // Wait 2 seconds before auto-collapsing
+      
+      return () => clearTimeout(timer)
     }
   }, [isComplete])
 
@@ -197,25 +201,27 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
     <div className="bg-white rounded-lg shadow-lg mb-6">
       {/* Header - always visible */}
       <div 
-        className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors"
+        className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors rounded-t-lg"
         onClick={() => setIsExpanded(!isExpanded)}
+        title={isExpanded ? "Collapse progress details" : "Expand to explore analysis steps"}
       >
         <div className="flex items-center space-x-3">
           <h3 className="text-lg font-semibold text-gray-900">Analysis Progress</h3>
           {isComplete && (
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
               <span className="mr-1">✅</span>
-              Completed
+              Completed - Click to explore steps
             </span>
           )}
         </div>
         <div className="flex items-center space-x-3">
           {isComplete && !isExpanded && (
             <div className="text-sm text-gray-600">
-              {completedComponents} steps • {formatDuration(totalDuration)}
+              {completedComponents} steps completed • {formatDuration(totalDuration)}
               {errorComponents > 0 && (
                 <span className="text-red-600 ml-2">{errorComponents} errors</span>
               )}
+              <span className="text-blue-600 ml-2 font-medium">→ Expand to explore</span>
             </div>
           )}
           <button className="p-1 hover:bg-gray-200 rounded">
