@@ -14,6 +14,7 @@ import (
 type TokenMetadataEnricher struct {
 	rpcClient *rpc.Client
 	verbose   bool
+	cache     Cache // Cache for metadata lookups
 }
 
 // TokenMetadata represents metadata for a token
@@ -30,12 +31,18 @@ func NewTokenMetadataEnricher() *TokenMetadataEnricher {
 	return &TokenMetadataEnricher{
 		rpcClient: nil, // Set by SetRPCClient when needed
 		verbose:   false,
+		cache:     nil, // Set via SetCache
 	}
 }
 
 // SetRPCClient sets the RPC client for network-specific operations
 func (t *TokenMetadataEnricher) SetRPCClient(client *rpc.Client) {
 	t.rpcClient = client
+}
+
+// SetCache sets the cache instance for the metadata enricher
+func (t *TokenMetadataEnricher) SetCache(cache Cache) {
+	t.cache = cache
 }
 
 // SetVerbose enables or disables verbose logging
@@ -147,12 +154,50 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		}
 
 		// Get RPC contract information (method calls, etc.)
-		rpcInfo, err := t.getRPCContractInfo(ctx, address)
-		if err != nil {
-			if t.verbose {
-				fmt.Printf(" ❌ RPC call failed: %v\n", err)
+		var rpcInfo *rpc.ContractInfo
+		var err error
+
+		// Check cache first if available
+		if t.cache != nil {
+			networkID := int64(1) // Default to Ethereum mainnet
+			if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+				if nid, ok := rawData["network_id"].(float64); ok {
+					networkID = int64(nid)
+				}
+			}
+			
+			cacheKey := fmt.Sprintf(TokenMetadataKeyPattern, networkID, strings.ToLower(address))
+			if err := t.cache.GetJSON(ctx, cacheKey, &rpcInfo); err == nil {
+				if t.verbose {
+					fmt.Printf(" ✅ (cached) Name: %s, Symbol: %s, Decimals: %d\n", rpcInfo.Name, rpcInfo.Symbol, rpcInfo.Decimals)
+				}
+			} else {
+				// Cache miss, make RPC call
+				rpcInfo, err = t.getRPCContractInfo(ctx, address)
+				if err != nil {
+					if t.verbose {
+						fmt.Printf(" ❌ RPC call failed: %v\n", err)
+					}
+				} else {
+					// Cache successful result with permanent TTL (token metadata doesn't change)
+					if cacheErr := t.cache.SetJSON(ctx, cacheKey, rpcInfo, &MetadataTTLDuration); cacheErr != nil {
+						if t.verbose {
+							fmt.Printf(" ⚠️ Cache store failed: %v\n", cacheErr)
+						}
+					}
+				}
 			}
 		} else {
+			// No cache, make RPC call directly
+			rpcInfo, err = t.getRPCContractInfo(ctx, address)
+			if err != nil {
+				if t.verbose {
+					fmt.Printf(" ❌ RPC call failed: %v\n", err)
+				}
+			}
+		}
+
+		if err == nil && rpcInfo != nil {
 			// Extract RPC information
 			if rpcInfo.Name != "" {
 				contractInfo["rpc_name"] = rpcInfo.Name

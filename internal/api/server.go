@@ -250,7 +250,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		Type:      "component_update",
 		Timestamp: pipelineStartTime,
 		Component: &models.ComponentUpdate{
-			ID:          "pipeline_init",
+			ID:          "pipeline_setup",
 			Group:       models.ComponentGroupData,
 			Title:       "Setting up processing pipeline",
 			Status:      models.ComponentStatusRunning,
@@ -321,9 +321,9 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		// Log server-side timing for debugging
 		log.Printf("[SSE-DEBUG] Sending event %d at %v: %s", eventCount, serverTime, event.Type)
 		
-		// Mark request_received and pipeline_init as complete on first real component update
+		// Mark request_received and pipeline_setup as complete on first real component update
 		if firstRealUpdate && event.Type == "component_update" && event.Component != nil && 
-		   event.Component.ID != "request_received" && event.Component.ID != "pipeline_init" {
+		   event.Component.ID != "request_received" && event.Component.ID != "pipeline_setup" {
 			
 			// Calculate durations
 			currentTime := time.Now()

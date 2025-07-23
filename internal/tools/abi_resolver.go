@@ -20,6 +20,7 @@ type ABIResolver struct {
 	httpClient *http.Client
 	apiKey     string
 	verbose    bool // Added for debug logging
+	cache      Cache // Cache for ABI data
 }
 
 // ContractInfo represents resolved contract information
@@ -79,7 +80,7 @@ type SourceCodeResult struct {
 }
 
 // NewABIResolver creates a new ABI resolver with Etherscan API key
-func NewABIResolver() *ABIResolver {
+func NewABIResolver(cache Cache, verbose bool) *ABIResolver {
 	apiKey := os.Getenv("ETHERSCAN_API_KEY")
 	if apiKey == "" {
 		fmt.Println("Warning: ETHERSCAN_API_KEY not set, ABI resolution will be limited")
@@ -90,13 +91,9 @@ func NewABIResolver() *ABIResolver {
 			Timeout: 300 * time.Second, // 5 minutes for slow Etherscan responses
 		},
 		apiKey:  apiKey,
-		verbose: false, // Default to false, can be enabled later
+		verbose: verbose,
+		cache:   cache,
 	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (a *ABIResolver) SetVerbose(verbose bool) {
-	a.verbose = verbose
 }
 
 // Name returns the tool name
@@ -323,6 +320,24 @@ func (a *ABIResolver) extractContractAddresses(baggage map[string]interface{}) [
 
 // resolveContract fetches contract information from Etherscan API with Sourcify fallback
 func (a *ABIResolver) resolveContract(ctx context.Context, address string, networkID int64) (*ContractInfo, error) {
+	// Check cache first if available
+	if a.cache != nil {
+		cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
+		if a.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  Checking cache for contract %s with key: %s\n", address, cacheKey)
+		}
+		
+		var cachedInfo ContractInfo
+		if err := a.cache.GetJSON(ctx, cacheKey, &cachedInfo); err == nil {
+			if a.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ✅ Found cached ABI for contract %s\n", address)
+			}
+			return &cachedInfo, nil
+		} else if a.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  Cache miss for contract %s: %v\n", address, err)
+		}
+	}
+
 	contractInfo := &ContractInfo{
 		Address:    address,
 		IsVerified: false,
@@ -409,6 +424,21 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 		if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
 			contractInfo.ParsedABI = parsedABI
 		}
+	}
+
+	// Cache successful result if cache is available
+	if a.cache != nil && contractInfo.IsVerified {
+		cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
+		if err := a.cache.SetJSON(ctx, cacheKey, contractInfo, &ABITTLDuration); err != nil {
+			if a.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ⚠️  Failed to cache ABI for %s: %v\n", address, err)
+			}
+		} else if a.verbose || os.Getenv("DEBUG") == "true" {
+			fmt.Printf("  ✅ Cached ABI for contract %s\n", address)
+		}
+
+		// Also cache individual function and event signatures for faster lookup
+		a.cacheIndividualSignatures(ctx, contractInfo, networkID)
 	}
 
 	if a.verbose || os.Getenv("DEBUG") == "true" {
@@ -1115,4 +1145,33 @@ func (a *ABIResolver) GetRagContext(ctx context.Context, baggage map[string]inte
 	}
 
 	return ragContext
+}
+
+// cacheIndividualSignatures caches individual function and event signatures for faster lookup
+func (a *ABIResolver) cacheIndividualSignatures(ctx context.Context, contractInfo *ContractInfo, networkID int64) {
+	if a.cache == nil {
+		return
+	}
+
+	for _, method := range contractInfo.ParsedABI {
+		if method.Hash != "" {
+			var cacheKey string
+			if method.Type == "function" {
+				cacheKey = fmt.Sprintf(ABIFunctionKeyPattern, networkID, method.Hash)
+			} else if method.Type == "event" {
+				cacheKey = fmt.Sprintf(ABIEventKeyPattern, networkID, method.Hash)
+			} else {
+				continue // Skip other types
+			}
+
+			// Cache the method signature
+			if err := a.cache.SetJSON(ctx, cacheKey, method, &ABITTLDuration); err != nil {
+				if a.verbose || os.Getenv("DEBUG") == "true" {
+					fmt.Printf("  ⚠️  Failed to cache %s signature %s: %v\n", method.Type, method.Hash, err)
+				}
+			} else if a.verbose || os.Getenv("DEBUG") == "true" {
+				fmt.Printf("  ✅ Cached %s signature %s -> %s\n", method.Type, method.Hash, method.Signature)
+			}
+		}
+	}
 }

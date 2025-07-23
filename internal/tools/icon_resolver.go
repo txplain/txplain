@@ -16,6 +16,7 @@ type IconResolver struct {
 	staticContextProvider *StaticContextProvider
 	discoveredIcons       map[string]string // address -> icon URL
 	verbose               bool
+	cache                 Cache // Cache for icon URLs
 }
 
 // NewIconResolver creates a new icon resolver
@@ -27,7 +28,13 @@ func NewIconResolver(staticContextProvider *StaticContextProvider) *IconResolver
 		staticContextProvider: staticContextProvider,
 		discoveredIcons:       make(map[string]string),
 		verbose:               false,
+		cache:                 nil, // Set via SetCache
 	}
+}
+
+// SetCache sets the cache instance for the icon resolver
+func (ir *IconResolver) SetCache(cache Cache) {
+	ir.cache = cache
 }
 
 // SetVerbose enables or disables verbose logging
@@ -182,6 +189,19 @@ func (ir *IconResolver) toChecksumAddress(address string) string {
 
 // checkIconExists performs a HEAD request to check if the icon URL exists
 func (ir *IconResolver) checkIconExists(ctx context.Context, iconURL string) bool {
+	// Check cache first if available
+	if ir.cache != nil {
+		cacheKey := fmt.Sprintf("icon-check:%s", iconURL)
+		
+		var exists bool
+		if err := ir.cache.GetJSON(ctx, cacheKey, &exists); err == nil {
+			if ir.verbose {
+				fmt.Printf("    ✅ (cached) Icon check for %s: %t\n", iconURL, exists)
+			}
+			return exists
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "HEAD", iconURL, nil)
 	if err != nil {
 		return false
@@ -189,12 +209,31 @@ func (ir *IconResolver) checkIconExists(ctx context.Context, iconURL string) boo
 
 	resp, err := ir.httpClient.Do(req)
 	if err != nil {
+		if ir.cache != nil {
+			// Cache negative result to avoid repeated failed requests
+			cacheKey := fmt.Sprintf("icon-check:%s", iconURL)
+			ir.cache.SetJSON(ctx, cacheKey, false, &IconTTLDuration)
+		}
 		return false
 	}
 	defer resp.Body.Close()
 
 	// Consider 200 and 304 (not modified) as successful
-	return resp.StatusCode == 200 || resp.StatusCode == 304
+	exists := resp.StatusCode == 200 || resp.StatusCode == 304
+	
+	// Cache result (both positive and negative) with permanent TTL
+	if ir.cache != nil {
+		cacheKey := fmt.Sprintf("icon-check:%s", iconURL)
+		if err := ir.cache.SetJSON(ctx, cacheKey, exists, &IconTTLDuration); err != nil {
+			if ir.verbose {
+				fmt.Printf("    ⚠️ Failed to cache icon check for %s: %v\n", iconURL, err)
+			}
+		} else if ir.verbose {
+			fmt.Printf("    ✅ Cached icon check: %s -> %t\n", iconURL, exists)
+		}
+	}
+	
+	return exists
 }
 
 // GetPromptContext provides context for LLM prompts

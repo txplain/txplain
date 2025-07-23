@@ -139,6 +139,22 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
           >
             0xed21b60a...d65458e0 (Token Swap)
           </button>
+          <button
+            type="button"
+            onClick={() => setTxHash('0x0824267bef6fc363ed974c5c25f3856b06e5beaa434e12100df01ba22056b1b2')}
+            className="text-sm text-blue-600 hover:text-blue-800 block truncate max-w-full"
+            disabled={loading}
+          >
+            0x0824267b...22056b1b2 (Access Control)
+          </button>
+          <button
+            type="button"
+            onClick={() => setTxHash('0x34a2d414c9a37d86c0371cba3b17bf3caa5da129efb239a571f3c8629518c227')}
+            className="text-sm text-blue-600 hover:text-blue-800 block truncate max-w-full"
+            disabled={loading}
+          >
+            0x34a2d414...29518c227 (Bridge Deposit)
+          </button>
         </div>
       </div>
     </div>

@@ -24,6 +24,7 @@ type MonetaryValueEnricher struct {
 	httpClient    *http.Client
 	networkMapper *NetworkMapper
 	verbose       bool
+	cache         Cache // Cache for price lookups
 }
 
 // EnrichedAmount represents a detected amount with USD value calculations
@@ -46,7 +47,13 @@ func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string) *Monet
 		httpClient:    &http.Client{Timeout: 300 * time.Second}, // 5 minutes for price lookups
 		networkMapper: NewNetworkMapper(coinMarketCapAPIKey),
 		verbose:       false,
+		cache:         nil, // Set via SetCache
 	}
+}
+
+// SetCache sets the cache instance for the monetary value enricher
+func (m *MonetaryValueEnricher) SetCache(cache Cache) {
+	m.cache = cache
 }
 
 // SetVerbose enables or disables verbose logging
@@ -416,6 +423,21 @@ func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
 
 // fetchNativeTokenPrice fetches the current USD price from CoinMarketCap API
 func (m *MonetaryValueEnricher) fetchNativeTokenPrice(ctx context.Context, symbol string) (float64, error) {
+	// Check cache first if available
+	if m.cache != nil {
+		cacheKey := fmt.Sprintf("native-token-price:%s:USD", strings.ToUpper(symbol))
+		
+		var cachedPrice float64
+		if err := m.cache.GetJSON(ctx, cacheKey, &cachedPrice); err == nil {
+			if m.verbose {
+				fmt.Printf("  ✅ (cached) Native token price for %s: $%.6f\n", symbol, cachedPrice)
+			}
+			return cachedPrice, nil
+		} else if m.verbose {
+			fmt.Printf("  Cache miss for native token price %s: %v\n", symbol, err)
+		}
+	}
+
 	// Build query parameters
 	params := url.Values{}
 	params.Set("symbol", symbol)
@@ -482,7 +504,21 @@ func (m *MonetaryValueEnricher) fetchNativeTokenPrice(ctx context.Context, symbo
 		return 0, fmt.Errorf("USD quote not found for symbol %s", symbol)
 	}
 
-	return quoteData.Price, nil
+	price := quoteData.Price
+
+	// Cache successful result with price TTL (1 hour)
+	if m.cache != nil {
+		cacheKey := fmt.Sprintf("native-token-price:%s:USD", strings.ToUpper(symbol))
+		if err := m.cache.SetJSON(ctx, cacheKey, price, &PriceTTLDuration); err != nil {
+			if m.verbose {
+				fmt.Printf("  ⚠️ Failed to cache native token price for %s: %v\n", symbol, err)
+			}
+		} else if m.verbose {
+			fmt.Printf("  ✅ Cached native token price: %s -> $%.6f\n", symbol, price)
+		}
+	}
+
+	return price, nil
 }
 
 // getFallbackNativeTokenPrice returns generic fallback price
