@@ -16,17 +16,19 @@ import (
 )
 
 // NewLogDecoder creates a new log decoder
-func NewLogDecoder(verbose bool) *LogDecoder {
+func NewLogDecoder(cache Cache, verbose bool) *LogDecoder {
 	return &LogDecoder{
 		verbose: verbose,
+		cache:   cache,
 	}
 }
 
 // NewLogDecoderWithRPC creates a LogDecoder with RPC capabilities
-func NewLogDecoderWithRPC(rpcClient *rpc.Client) *LogDecoder {
+func NewLogDecoderWithRPC(rpcClient *rpc.Client, cache Cache) *LogDecoder {
 	return &LogDecoder{
 		rpcClient:         rpcClient,
 		signatureResolver: rpc.NewSignatureResolver(rpcClient, true), // Enable 4byte API
+		cache:             cache,
 	}
 }
 
@@ -35,6 +37,7 @@ type LogDecoder struct {
 	rpcClient         *rpc.Client
 	signatureResolver *rpc.SignatureResolver
 	verbose           bool // Added for debug logging
+	cache             Cache // Cache for log decoding results
 }
 
 // Name returns the tool name
@@ -53,8 +56,8 @@ func (t *LogDecoder) Dependencies() []string {
 }
 
 // Process processes logs and adds decoded events to baggage
-func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
-	if t.verbose {
+func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
+	if l.verbose {
 		fmt.Println("\n" + strings.Repeat("📜", 60))
 		fmt.Println("🔍 LOG DECODER: Starting transaction log decoding")
 		fmt.Println(strings.Repeat("📜", 60))
@@ -63,7 +66,7 @@ func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 	// Extract raw log data from baggage
 	rawData, ok := baggage["raw_data"].(map[string]interface{})
 	if !ok {
-		if t.verbose {
+		if l.verbose {
 			fmt.Println("❌ Missing raw_data in baggage")
 			fmt.Println(strings.Repeat("📜", 60) + "\n")
 		}
@@ -72,7 +75,7 @@ func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 
 	logsData, ok := rawData["logs"].([]interface{})
 	if !ok || logsData == nil {
-		if t.verbose {
+		if l.verbose {
 			fmt.Println("⚠️  No logs found in transaction, adding empty events")
 			fmt.Println(strings.Repeat("📜", 60) + "\n")
 		}
@@ -81,7 +84,7 @@ func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		return nil
 	}
 
-	if t.verbose {
+	if l.verbose {
 		fmt.Printf("📊 Found %d logs to decode\n", len(logsData))
 	}
 
@@ -90,44 +93,44 @@ func (t *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 		networkID = int64(nid)
 	}
 
-	if t.verbose {
+	if l.verbose {
 		fmt.Printf("🌐 Network ID: %d\n", networkID)
 	}
 
 	// Set up RPC client and signature resolver if not already set
-	if t.rpcClient == nil {
-		if t.verbose {
+	if l.rpcClient == nil {
+		if l.verbose {
 			fmt.Println("🔧 Setting up RPC client and signature resolver...")
 		}
 		var err error
-		t.rpcClient, err = rpc.NewClient(networkID)
+		l.rpcClient, err = rpc.NewClient(networkID)
 		if err != nil {
-			if t.verbose {
+			if l.verbose {
 				fmt.Printf("❌ Failed to create RPC client: %v\n", err)
 				fmt.Println(strings.Repeat("📜", 60) + "\n")
 			}
 			return fmt.Errorf("failed to create RPC client: %w", err)
 		}
-		t.signatureResolver = rpc.NewSignatureResolver(t.rpcClient, true)
-		if t.verbose {
+		l.signatureResolver = rpc.NewSignatureResolver(l.rpcClient, true)
+		if l.verbose {
 			fmt.Println("✅ RPC client and signature resolver ready")
 		}
 	}
 
-	if t.verbose {
+	if l.verbose {
 		fmt.Println("🔄 Decoding logs with RPC introspection...")
 	}
 
-	events, err := t.decodeLogsWithRPC(ctx, logsData, networkID, baggage)
+	events, err := l.decodeLogsWithRPC(ctx, logsData, networkID, baggage)
 	if err != nil {
-		if t.verbose {
+		if l.verbose {
 			fmt.Printf("❌ Failed to decode logs: %v\n", err)
 			fmt.Println(strings.Repeat("📜", 60) + "\n")
 		}
 		return fmt.Errorf("failed to decode logs: %w", err)
 	}
 
-	if t.verbose {
+	if l.verbose {
 		fmt.Printf("✅ Successfully decoded %d events\n", len(events))
 
 		// Show summary of decoded events

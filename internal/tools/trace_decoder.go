@@ -16,21 +16,24 @@ type TraceDecoder struct {
 	rpcClient         *rpc.Client
 	signatureResolver *rpc.SignatureResolver
 	verbose           bool // Added verbose flag
+	cache             Cache // Cache for trace decoding results
 }
 
 // NewTraceDecoder creates a new TraceDecoder tool
-func NewTraceDecoder(verbose bool) *TraceDecoder {
+func NewTraceDecoder(cache Cache, verbose bool) *TraceDecoder {
 	return &TraceDecoder{
 		verbose: verbose,
+		cache:   cache,
 	}
 }
 
 // NewTraceDecoderWithRPC creates a TraceDecoder with RPC capabilities
-func NewTraceDecoderWithRPC(rpcClient *rpc.Client, verbose bool) *TraceDecoder {
+func NewTraceDecoderWithRPC(rpcClient *rpc.Client, cache Cache, verbose bool) *TraceDecoder {
 	return &TraceDecoder{
 		rpcClient:         rpcClient,
 		signatureResolver: rpc.NewSignatureResolver(rpcClient, true), // Enable 4byte API
 		verbose:           verbose,
+		cache:             cache,
 	}
 }
 

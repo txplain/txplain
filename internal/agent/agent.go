@@ -50,8 +50,8 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string, cache txto
 
 	// Initialize tools with RPC capabilities - this is the key enhancement!
 	// We'll create RPC-enhanced tools when we have the specific network context
-	traceDecoder := txtools.NewTraceDecoder(verbose) // Will be enhanced per request
-	logDecoder := txtools.NewLogDecoder(verbose)     // Will be enhanced per request
+	traceDecoder := txtools.NewTraceDecoder(cache, verbose) // Will be enhanced per request
+	logDecoder := txtools.NewLogDecoder(cache, verbose)     // Will be enhanced per request
 
 	// Initialize static context provider first (needed by transaction explainer)
 	staticProvider := txtools.NewStaticContextProvider(verbose)
@@ -151,7 +151,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add trace decoder (processes trace data to extract calls with ETH transfers)
 	fmt.Println("      • Trace Decoder (function calls & ETH transfers)")
-	traceDecoder := txtools.NewTraceDecoderWithRPC(client, a.verbose)
+	traceDecoder := txtools.NewTraceDecoderWithRPC(client, a.cache, a.verbose)
 	if err := pipeline.AddProcessor(traceDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add trace decoder: %w", err)
 	}
@@ -159,7 +159,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add log decoder (processes events using resolved ABIs)
 	fmt.Println("      • Log Decoder (event decoding)")
-	logDecoder := txtools.NewLogDecoderWithRPC(client)
+	logDecoder := txtools.NewLogDecoderWithRPC(client, a.cache)
 	if err := pipeline.AddProcessor(logDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add log decoder: %w", err)
 	}
@@ -183,7 +183,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add NFT decoder (extracts and enriches NFT transfers)
 	fmt.Println("      • NFT Decoder")
-	nftDecoder := txtools.NewNFTDecoder(a.verbose, client)
+	nftDecoder := txtools.NewNFTDecoder(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(nftDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add NFT decoder: %w", err)
 	}
@@ -441,7 +441,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add trace decoder (processes trace data to extract calls with ETH transfers)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding trace decoder...")
-	traceDecoder := txtools.NewTraceDecoderWithRPC(client, a.verbose)
+	traceDecoder := txtools.NewTraceDecoderWithRPC(client, a.cache, a.verbose)
 	if err := pipeline.AddProcessor(traceDecoder); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add trace decoder: %w", err))
 		return nil, fmt.Errorf("failed to add trace decoder: %w", err)
@@ -450,7 +450,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add log decoder (processes events using resolved ABIs)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding event decoder...")
-	logDecoder := txtools.NewLogDecoderWithRPC(client)
+	logDecoder := txtools.NewLogDecoderWithRPC(client, a.cache)
 	if err := pipeline.AddProcessor(logDecoder); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add log decoder: %w", err))
 		return nil, fmt.Errorf("failed to add log decoder: %w", err)
@@ -477,7 +477,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add NFT decoder (extracts and enriches NFT transfers)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding NFT decoder...")
-	nftDecoder := txtools.NewNFTDecoder(a.verbose, client)
+	nftDecoder := txtools.NewNFTDecoder(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(nftDecoder); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add NFT decoder: %w", err))
 		return nil, fmt.Errorf("failed to add NFT decoder: %w", err)

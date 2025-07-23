@@ -14,6 +14,7 @@ import (
 type NFTDecoder struct {
 	rpcClient *rpc.Client
 	verbose   bool
+	cache     Cache // Cache for NFT metadata
 }
 
 // NFTTransfer represents an NFT transfer with metadata
@@ -31,10 +32,11 @@ type NFTTransfer struct {
 }
 
 // NewNFTDecoder creates a new NFT decoder
-func NewNFTDecoder(verbose bool, rpcClient *rpc.Client) *NFTDecoder {
+func NewNFTDecoder(cache Cache, verbose bool, rpcClient *rpc.Client) *NFTDecoder {
 	return &NFTDecoder{
 		rpcClient: rpcClient,
 		verbose:   verbose,
+		cache:     cache,
 	}
 }
 
