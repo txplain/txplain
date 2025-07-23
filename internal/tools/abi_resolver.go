@@ -361,12 +361,28 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 				if a.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("  ✅ Etherscan source code fetch succeeded\n")
 				}
-				// Success - parse ABI and return
+				// Success - parse ABI and cache result
 				if contractInfo.ABI != "" {
 					if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
 						contractInfo.ParsedABI = parsedABI
 					}
 				}
+				
+				// Cache successful result if cache is available
+				if a.cache != nil && contractInfo.ABI != "" {
+					cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
+					if err := a.cache.SetJSON(ctx, cacheKey, contractInfo, &ABITTLDuration); err != nil {
+						if a.verbose || os.Getenv("DEBUG") == "true" {
+							fmt.Printf("  ⚠️  Failed to cache ABI for %s: %v\n", address, err)
+						}
+					} else if a.verbose || os.Getenv("DEBUG") == "true" {
+						fmt.Printf("  ✅ Cached ABI for contract %s\n", address)
+					}
+
+					// Also cache individual function and event signatures for faster lookup
+					a.cacheIndividualSignatures(ctx, contractInfo, networkID)
+				}
+				
 				return contractInfo, nil
 			} else {
 				if a.verbose || os.Getenv("DEBUG") == "true" {
@@ -379,12 +395,28 @@ func (a *ABIResolver) resolveContract(ctx context.Context, address string, netwo
 				if a.verbose || os.Getenv("DEBUG") == "true" {
 					fmt.Printf("  ✅ Etherscan ABI fetch succeeded\n")
 				}
-				// Success - parse ABI and return
+				// Success - parse ABI and cache result
 				if contractInfo.ABI != "" {
 					if parsedABI, err := a.parseABI(contractInfo.ABI); err == nil {
 						contractInfo.ParsedABI = parsedABI
 					}
 				}
+				
+				// Cache successful result if cache is available
+				if a.cache != nil && contractInfo.IsVerified {
+					cacheKey := fmt.Sprintf(ABIKeyPattern, networkID, strings.ToLower(address))
+					if err := a.cache.SetJSON(ctx, cacheKey, contractInfo, &ABITTLDuration); err != nil {
+						if a.verbose || os.Getenv("DEBUG") == "true" {
+							fmt.Printf("  ⚠️  Failed to cache ABI for %s: %v\n", address, err)
+						}
+					} else if a.verbose || os.Getenv("DEBUG") == "true" {
+						fmt.Printf("  ✅ Cached ABI for contract %s\n", address)
+					}
+
+					// Also cache individual function and event signatures for faster lookup
+					a.cacheIndividualSignatures(ctx, contractInfo, networkID)
+				}
+				
 				return contractInfo, nil
 			} else {
 				if a.verbose || os.Getenv("DEBUG") == "true" {

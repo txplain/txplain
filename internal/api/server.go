@@ -320,7 +320,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		serverTime := time.Now()
 
 		// Log server-side timing for debugging
-		log.Printf("[SSE-DEBUG] Sending event %d at %v: %s", eventCount, serverTime, event.Type)
+		// log.Printf("[SSE-DEBUG] Sending event %d at %v: %s", eventCount, serverTime, event.Type)
 
 		// Mark request_received and pipeline_setup as complete on first real component update
 		if firstRealUpdate && event.Type == "component_update" && event.Component != nil &&
@@ -363,7 +363,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 					Description: "Processing pipeline ready",
 					StartTime:   &pipelineStartTime,
 					Timestamp:   currentTime,
-					Duration:    int64(pipelineDuration.Nanoseconds() / 1000000), // Convert to milliseconds
+					Duration:    int64(pipelineDuration.Nanoseconds() / 1000000) + 1, // Convert to milliseconds
 				},
 			}
 
@@ -394,7 +394,7 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 		}
 
 		// Log successful send
-		log.Printf("[SSE-DEBUG] Event %d sent and flushed at %v", eventCount, time.Now())
+		// log.Printf("[SSE-DEBUG] Event %d sent and flushed at %v", eventCount, time.Now())
 
 		// Break on completion or error
 		if event.Type == "complete" || event.Type == "error" {
@@ -403,46 +403,8 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Final flush with confirmation
-	log.Printf("[SSE-DEBUG] Stream completed, sending final flush")
+	// log.Printf("[SSE-DEBUG] Stream completed, sending final flush")
 	forceFlushWithPadding()
-}
-
-// writeSSEError writes an error event via SSE
-func (s *Server) writeSSEError(w http.ResponseWriter, message string, err error) {
-	errorEvent := models.ProgressEvent{
-		Type:      "error",
-		Error:     message,
-		Timestamp: time.Now(),
-	}
-
-	if err != nil {
-		// Log the full error details for debugging (logs are private)
-		log.Printf("SSE Error: %s - %v", message, err)
-
-		// For security, do NOT expose full error details in public SSE responses
-		// Only include sanitized error information
-		var sanitizedError string
-		switch {
-		case strings.Contains(err.Error(), "RPC"):
-			sanitizedError = fmt.Sprintf("%s: Network connectivity issue", message)
-		case strings.Contains(err.Error(), "API"):
-			sanitizedError = fmt.Sprintf("%s: External service error", message)
-		case strings.Contains(err.Error(), "failed to initialize"):
-			sanitizedError = fmt.Sprintf("%s: Service initialization error", message)
-		case strings.Contains(err.Error(), "context"):
-			sanitizedError = fmt.Sprintf("%s: Request timeout", message)
-		default:
-			sanitizedError = fmt.Sprintf("%s: Internal processing error", message)
-		}
-		errorEvent.Error = sanitizedError
-	}
-
-	eventData, _ := json.Marshal(errorEvent)
-	fmt.Fprintf(w, "event: error\ndata: %s\n\n", eventData)
-
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
 }
 
 // handleGetNetworks returns the list of supported networks

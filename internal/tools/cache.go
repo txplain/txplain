@@ -130,6 +130,24 @@ var (
 
 	// Signature data is permanent
 	SignatureTTLDuration = time.Hour * 24 * 365 // 1 year (effectively permanent)
+
+	// Transaction data is permanent once processed
+	TransactionTTLDuration = time.Hour * 24 * 365 // 1 year (effectively permanent)
+
+	// Decoded logs/events are permanent for a given transaction
+	LogDecodingTTLDuration = time.Hour * 24 * 365 // 1 year (effectively permanent)
+
+	// Trace decoding is permanent for a given transaction
+	TraceDecodingTTLDuration = time.Hour * 24 * 365 // 1 year (effectively permanent)
+
+	// NFT metadata changes very rarely
+	NFTMetadataTTLDuration = time.Hour * 24 * 30 // 30 days
+
+	// Detected amounts are permanent for a given transaction
+	AmountDetectionTTLDuration = time.Hour * 24 * 365 // 1 year (effectively permanent)
+
+	// Static context data is permanent
+	StaticContextTTLDuration = time.Hour * 24 * 365 // 1 year (effectively permanent)
 )
 
 // Cache key patterns for consistent naming - includes network ID for uniqueness
@@ -160,4 +178,24 @@ const (
 	// Network caching - format: network-info:chainId
 	NetworkKeyPattern    = "network-info:%d" // network-info:1
 	CMCNetworkKeyPattern = "cmc-network:%s"  // cmc-network:ethereum
+
+	// Transaction context caching - format: tx-context:networkId:hash
+	TransactionContextKeyPattern = "tx-context:%d:%s" // tx-context:1:0x123...
+
+	// Log decoding caching - format: logs-decoded:networkId:hash
+	LogDecodingKeyPattern = "logs-decoded:%d:%s" // logs-decoded:1:0x123...
+
+	// Trace decoding caching - format: trace-decoded:networkId:hash
+	TraceDecodingKeyPattern = "trace-decoded:%d:%s" // trace-decoded:1:0x123...
+
+	// NFT metadata caching - format: nft-meta:networkId:contract:tokenId
+	NFTMetadataKeyPattern = "nft-meta:%d:%s:%s" // nft-meta:1:0x123...:42
+
+	// Amount detection caching - format: amounts-detected:networkId:hash
+	AmountDetectionKeyPattern = "amounts-detected:%d:%s" // amounts-detected:1:0x123...
+
+	// Static context caching - format: static-ctx:type:identifier
+	StaticTokenKeyPattern    = "static-token:%s"    // static-token:0x123...
+	StaticProtocolKeyPattern = "static-protocol:%s" // static-protocol:uniswap
+	StaticAddressKeyPattern  = "static-address:%s"  // static-address:0x123...
 )

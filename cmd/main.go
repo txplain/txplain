@@ -66,7 +66,13 @@ func main() {
 	// Initialize cache from DATABASE_URL
 	var cache tools.Cache
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
-		logger := zerolog.New(os.Stdout)
+		// Create logger with appropriate level based on verbose flag
+		logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+		if *verbose {
+			logger = logger.Level(zerolog.TraceLevel) // Show all cache operations
+		} else {
+			logger = logger.Level(zerolog.InfoLevel) // Only show important messages
+		}
 
 		// Create PostgreSQL config
 		cfg := &common.PostgreSQLConnectorConfig{

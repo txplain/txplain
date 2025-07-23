@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -270,6 +271,39 @@ func (nm *NetworkMapper) ensurePlatformDataLoaded() error {
 
 // fetchPlatformDataFromAPI fetches platform/network data from CoinMarketCap
 func (nm *NetworkMapper) fetchPlatformDataFromAPI() error {
+	// Check cache first if available
+	const cmcDataCacheKey = "cmc-platform-data"
+	var mapResponse struct {
+		Status struct {
+			ErrorCode    int    `json:"error_code"`
+			ErrorMessage string `json:"error_message"`
+		} `json:"status"`
+		Data []struct {
+			ID       int    `json:"id"`
+			Name     string `json:"name"`
+			Symbol   string `json:"symbol"`
+			Slug     string `json:"slug"`
+			Platform *struct {
+				ID           int    `json:"id"`
+				Name         string `json:"name"`
+				Symbol       string `json:"symbol"`
+				Slug         string `json:"slug"`
+				TokenAddress string `json:"token_address"`
+			} `json:"platform"`
+		} `json:"data"`
+	}
+
+	if nm.cache != nil {
+		if err := nm.cache.GetJSON(context.Background(), cmcDataCacheKey, &mapResponse); err == nil {
+			// Process cached data
+			if mapResponse.Status.ErrorCode == 0 {
+				nm.processPlatformData(mapResponse.Data)
+				nm.lastFetchTime = time.Now()
+				return nil
+			}
+		}
+	}
+
 	// Use the cryptocurrency map endpoint to get platform information
 	// This endpoint includes platform data which has native token information
 	mapURL := "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?listing_status=active&limit=5000"
@@ -293,27 +327,6 @@ func (nm *NetworkMapper) fetchPlatformDataFromAPI() error {
 		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse the response to extract platform data
-	var mapResponse struct {
-		Status struct {
-			ErrorCode    int    `json:"error_code"`
-			ErrorMessage string `json:"error_message"`
-		} `json:"status"`
-		Data []struct {
-			ID       int    `json:"id"`
-			Name     string `json:"name"`
-			Symbol   string `json:"symbol"`
-			Slug     string `json:"slug"`
-			Platform *struct {
-				ID           int    `json:"id"`
-				Name         string `json:"name"`
-				Symbol       string `json:"symbol"`
-				Slug         string `json:"slug"`
-				TokenAddress string `json:"token_address"`
-			} `json:"platform"`
-		} `json:"data"`
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
@@ -327,8 +340,36 @@ func (nm *NetworkMapper) fetchPlatformDataFromAPI() error {
 		return fmt.Errorf("API error: %s", mapResponse.Status.ErrorMessage)
 	}
 
+	// Cache the successful response with network TTL
+	if nm.cache != nil {
+		if err := nm.cache.SetJSON(context.Background(), cmcDataCacheKey, mapResponse, &NetworkTTLDuration); err != nil {
+			// Cache failure is not critical, continue processing
+		}
+	}
+
+	// Process the data
+	nm.processPlatformData(mapResponse.Data)
+	nm.lastFetchTime = time.Now()
+
+	return nil
+}
+
+// processPlatformData processes the platform data from API response
+func (nm *NetworkMapper) processPlatformData(data []struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Symbol   string `json:"symbol"`
+	Slug     string `json:"slug"`
+	Platform *struct {
+		ID           int    `json:"id"`
+		Name         string `json:"name"`
+		Symbol       string `json:"symbol"`
+		Slug         string `json:"slug"`
+		TokenAddress string `json:"token_address"`
+	} `json:"platform"`
+}) {
 	// Build platform cache from native tokens (tokens with no platform = native blockchain tokens)
-	for _, crypto := range mapResponse.Data {
+	for _, crypto := range data {
 		if crypto.Platform == nil {
 			// This is a native blockchain token
 			platformData := CoinMarketCapNetwork{
@@ -348,6 +389,4 @@ func (nm *NetworkMapper) fetchPlatformDataFromAPI() error {
 			nm.nativeTokenCache[networkID] = platformData.Symbol
 		}
 	}
-
-	return nil
 }
