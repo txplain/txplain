@@ -55,7 +55,7 @@ type NetworkMapper struct {
 }
 
 // NewNetworkMapper creates a new network mapper utility
-func NewNetworkMapper(apiKey string) *NetworkMapper {
+func NewNetworkMapper(apiKey string, cache Cache) *NetworkMapper {
 	return &NetworkMapper{
 		apiKey: apiKey,
 		httpClient: &http.Client{
@@ -66,13 +66,8 @@ func NewNetworkMapper(apiKey string) *NetworkMapper {
 		networkPlatformCache: make(map[string]CoinMarketCapNetwork),
 		cacheFile:            "./data/coinmarketcap_networks.json",
 		cacheDuration:        24 * time.Hour, // Cache for 24 hours
-		cache:                nil,            // Set via SetCache
+		cache:                cache,
 	}
-}
-
-// SetCache sets the cache instance for the network mapper
-func (nm *NetworkMapper) SetCache(cache Cache) {
-	nm.cache = cache
 }
 
 // GetNetworkSlug returns the CoinMarketCap network slug for a given network ID

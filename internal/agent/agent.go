@@ -23,10 +23,12 @@ type TxplainAgent struct {
 	explainer           *txtools.TransactionExplainer
 	executor            *chains.SequentialChain
 	coinMarketCapAPIKey string
+	cache               txtools.Cache
+	verbose             bool
 }
 
 // NewTxplainAgent creates a new transaction explanation agent with RPC-enhanced capabilities
-func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainAgent, error) {
+func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string, cache txtools.Cache, verbose bool) (*TxplainAgent, error) {
 	// Initialize LLM
 	llm, err := openai.New(
 		openai.WithModel("gpt-4.1-mini"),
@@ -48,14 +50,14 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 
 	// Initialize tools with RPC capabilities - this is the key enhancement!
 	// We'll create RPC-enhanced tools when we have the specific network context
-	traceDecoder := txtools.NewTraceDecoder() // Will be enhanced per request
-	logDecoder := txtools.NewLogDecoder()     // Will be enhanced per request
+	traceDecoder := txtools.NewTraceDecoder(verbose) // Will be enhanced per request
+	logDecoder := txtools.NewLogDecoder(verbose)     // Will be enhanced per request
 
 	// Initialize static context provider first (needed by transaction explainer)
-	staticProvider := txtools.NewStaticContextProvider()
+	staticProvider := txtools.NewStaticContextProvider(verbose)
 
 	// Initialize transaction explainer (now uses baggage pipeline with RAG)
-	explainer := txtools.NewTransactionExplainer(llm, staticProvider)
+	explainer := txtools.NewTransactionExplainer(llm, staticProvider, verbose)
 
 	agent := &TxplainAgent{
 		llm:                 llm,
@@ -64,14 +66,11 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string) (*TxplainA
 		logDecoder:          logDecoder,
 		explainer:           explainer,
 		coinMarketCapAPIKey: coinMarketCapAPIKey,
+		cache:               cache,
+		verbose:             verbose,
 	}
 
 	return agent, nil
-}
-
-// SetVerbose enables or disables verbose logging for the agent
-func (a *TxplainAgent) SetVerbose(verbose bool) {
-	a.explainer.SetVerbose(verbose)
 }
 
 // ExplainTransaction processes a transaction with enhanced baggage pipeline
@@ -122,23 +121,21 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	fmt.Println("\n🔧 STEP 3: Configuring processing pipeline...")
 	// Step 3: Create and configure baggage pipeline
-	pipeline := txtools.NewBaggagePipeline()
-	pipeline.SetVerbose(true) // Enable verbose logging for all pipeline steps
+	pipeline := txtools.NewBaggagePipeline(true) // Enable verbose logging for all pipeline steps
 	var contextProviders []interface{}
 
 	fmt.Println("   📥 Adding pipeline processors...")
 
 	// Add static context provider first (loads CSV data - tokens, protocols, addresses)
 	fmt.Println("      • Static Context Provider (CSV data loader)")
-	staticContextProvider := txtools.NewStaticContextProvider()
-	staticContextProvider.SetVerbose(true) // Enable verbose for debugging token data loading
+	staticContextProvider := txtools.NewStaticContextProvider(true) // Enable verbose for debugging token data loading
 	if err := pipeline.AddProcessor(staticContextProvider); err != nil {
 		return nil, fmt.Errorf("failed to add static context provider: %w", err)
 	}
 
 	// Add transaction context provider (processes raw transaction data)
 	fmt.Println("      • Transaction Context Provider")
-	transactionContextProvider := txtools.NewTransactionContextProvider()
+	transactionContextProvider := txtools.NewTransactionContextProvider(true)
 	if err := pipeline.AddProcessor(transactionContextProvider); err != nil {
 		return nil, fmt.Errorf("failed to add transaction context provider: %w", err)
 	}
@@ -146,7 +143,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add ABI resolver (runs early - fetches contract ABIs from Etherscan)
 	fmt.Println("      • ABI Resolver (Etherscan)")
-	abiResolver := txtools.NewABIResolver()
+	abiResolver := txtools.NewABIResolver(a.cache, a.verbose)
 	if err := pipeline.AddProcessor(abiResolver); err != nil {
 		return nil, fmt.Errorf("failed to add ABI resolver: %w", err)
 	}
@@ -154,7 +151,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add trace decoder (processes trace data to extract calls with ETH transfers)
 	fmt.Println("      • Trace Decoder (function calls & ETH transfers)")
-	traceDecoder := txtools.NewTraceDecoderWithRPC(client)
+	traceDecoder := txtools.NewTraceDecoderWithRPC(client, a.verbose)
 	if err := pipeline.AddProcessor(traceDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add trace decoder: %w", err)
 	}
@@ -170,7 +167,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add signature resolver (4byte.directory lookup for missing signatures)
 	fmt.Println("      • Signature Resolver (4byte.directory)")
-	signatureResolver := txtools.NewSignatureResolver()
+	signatureResolver := txtools.NewSignatureResolver(a.cache, a.verbose)
 	if err := pipeline.AddProcessor(signatureResolver); err != nil {
 		return nil, fmt.Errorf("failed to add signature resolver: %w", err)
 	}
@@ -186,8 +183,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add NFT decoder (extracts and enriches NFT transfers)
 	fmt.Println("      • NFT Decoder")
-	nftDecoder := txtools.NewNFTDecoder()
-	nftDecoder.SetRPCClient(client)
+	nftDecoder := txtools.NewNFTDecoder(a.verbose, client)
 	if err := pipeline.AddProcessor(nftDecoder); err != nil {
 		return nil, fmt.Errorf("failed to add NFT decoder: %w", err)
 	}
@@ -195,8 +191,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add token metadata enricher
 	fmt.Println("      • Token Metadata Enricher")
-	tokenMetadata := txtools.NewTokenMetadataEnricher()
-	tokenMetadata.SetRPCClient(client)
+	tokenMetadata := txtools.NewTokenMetadataEnricher(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(tokenMetadata); err != nil {
 		return nil, fmt.Errorf("failed to add token metadata enricher: %w", err)
 	}
@@ -204,7 +199,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add amounts finder (NEW - uses LLM to detect ALL relevant amounts generically)
 	fmt.Println("      • Amounts Finder (AI-powered)")
-	amountsFinder := txtools.NewAmountsFinder(a.llm)
+	amountsFinder := txtools.NewAmountsFinder(a.llm, a.verbose)
 	if err := pipeline.AddProcessor(amountsFinder); err != nil {
 		return nil, fmt.Errorf("failed to add amounts finder: %w", err)
 	}
@@ -212,8 +207,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add icon resolver (discovers token icons from TrustWallet GitHub)
 	fmt.Println("      • Icon Resolver (TrustWallet)")
-	iconResolver := txtools.NewIconResolver(staticContextProvider)
-	iconResolver.SetVerbose(true) // Enable verbose for debugging icon discovery
+	iconResolver := txtools.NewIconResolver(staticContextProvider, a.cache, a.verbose)
 	if err := pipeline.AddProcessor(iconResolver); err != nil {
 		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
 	}
@@ -222,7 +216,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	var priceLookup *txtools.ERC20PriceLookup
 	if a.coinMarketCapAPIKey != "" {
 		fmt.Println("      • ERC20 Price Lookup (CoinMarketCap)")
-		priceLookup = txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey)
+		priceLookup = txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(priceLookup); err != nil {
 			return nil, fmt.Errorf("failed to add price lookup: %w", err)
 		}
@@ -230,7 +224,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 		// Add monetary value enricher (runs after amounts_finder + price lookup)
 		fmt.Println("      • Monetary Value Enricher (AI-powered)")
-		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.coinMarketCapAPIKey)
+		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.coinMarketCapAPIKey, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
 			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)
 		}
@@ -241,8 +235,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add ENS resolver (runs after monetary enrichment)
 	fmt.Println("      • ENS Resolver")
-	ensResolver := txtools.NewENSResolver()
-	ensResolver.SetRPCClient(client)
+	ensResolver := txtools.NewENSResolver(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(ensResolver); err != nil {
 		return nil, fmt.Errorf("failed to add ENS resolver: %w", err)
 	}
@@ -250,9 +243,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add address role resolver (runs after basic data gathering, before analysis tools)
 	fmt.Println("      • Address Role Resolver (AI-powered)")
-	addressRoleResolver := txtools.NewAddressRoleResolver(a.llm)
-	addressRoleResolver.SetRPCClient(client)
-	addressRoleResolver.SetVerbose(true) // Enable verbose for debugging
+	addressRoleResolver := txtools.NewAddressRoleResolver(a.llm, a.verbose, client)
 	if err := pipeline.AddProcessor(addressRoleResolver); err != nil {
 		return nil, fmt.Errorf("failed to add address role resolver: %w", err)
 	}
@@ -260,8 +251,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add protocol resolver (probabilistic protocol detection with RAG)
 	fmt.Println("      • Protocol Resolver (AI-powered)")
-	protocolResolver := txtools.NewProtocolResolver(a.llm)
-	protocolResolver.SetConfidenceThreshold(0.6) // 60% minimum confidence
+	protocolResolver := txtools.NewProtocolResolver(a.llm, a.verbose, 0.6)
 	if err := pipeline.AddProcessor(protocolResolver); err != nil {
 		return nil, fmt.Errorf("failed to add protocol resolver: %w", err)
 	}
@@ -269,8 +259,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add tag resolver (probabilistic tag detection with RAG)
 	fmt.Println("      • Tag Resolver (AI-powered)")
-	tagResolver := txtools.NewTagResolver(a.llm)
-	tagResolver.SetConfidenceThreshold(0.6) // 60% minimum confidence
+	tagResolver := txtools.NewTagResolver(a.llm, a.verbose, 0.6)
 	if err := pipeline.AddProcessor(tagResolver); err != nil {
 		return nil, fmt.Errorf("failed to add tag resolver: %w", err)
 	}
@@ -288,8 +277,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	// Add annotation generator (runs after explanation is generated)
 	// Now uses GetPromptContext from all context providers - much simpler!
 	fmt.Println("      • Annotation Generator (AI-powered)")
-	annotationGenerator := txtools.NewAnnotationGenerator(a.llm)
-	annotationGenerator.SetVerbose(true) // Enable for debugging
+	annotationGenerator := txtools.NewAnnotationGenerator(a.llm, a.verbose)
 	if err := pipeline.AddProcessor(annotationGenerator); err != nil {
 		return nil, fmt.Errorf("failed to add annotation generator: %w", err)
 	}
@@ -420,16 +408,14 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 	}
 
 	// Step 3: Create and configure baggage pipeline WITH PROGRESS
-	pipeline := txtools.NewBaggagePipelineWithProgress(progressChan)
-	pipeline.SetVerbose(true)
+	pipeline := txtools.NewBaggagePipelineWithProgress(progressChan, a.verbose)
 	var contextProviders []interface{}
 
 	// Send progress update for pipeline setup
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding data processing tools...")
 
 	// Add static context provider first (loads CSV data - tokens, protocols, addresses)
-	staticContextProvider := txtools.NewStaticContextProvider()
-	staticContextProvider.SetVerbose(true)
+	staticContextProvider := txtools.NewStaticContextProvider(a.verbose)
 	if err := pipeline.AddProcessor(staticContextProvider); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add static context provider: %w", err))
 		return nil, fmt.Errorf("failed to add static context provider: %w", err)
@@ -437,7 +423,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add transaction context provider (processes raw transaction data)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding transaction decoder...")
-	transactionContextProvider := txtools.NewTransactionContextProvider()
+	transactionContextProvider := txtools.NewTransactionContextProvider(a.verbose)
 	if err := pipeline.AddProcessor(transactionContextProvider); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add transaction context provider: %w", err))
 		return nil, fmt.Errorf("failed to add transaction context provider: %w", err)
@@ -446,7 +432,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add ABI resolver (runs early - fetches contract ABIs from Etherscan)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding ABI resolver...")
-	abiResolver := txtools.NewABIResolver()
+	abiResolver := txtools.NewABIResolver(a.cache, a.verbose)
 	if err := pipeline.AddProcessor(abiResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add ABI resolver: %w", err))
 		return nil, fmt.Errorf("failed to add ABI resolver: %w", err)
@@ -455,7 +441,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add trace decoder (processes trace data to extract calls with ETH transfers)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding trace decoder...")
-	traceDecoder := txtools.NewTraceDecoderWithRPC(client)
+	traceDecoder := txtools.NewTraceDecoderWithRPC(client, a.verbose)
 	if err := pipeline.AddProcessor(traceDecoder); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add trace decoder: %w", err))
 		return nil, fmt.Errorf("failed to add trace decoder: %w", err)
@@ -473,7 +459,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add signature resolver (4byte.directory lookup for missing signatures)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding signature resolver...")
-	signatureResolver := txtools.NewSignatureResolver()
+	signatureResolver := txtools.NewSignatureResolver(a.cache, a.verbose)
 	if err := pipeline.AddProcessor(signatureResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add signature resolver: %w", err))
 		return nil, fmt.Errorf("failed to add signature resolver: %w", err)
@@ -491,8 +477,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add NFT decoder (extracts and enriches NFT transfers)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding NFT decoder...")
-	nftDecoder := txtools.NewNFTDecoder()
-	nftDecoder.SetRPCClient(client)
+	nftDecoder := txtools.NewNFTDecoder(a.verbose, client)
 	if err := pipeline.AddProcessor(nftDecoder); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add NFT decoder: %w", err))
 		return nil, fmt.Errorf("failed to add NFT decoder: %w", err)
@@ -501,8 +486,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add token metadata enricher
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding token metadata enricher...")
-	tokenMetadata := txtools.NewTokenMetadataEnricher()
-	tokenMetadata.SetRPCClient(client)
+	tokenMetadata := txtools.NewTokenMetadataEnricher(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(tokenMetadata); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add token metadata enricher: %w", err))
 		return nil, fmt.Errorf("failed to add token metadata enricher: %w", err)
@@ -511,7 +495,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add amounts finder (NEW - uses LLM to detect ALL relevant amounts generically)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding AI amounts finder...")
-	amountsFinder := txtools.NewAmountsFinder(a.llm)
+	amountsFinder := txtools.NewAmountsFinder(a.llm, a.verbose)
 	if err := pipeline.AddProcessor(amountsFinder); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add amounts finder: %w", err))
 		return nil, fmt.Errorf("failed to add amounts finder: %w", err)
@@ -520,8 +504,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add icon resolver (discovers token icons from TrustWallet GitHub)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding icon resolver...")
-	iconResolver := txtools.NewIconResolver(staticContextProvider)
-	iconResolver.SetVerbose(true)
+	iconResolver := txtools.NewIconResolver(staticContextProvider, a.cache, a.verbose)
 	if err := pipeline.AddProcessor(iconResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add icon resolver: %w", err))
 		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
@@ -530,7 +513,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 	// Add price lookup if API key is available (runs AFTER amounts_finder)
 	if a.coinMarketCapAPIKey != "" {
 		progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding price lookup...")
-		priceLookup := txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey)
+		priceLookup := txtools.NewERC20PriceLookup(a.coinMarketCapAPIKey, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(priceLookup); err != nil {
 			progressTracker.SendError(fmt.Errorf("failed to add price lookup: %w", err))
 			return nil, fmt.Errorf("failed to add price lookup: %w", err)
@@ -539,7 +522,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 		// Add monetary value enricher (runs after amounts_finder + price lookup)
 		progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding monetary enricher...")
-		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.coinMarketCapAPIKey)
+		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.coinMarketCapAPIKey, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
 			progressTracker.SendError(fmt.Errorf("failed to add monetary value enricher: %w", err))
 			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)
@@ -549,8 +532,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add ENS resolver (runs after monetary enrichment)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding ENS resolver...")
-	ensResolver := txtools.NewENSResolver()
-	ensResolver.SetRPCClient(client)
+	ensResolver := txtools.NewENSResolver(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(ensResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add ENS resolver: %w", err))
 		return nil, fmt.Errorf("failed to add ENS resolver: %w", err)
@@ -559,9 +541,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add address role resolver (runs after basic data gathering, before analysis tools)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding address role resolver...")
-	addressRoleResolver := txtools.NewAddressRoleResolver(a.llm)
-	addressRoleResolver.SetRPCClient(client)
-	addressRoleResolver.SetVerbose(true)
+	addressRoleResolver := txtools.NewAddressRoleResolver(a.llm, a.verbose, client)
 	if err := pipeline.AddProcessor(addressRoleResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add address role resolver: %w", err))
 		return nil, fmt.Errorf("failed to add address role resolver: %w", err)
@@ -570,8 +550,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add protocol resolver (probabilistic protocol detection with RAG)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding protocol resolver...")
-	protocolResolver := txtools.NewProtocolResolver(a.llm)
-	protocolResolver.SetConfidenceThreshold(0.6)
+	protocolResolver := txtools.NewProtocolResolver(a.llm, a.verbose, 0.6)
 	if err := pipeline.AddProcessor(protocolResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add protocol resolver: %w", err))
 		return nil, fmt.Errorf("failed to add protocol resolver: %w", err)
@@ -580,8 +559,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add tag resolver (probabilistic tag detection with RAG)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding tag resolver...")
-	tagResolver := txtools.NewTagResolver(a.llm)
-	tagResolver.SetConfidenceThreshold(0.6)
+	tagResolver := txtools.NewTagResolver(a.llm, a.verbose, 0.6)
 	if err := pipeline.AddProcessor(tagResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add tag resolver: %w", err))
 		return nil, fmt.Errorf("failed to add tag resolver: %w", err)
@@ -600,8 +578,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add annotation generator (runs after explanation is generated)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding annotation generator...")
-	annotationGenerator := txtools.NewAnnotationGenerator(a.llm)
-	annotationGenerator.SetVerbose(true)
+	annotationGenerator := txtools.NewAnnotationGenerator(a.llm, a.verbose)
 	if err := pipeline.AddProcessor(annotationGenerator); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add annotation generator: %w", err))
 		return nil, fmt.Errorf("failed to add annotation generator: %w", err)

@@ -155,6 +155,14 @@ const TransactionForm = ({ networks, loading, onSubmit }: TransactionFormProps) 
           >
             0x34a2d414...29518c227 (Bridge Deposit)
           </button>
+          <button
+            type="button"
+            onClick={() => setTxHash('0xc2d06d1d2da6ecfa2b500e821852b8ced9d4782098d62f3d954c90fcd89fce64')}
+            className="text-sm text-blue-600 hover:text-blue-800 block truncate max-w-full"
+            disabled={loading}
+          >
+            0xc2d06d1d...fcd89fce64 (Cross-chain Verification)
+          </button>
         </div>
       </div>
     </div>

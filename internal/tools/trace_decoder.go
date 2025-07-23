@@ -19,22 +19,19 @@ type TraceDecoder struct {
 }
 
 // NewTraceDecoder creates a new TraceDecoder tool
-func NewTraceDecoder() *TraceDecoder {
-	return &TraceDecoder{}
-}
-
-// NewTraceDecoderWithRPC creates a TraceDecoder with RPC capabilities
-func NewTraceDecoderWithRPC(rpcClient *rpc.Client) *TraceDecoder {
+func NewTraceDecoder(verbose bool) *TraceDecoder {
 	return &TraceDecoder{
-		rpcClient:         rpcClient,
-		signatureResolver: rpc.NewSignatureResolver(rpcClient, true), // Enable 4byte API
-		verbose:           false,
+		verbose: verbose,
 	}
 }
 
-// SetVerbose enables or disables verbose logging
-func (t *TraceDecoder) SetVerbose(verbose bool) {
-	t.verbose = verbose
+// NewTraceDecoderWithRPC creates a TraceDecoder with RPC capabilities
+func NewTraceDecoderWithRPC(rpcClient *rpc.Client, verbose bool) *TraceDecoder {
+	return &TraceDecoder{
+		rpcClient:         rpcClient,
+		signatureResolver: rpc.NewSignatureResolver(rpcClient, true), // Enable 4byte API
+		verbose:           verbose,
+	}
 }
 
 // Name returns the tool name

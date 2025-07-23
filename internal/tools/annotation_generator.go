@@ -28,16 +28,11 @@ func getKeys(m map[string]interface{}) []string {
 }
 
 // NewAnnotationGenerator creates a new annotation generator
-func NewAnnotationGenerator(llm llms.Model) *AnnotationGenerator {
+func NewAnnotationGenerator(llm llms.Model, verbose bool) *AnnotationGenerator {
 	return &AnnotationGenerator{
 		llm:     llm,
-		verbose: false,
+		verbose: verbose,
 	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (ag *AnnotationGenerator) SetVerbose(verbose bool) {
-	ag.verbose = verbose
 }
 
 // Dependencies returns the tools this processor depends on

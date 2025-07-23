@@ -41,11 +41,11 @@ type ProbabilisticProtocol struct {
 }
 
 // NewProtocolResolver creates a new probabilistic protocol resolver
-func NewProtocolResolver(llm llms.Model) *ProtocolResolver {
+func NewProtocolResolver(llm llms.Model, verbose bool, confidenceThreshold float64) *ProtocolResolver {
 	resolver := &ProtocolResolver{
 		llm:                 llm,
-		verbose:             false,
-		confidenceThreshold: 0.6, // 60% minimum confidence
+		verbose:             verbose,
+		confidenceThreshold: confidenceThreshold,
 		protocolKnowledge:   []ProtocolKnowledge{},
 	}
 
@@ -58,16 +58,6 @@ func NewProtocolResolver(llm llms.Model) *ProtocolResolver {
 	}
 
 	return resolver
-}
-
-// SetVerbose enables or disables verbose logging
-func (p *ProtocolResolver) SetVerbose(verbose bool) {
-	p.verbose = verbose
-}
-
-// SetConfidenceThreshold sets minimum confidence required for protocol detection
-func (p *ProtocolResolver) SetConfidenceThreshold(threshold float64) {
-	p.confidenceThreshold = threshold
 }
 
 // Name returns the tool name

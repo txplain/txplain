@@ -39,11 +39,11 @@ type ProbabilisticTag struct {
 }
 
 // NewTagResolver creates a new probabilistic tag resolver
-func NewTagResolver(llm llms.Model) *TagResolver {
+func NewTagResolver(llm llms.Model, verbose bool, confidenceThreshold float64) *TagResolver {
 	resolver := &TagResolver{
 		llm:                 llm,
-		verbose:             false,
-		confidenceThreshold: 0.6, // 60% minimum confidence
+		verbose:             verbose,
+		confidenceThreshold: confidenceThreshold,
 		tagKnowledge:        []TagKnowledge{},
 	}
 
@@ -56,16 +56,6 @@ func NewTagResolver(llm llms.Model) *TagResolver {
 	}
 
 	return resolver
-}
-
-// SetVerbose enables or disables verbose logging
-func (t *TagResolver) SetVerbose(verbose bool) {
-	t.verbose = verbose
-}
-
-// SetConfidenceThreshold sets minimum confidence required for tag detection
-func (t *TagResolver) SetConfidenceThreshold(threshold float64) {
-	t.confidenceThreshold = threshold
 }
 
 // Name returns the tool name

@@ -1,0 +1,17 @@
+services:
+  postgresql:
+    container_name: txplain-postgresql
+    image: postgres:13.4
+    restart: always
+    environment:
+      POSTGRES_USER: txplain
+      POSTGRES_PASSWORD: txplain
+      POSTGRES_DB: txplain
+    ports:
+      - "5432:5432"
+    networks:
+      txplain:
+
+networks:
+  txplain:
+    driver: bridge

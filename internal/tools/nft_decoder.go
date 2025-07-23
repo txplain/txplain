@@ -31,20 +31,11 @@ type NFTTransfer struct {
 }
 
 // NewNFTDecoder creates a new NFT decoder
-func NewNFTDecoder() *NFTDecoder {
+func NewNFTDecoder(verbose bool, rpcClient *rpc.Client) *NFTDecoder {
 	return &NFTDecoder{
-		verbose: false,
+		rpcClient: rpcClient,
+		verbose:   verbose,
 	}
-}
-
-// SetRPCClient sets the RPC client for network-specific operations
-func (n *NFTDecoder) SetRPCClient(client *rpc.Client) {
-	n.rpcClient = client
-}
-
-// SetVerbose enables or disables verbose logging
-func (n *NFTDecoder) SetVerbose(verbose bool) {
-	n.verbose = verbose
 }
 
 // Name returns the processor name

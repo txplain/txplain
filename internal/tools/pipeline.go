@@ -18,25 +18,20 @@ type BaggagePipeline struct {
 }
 
 // NewBaggagePipeline creates a new baggage pipeline
-func NewBaggagePipeline() *BaggagePipeline {
+func NewBaggagePipeline(verbose bool) *BaggagePipeline {
 	return &BaggagePipeline{
 		processors: make(map[string]Tool),
-		verbose:    true, // Default to verbose for better debugging
+		verbose:    verbose,
 	}
 }
 
 // NewBaggagePipelineWithProgress creates a new pipeline with progress tracking
-func NewBaggagePipelineWithProgress(progressChan chan<- models.ProgressEvent) *BaggagePipeline {
+func NewBaggagePipelineWithProgress(progressChan chan<- models.ProgressEvent, verbose bool) *BaggagePipeline {
 	return &BaggagePipeline{
 		processors:      make(map[string]Tool),
-		verbose:         true,
+		verbose:         verbose,
 		progressTracker: models.NewProgressTracker(progressChan),
 	}
-}
-
-// SetVerbose enables or disables verbose logging
-func (p *BaggagePipeline) SetVerbose(verbose bool) {
-	p.verbose = verbose
 }
 
 // AddProcessor adds a processor to the pipeline
@@ -47,11 +42,6 @@ func (p *BaggagePipeline) AddProcessor(processor Tool) error {
 	}
 
 	p.processors[name] = processor
-
-	// Set verbose mode on the processor if it supports it
-	if verboseProcessor, ok := processor.(interface{ SetVerbose(bool) }); ok {
-		verboseProcessor.SetVerbose(p.verbose)
-	}
 
 	// Recalculate execution order
 	return p.calculateOrder()

@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/txplain/txplain/internal/agent"
 	"github.com/txplain/txplain/internal/models"
+	"github.com/txplain/txplain/internal/tools"
 )
 
 // Server represents the MCP server
@@ -43,9 +44,9 @@ type MCPError struct {
 }
 
 // NewServer creates a new MCP server
-func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string) (*Server, error) {
+func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string, cache tools.Cache, verbose bool) (*Server, error) {
 	// Initialize the Txplain agent
-	txAgent, err := agent.NewTxplainAgent(openaiAPIKey, coinMarketCapAPIKey)
+	txAgent, err := agent.NewTxplainAgent(openaiAPIKey, coinMarketCapAPIKey, cache, verbose)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize agent: %w", err)
 	}

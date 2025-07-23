@@ -17,26 +17,12 @@ type ENSResolver struct {
 }
 
 // NewENSResolver creates a new ENS resolver
-func NewENSResolver() *ENSResolver {
+func NewENSResolver(cache Cache, verbose bool, rpcClient *rpc.Client) *ENSResolver {
 	return &ENSResolver{
-		verbose: false,
-		cache:   nil, // Set via SetCache
+		rpcClient: rpcClient,
+		verbose:   verbose,
+		cache:     cache,
 	}
-}
-
-// SetRPCClient sets the RPC client for ENS resolution
-func (e *ENSResolver) SetRPCClient(client *rpc.Client) {
-	e.rpcClient = client
-}
-
-// SetCache sets the cache instance for the ENS resolver
-func (e *ENSResolver) SetCache(cache Cache) {
-	e.cache = cache
-}
-
-// SetVerbose enables or disables verbose logging
-func (e *ENSResolver) SetVerbose(verbose bool) {
-	e.verbose = verbose
 }
 
 // Name returns the tool name
@@ -136,7 +122,7 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 					networkID = int64(nid)
 				}
 			}
-			
+
 			cacheKey := fmt.Sprintf(ENSNameKeyPattern, networkID, strings.ToLower(address))
 			if err := e.cache.GetJSON(ctx, cacheKey, &ensName); err == nil {
 				if e.verbose {
@@ -151,7 +137,7 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 					}
 					continue // Skip this address if resolution fails
 				}
-				
+
 				// Cache successful result (including empty results to avoid repeated lookups)
 				if cacheErr := e.cache.SetJSON(ctx, cacheKey, ensName, &ENSTTLDuration); cacheErr != nil {
 					if e.verbose {
