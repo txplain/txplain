@@ -302,22 +302,37 @@ func (ac *AnnotationContext) AddAmount(amount, symbol, usdValue, description str
 	})
 }
 
+// AddressParticipant represents an address involved in the transaction with its role and metadata
+type AddressParticipant struct {
+	Address     string                 `json:"address"`
+	Role        string                 `json:"role"`                  // e.g., "Token Trader", "DEX Router", "Token Contract (USDT)"
+	Category    string                 `json:"category"`              // e.g., "user", "protocol", "token"
+	Type        string                 `json:"type"`                  // "EOA" or "Contract"
+	ENSName     string                 `json:"ens_name,omitempty"`    // ENS name if available
+	Name        string                 `json:"name,omitempty"`        // Human-readable name (from token metadata, protocol names, etc.)
+	Icon        string                 `json:"icon,omitempty"`        // Icon URL if available
+	Link        string                 `json:"link,omitempty"`        // Explorer link
+	Description string                 `json:"description,omitempty"` // Additional context
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`    // Additional data
+}
+
 // ExplanationResult holds the final narrative and metadata
 type ExplanationResult struct {
-	TxHash      string                 `json:"tx_hash"`
-	NetworkID   int64                  `json:"network_id"`
-	Summary     string                 `json:"summary"`   // Human-readable description
-	Transfers   []TokenTransfer        `json:"transfers"` // All transfers in the transaction
-	GasUsed     uint64                 `json:"gas_used"`
-	GasPrice    string                 `json:"gas_price"`
-	Status      string                 `json:"status"` // success, failed, reverted
-	Timestamp   time.Time              `json:"timestamp"`
-	BlockNumber uint64                 `json:"block_number"`
-	Links       map[string]string      `json:"links"`           // Map of entity → URL
-	Risks       []string               `json:"risks,omitempty"` // Potential risks or warnings
-	Tags        []string               `json:"tags,omitempty"`  // Transaction categorization tags
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
-	Annotations []Annotation           `json:"annotations,omitempty"` // Interactive annotations for the UI
+	TxHash       string                 `json:"tx_hash"`
+	NetworkID    int64                  `json:"network_id"`
+	Summary      string                 `json:"summary"`      // Human-readable description
+	Participants []AddressParticipant   `json:"participants"` // All addresses involved with their roles
+	Transfers    []TokenTransfer        `json:"transfers"`    // All transfers in the transaction
+	GasUsed      uint64                 `json:"gas_used"`
+	GasPrice     string                 `json:"gas_price"`
+	Status       string                 `json:"status"` // success, failed, reverted
+	Timestamp    time.Time              `json:"timestamp"`
+	BlockNumber  uint64                 `json:"block_number"`
+	Links        map[string]string      `json:"links"`           // Map of entity → URL (kept for backward compatibility)
+	Risks        []string               `json:"risks,omitempty"` // Potential risks or warnings
+	Tags         []string               `json:"tags,omitempty"`  // Transaction categorization tags
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Annotations  []Annotation           `json:"annotations,omitempty"` // Interactive annotations for the UI
 }
 
 // DecodedData contains the processed transaction data

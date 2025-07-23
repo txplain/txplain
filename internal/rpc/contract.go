@@ -338,6 +338,11 @@ func (c *Client) getCode(ctx context.Context, address string) (string, error) {
 	return code, nil
 }
 
+// GetCode fetches contract bytecode (public method)
+func (c *Client) GetCode(ctx context.Context, address string) (string, error) {
+	return c.getCode(ctx, address)
+}
+
 // decodeString decodes a hex string from contract call result
 func (c *Client) decodeString(hexData string) string {
 	if len(hexData) < 2 {

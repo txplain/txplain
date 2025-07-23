@@ -288,118 +288,134 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
         </div>
       )}
 
-      {/* Address Roles & Links */}
-      {result.links && Object.keys(result.links).length > 0 && (
+      {/* Transaction Participants */}
+      {result.participants && result.participants.length > 0 && (
         <div className="bg-white rounded-lg shadow-lg p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction Participants</h3>
           <div className="space-y-3">
-            {Object.entries(result.links).map(([role, url], index) => {
-              const isMainTransaction = role === "Main Transaction"
+            {result.participants.map((participant, index) => {
+              // Deterministic color assignment based on category name hash
+              const getCategoryColor = (cat: string) => getColorFromText(cat, 'bg')
               
-              // Get address categories from metadata if available
-              const addressCategories = result.metadata?.address_categories || {}
-              
-              // Find the category for this role by looking up the address in address categories
-              const addressMatch = url.match(/address\/([^/?]+)/) || url.match(/tx\/([^/?]+)/)
-              const address = addressMatch ? addressMatch[1] : ''
-              
-              let category = 'other' // default fallback
-              
-              if (isMainTransaction) {
-                category = 'transaction'
-              } else if (address) {
-                // Find which category this address belongs to
-                for (const [cat, addresses] of Object.entries(addressCategories)) {
-                  if (Array.isArray(addresses)) {
-                    const found = addresses.find((addr: { address?: string; role?: string }) => 
-                      addr.address && addr.address.toLowerCase() === address.toLowerCase()
-                    )
-                    if (found) {
-                      category = cat
-                      break
-                    }
-                  }
-                }
-              }
-              
-               // Deterministic color assignment based on category name hash
-               const getCategoryColor = (cat: string) => getColorFromText(cat, 'bg')
-               
-               // Deterministic text color based on category
-               const getCategoryTextColor = (cat: string) => getColorFromText(cat, 'text')
+              // Deterministic text color based on category
+              const getCategoryTextColor = (cat: string) => getColorFromText(cat, 'text')
               
               return (
                 <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
                   <div className="flex items-center space-x-3">
-                    {/* Role Icon */}
-                    <div className={`flex-shrink-0 w-2 h-2 rounded-full ${getCategoryColor(category)}`}></div>
+                    {/* Category Icon */}
+                    <div className={`flex-shrink-0 w-2 h-2 rounded-full ${getCategoryColor(participant.category)}`}></div>
                     
-                    {/* Role & Address Info */}
+                    {/* Participant Info */}
                     <div className="flex-1">
-                      <div className={`font-medium ${getCategoryTextColor(category)}`}>
-                        {role}
+                      <div className={`font-medium ${getCategoryTextColor(participant.category)}`}>
+                        {participant.role}
                       </div>
-                      {address && address !== role && (
-                        <div className="text-xs text-gray-500 font-mono">
-                          {formatAddress(address)}
+                      <div className="text-xs text-gray-500 font-mono">
+                        {formatAddress(participant.address)}
+                        {participant.ens_name && (
+                          <span className="ml-2 text-blue-600 font-sans">
+                            ({participant.ens_name})
+                          </span>
+                        )}
+                      </div>
+                      {participant.name && (
+                        <div className="text-xs text-gray-600 mt-1">
+                          {participant.name}
                         </div>
                       )}
+                      <div className="text-xs text-gray-400 mt-1">
+                        {participant.type} • {participant.category}
+                      </div>
                     </div>
                   </div>
                   
                   {/* Link Button */}
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-shrink-0 inline-flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 hover:text-blue-700 transition-colors"
-                  >
-                    View
-                    <svg
-                      className="w-3 h-3 ml-1"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      xmlns="http://www.w3.org/2000/svg"
+                  {participant.link && (
+                    <a
+                      href={participant.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-shrink-0 inline-flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 hover:text-blue-700 transition-colors"
                     >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-                      />
-                    </svg>
-                  </a>
+                      View
+                      <svg
+                        className="w-3 h-3 ml-1"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                        />
+                      </svg>
+                    </a>
+                  )}
                 </div>
               )
             })}
           </div>
           
-          {/* Dynamic Legend - only show categories that are actually present */}
+          {/* Category Legend */}
           <div className="mt-4 pt-3 border-t border-gray-200">
             <div className="flex flex-wrap gap-4 text-xs text-gray-600">
-              {/* Always show transaction if we have links */}
-              <div className="flex items-center space-x-1">
-                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                <span>Transaction</span>
-              </div>
-              
-              {/* Show categories from metadata */}
-              {Object.entries(result.metadata?.address_categories || {}).map(([category, addresses]) => {
-                if (Array.isArray(addresses) && addresses.length > 0) {
-                  // Same deterministic color generation as above
-                  const getCategoryColor = (cat: string) => getColorFromText(cat, 'bg')
-                  
-                  return (
-                    <div key={category} className="flex items-center space-x-1">
-                      <div className={`w-2 h-2 rounded-full ${getCategoryColor(category)}`}></div>
-                      <span className="capitalize">{category}</span>
-                    </div>
-                  )
-                }
-                return null
+              {/* Show all unique categories from participants */}
+              {[...new Set(result.participants.map(p => p.category))].map((category) => {
+                const getCategoryColor = (cat: string) => getColorFromText(cat, 'bg')
+                
+                return (
+                  <div key={category} className="flex items-center space-x-1">
+                    <div className={`w-2 h-2 rounded-full ${getCategoryColor(category)}`}></div>
+                    <span className="capitalize">{category}</span>
+                  </div>
+                )
               })}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fallback: Address Roles & Links (for backward compatibility) */}
+      {(!result.participants || result.participants.length === 0) && result.links && Object.keys(result.links).length > 0 && (
+        <div className="bg-white rounded-lg shadow-lg p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction Links</h3>
+          <div className="space-y-3">
+            {Object.entries(result.links).map(([role, url], index) => (
+              <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                <div className="flex items-center space-x-3">
+                  <div className="flex-shrink-0 w-2 h-2 rounded-full bg-gray-400"></div>
+                  <div className="flex-1">
+                    <div className="font-medium text-gray-900">{role}</div>
+                  </div>
+                </div>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-shrink-0 inline-flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 hover:text-blue-700 transition-colors"
+                >
+                  View
+                  <svg
+                    className="w-3 h-3 ml-1"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                    />
+                  </svg>
+                </a>
+              </div>
+            ))}
           </div>
         </div>
       )}
