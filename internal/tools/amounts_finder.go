@@ -92,6 +92,11 @@ func (a *AmountsFinder) calculateGasFee(baggage map[string]interface{}) *Detecte
 	// Calculate gas fee: gasUsed * effectiveGasPrice
 	gasFeeWei := new(big.Int).Mul(gasUsed, effectiveGasPrice)
 
+	if a.verbose {
+		fmt.Printf("🔍 GAS_FEE_DEBUG: gasUsed=%s, effectiveGasPrice=%s, gasFeeWei=%s\n", 
+			gasUsed.String(), effectiveGasPrice.String(), gasFeeWei.String())
+	}
+
 	// Get transaction sender who paid the gas
 	fromAddress := ""
 	if from, ok := receipt["from"].(string); ok {

@@ -520,7 +520,10 @@ func (p *ProtocolResolver) GetRagContext(ctx context.Context, baggage map[string
 				ID:      fmt.Sprintf("protocol_%s", strings.ReplaceAll(strings.ToLower(protocol.Name), " ", "_")),
 				Type:    "protocol",
 				Title:   fmt.Sprintf("%s Protocol", protocol.Name),
-				Content: fmt.Sprintf("Protocol %s is a %s %s of type %s with confidence %.2f", protocol.Name, protocol.Type, protocol.Version, protocol.Category, protocol.Confidence),
+				Content: fmt.Sprintf(
+					"Protocol %s is a %s %s of type %s with confidence %.2f",
+					protocol.Name, protocol.Type, protocol.Version, protocol.Category, protocol.Confidence,
+				),
 				Metadata: map[string]interface{}{
 					"name":       protocol.Name,
 					"type":       protocol.Type,
