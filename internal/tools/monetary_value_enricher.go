@@ -454,6 +454,18 @@ func (m *MonetaryValueEnricher) convertAmountToTokens(amountStr string, decimals
 		return 0
 	}
 
+	// ===== SPECIAL DEBUG FOR TRACKING 1000x ERROR =====
+	if m.verbose {
+		fmt.Printf("🔍 CONVERSION_DEBUG: Converting amount '%s' with %d decimals\n", amountStr, decimals)
+
+		// Check if this is the problematic WETH amount
+		if amountStr == "26396411675555698400" || strings.HasSuffix(amountStr, "26396411675555698400") {
+			fmt.Printf("🚨 WETH_CONVERSION_DEBUG: Found the problematic WETH amount!\n")
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Input amount string: '%s'\n", amountStr)
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Decimals: %d\n", decimals)
+		}
+	}
+
 	// Handle hex strings
 	if strings.HasPrefix(amountStr, "0x") {
 		// Convert hex to decimal
@@ -462,6 +474,10 @@ func (m *MonetaryValueEnricher) convertAmountToTokens(amountStr string, decimals
 			return 0
 		}
 		amountStr = amountBig.String()
+
+		if m.verbose && (amountStr == "26396411675555698400" || strings.HasSuffix(amountStr, "26396411675555698400")) {
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Converted from hex to decimal: '%s'\n", amountStr)
+		}
 	}
 
 	// Parse the amount as big.Int
@@ -477,10 +493,34 @@ func (m *MonetaryValueEnricher) convertAmountToTokens(amountStr string, decimals
 		// Create divisor (10^decimals) as big.Float for precise division
 		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
 		amountFloat.Quo(amountFloat, divisor)
+
+		if m.verbose && (amountStr == "26396411675555698400" || strings.HasSuffix(amountStr, "26396411675555698400")) {
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Created divisor: 10^%d = %s\n", decimals, divisor.String())
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Before division: %s\n", new(big.Float).SetInt(amountBig).String())
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: After division: %s\n", amountFloat.String())
+		}
 	}
 
 	// Convert to float64 only at the end
 	result, _ := amountFloat.Float64()
+
+	if m.verbose {
+		fmt.Printf("🔍 CONVERSION_DEBUG: Final result: %.18f\n", result)
+
+		// Special debugging for the WETH issue
+		if amountStr == "26396411675555698400" || strings.HasSuffix(amountStr, "26396411675555698400") {
+			fmt.Printf("🚨 WETH_CONVERSION_DEBUG: FINAL RESULT: %.18f\n", result)
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Expected ~0.026396 but got: %.6f\n", result)
+
+			// Manual calculation for verification
+			manual := new(big.Float).SetInt(amountBig)
+			divisor18 := new(big.Float).SetFloat64(1e18)
+			manualResult := new(big.Float).Quo(manual, divisor18)
+			manualFloat, _ := manualResult.Float64()
+			fmt.Printf("🔍 WETH_CONVERSION_DEBUG: Manual verification with float64(1e18): %.18f\n", manualFloat)
+		}
+	}
+
 	return result
 }
 

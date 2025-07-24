@@ -114,8 +114,8 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
+	// Create context with timeout - increased from 300s to 18 minutes to accommodate LLM retry logic
+	ctx, cancel := context.WithTimeout(r.Context(), 18*60*time.Second)
 	defer cancel()
 
 	// Process the transaction
@@ -125,7 +125,7 @@ func (s *Server) handleExplainTransaction(w http.ResponseWriter, r *http.Request
 		log.Printf("ExplainTransaction failed: %v", err)
 		// Check for specific error types to provide better error messages
 		if ctx.Err() == context.DeadlineExceeded {
-			s.writeErrorResponse(w, http.StatusRequestTimeout, "Transaction analysis timed out after 300 seconds", err)
+			s.writeErrorResponse(w, http.StatusRequestTimeout, "Transaction analysis timed out after 18 minutes", err)
 		} else if ctx.Err() == context.Canceled {
 			s.writeErrorResponse(w, http.StatusRequestTimeout, "Request was canceled", err)
 		} else if strings.Contains(err.Error(), "context canceled") {
@@ -257,6 +257,8 @@ func (s *Server) handleExplainTransactionSSE(w http.ResponseWriter, r *http.Requ
 	go func() {
 		defer close(progressChan)
 
+		// ExplainTransactionWithProgress inherits r.Context() which has the 20-minute HTTP server timeout
+		// This provides the same timeout hierarchy as the non-SSE endpoint
 		result, err := s.agent.ExplainTransactionWithProgress(r.Context(), &request, progressChan)
 		if err != nil {
 			// CRITICAL FIX: Ensure error is sent to client before channel closes
@@ -508,11 +510,12 @@ func (s *Server) Start() error {
 		Addr:    s.address,
 		Handler: s.router,
 
-		// Security settings optimized for SSE streaming
-		ReadTimeout:       300 * time.Second, // 5 minutes for complex requests
-		WriteTimeout:      300 * time.Second, // Long timeout for AI processing
-		IdleTimeout:       300 * time.Second, // 5 minutes idle timeout
-		ReadHeaderTimeout: 30 * time.Second,  // Prevent slow header attacks
+		// Timeout hierarchy for robust LLM processing
+		// Top level: 20 minutes - generous timeout for complex transactions with multiple LLM calls
+		ReadTimeout:       20 * 60 * time.Second, // 20 minutes for complex requests with LLM processing
+		WriteTimeout:      20 * 60 * time.Second, // 20 minutes for AI processing and streaming responses
+		IdleTimeout:       20 * 60 * time.Second, // 20 minutes idle timeout
+		ReadHeaderTimeout: 30 * time.Second,      // Keep short to prevent slow header attacks
 
 		// Disable HTTP/2 for better SSE compatibility if needed
 		// TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),

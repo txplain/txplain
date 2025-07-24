@@ -202,6 +202,7 @@ func (a *ABIResolver) Process(ctx context.Context, baggage map[string]interface{
 
 	// Store resolved contracts in baggage
 	baggage["resolved_contracts"] = resolvedContracts
+	baggage["contract_addresses"] = contractAddresses
 
 	if a.verbose {
 		verifiedCount := 0

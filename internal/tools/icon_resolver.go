@@ -144,7 +144,7 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 func (ir *IconResolver) getTrustWalletIcon(ctx context.Context, address string) string {
 	// Get network ID from baggage for proper chain slug
 	networkID := ir.getNetworkIDFromBaggage()
-	
+
 	// Check cache first if available
 	if ir.cache != nil {
 		cacheKey := fmt.Sprintf("trustwallet-icon:%d:%s", networkID, strings.ToLower(address))
@@ -221,7 +221,7 @@ func (ir *IconResolver) buildTrustWalletIconURL(address string, networkID int64)
 		// Fall back to ethereum for backward compatibility
 		chainSlug = "ethereum"
 	}
-	
+
 	return fmt.Sprintf("https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/%s/assets/%s/logo.png", chainSlug, address)
 }
 
@@ -236,16 +236,16 @@ func (ir *IconResolver) getTrustWalletChainSlug(networkID int64) (string, error)
 
 	// Fallback to common network mappings if not in env
 	fallbackMappings := map[int64]string{
-		1:     "ethereum",  // Ethereum
-		137:   "polygon",   // Polygon
+		1:     "ethereum",   // Ethereum
+		137:   "polygon",    // Polygon
 		56:    "smartchain", // BSC (TrustWallet uses "smartchain" for BSC)
 		43114: "avalanchec", // Avalanche (TrustWallet uses "avalanchec")
-		250:   "fantom",    // Fantom
-		42161: "arbitrum",  // Arbitrum
-		10:    "optimism",  // Optimism
-		8453:  "base",      // Base
-		25:    "cronos",    // Cronos
-		100:   "xdai",      // Gnosis Chain (xDAI)
+		250:   "fantom",     // Fantom
+		42161: "arbitrum",   // Arbitrum
+		10:    "optimism",   // Optimism
+		8453:  "base",       // Base
+		25:    "cronos",     // Cronos
+		100:   "xdai",       // Gnosis Chain (xDAI)
 	}
 
 	if chainSlug, exists := fallbackMappings[networkID]; exists {

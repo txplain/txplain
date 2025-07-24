@@ -43,44 +43,44 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
     return colors[Math.abs(hash) % colors.length]
   }
 
-  const formatAmount = (amount: string, symbol?: string) => {
-    if (!amount || amount === '0x' || amount === '0x0') return '0'
+  // const formatAmount = (amount: string, symbol?: string) => {
+  //   if (!amount || amount === '0x' || amount === '0x0') return '0'
     
-    // Handle hex amounts
-    if (amount.startsWith('0x')) {
-      try {
-        const hexValue = amount.slice(2)
-        // Check if it's all zeros
-        if (hexValue.replace(/0/g, '') === '') return '0'
+  //   // Handle hex amounts
+  //   if (amount.startsWith('0x')) {
+  //     try {
+  //       const hexValue = amount.slice(2)
+  //       // Check if it's all zeros
+  //       if (hexValue.replace(/0/g, '') === '') return '0'
         
-        // Use BigInt for large numbers instead of parseInt
-        const bigNum = BigInt('0x' + hexValue)
-        if (bigNum === BigInt(0)) return '0'
+  //       // Use BigInt for large numbers instead of parseInt
+  //       const bigNum = BigInt('0x' + hexValue)
+  //       if (bigNum === BigInt(0)) return '0'
         
-        // For display, just show the decimal value (raw amount, no decimals applied)
-        const numStr = bigNum.toString()
-        if (symbol) {
-          return `${numStr} ${symbol}`
-        }
-        return numStr
-      } catch {
-        return '0'
-      }
-    }
+  //       // For display, just show the decimal value (raw amount, no decimals applied)
+  //       const numStr = bigNum.toString()
+  //       if (symbol) {
+  //         return `${numStr} ${symbol}`
+  //       }
+  //       return numStr
+  //     } catch {
+  //       return '0'
+  //     }
+  //   }
     
-    // Handle regular numeric strings
-    try {
-      const num = parseFloat(amount)
-      if (num === 0) return '0'
+  //   // Handle regular numeric strings
+  //   try {
+  //     const num = parseFloat(amount)
+  //     if (num === 0) return '0'
       
-      if (symbol) {
-        return `${amount} ${symbol}`
-      }
-      return amount
-    } catch {
-      return amount || '0'
-    }
-  }
+  //     if (symbol) {
+  //       return `${amount} ${symbol}`
+  //     }
+  //     return amount
+  //   } catch {
+  //     return amount || '0'
+  //   }
+  // }
 
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
@@ -128,7 +128,7 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
       </div>
 
       {/* Token Transfers */}
-      {result.transfers && result.transfers.length > 0 && (
+      {/* {result.transfers && result.transfers.length > 0 && (
         <div className="bg-white rounded-lg shadow-lg p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Token Transfers</h3>
           <div className="space-y-3">
@@ -252,7 +252,7 @@ const ResultsDisplay = ({ result }: ResultsDisplayProps) => {
             </div>
           )}
         </div>
-      )}
+      )} */}
 
 
 

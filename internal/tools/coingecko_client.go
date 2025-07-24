@@ -91,14 +91,29 @@ func (c *CoingeckoClient) GetNetworkSlug(networkID int64) (string, error) {
 
 // GetTokenPrice fetches token price by contract address
 func (c *CoingeckoClient) GetTokenPrice(ctx context.Context, networkID int64, contractAddress string) (*CoingeckoTokenPriceResult, error) {
+	// PRICE_DEBUG: Add debugging for token price requests
+	if c.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: GetTokenPrice called for networkID=%d, contract=%s\n", networkID, contractAddress)
+	}
+
 	if !c.IsAvailable() {
+		if c.verbose {
+			fmt.Printf("🔍 PRICE_DEBUG: Coingecko API key not configured\n")
+		}
 		return nil, fmt.Errorf("Coingecko API key not configured")
 	}
 
 	// Get network slug
 	networkSlug, err := c.GetNetworkSlug(networkID)
 	if err != nil {
+		if c.verbose {
+			fmt.Printf("🔍 PRICE_DEBUG: Failed to get network slug for networkID=%d: %v\n", networkID, err)
+		}
 		return nil, err
+	}
+
+	if c.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: Using network slug: %s for networkID=%d\n", networkSlug, networkID)
 	}
 
 	// Check cache first
@@ -117,25 +132,54 @@ func (c *CoingeckoClient) GetTokenPrice(ctx context.Context, networkID int64, co
 	url := fmt.Sprintf("https://api.coingecko.com/api/v3/onchain/simple/networks/%s/token_price/%s",
 		networkSlug, strings.ToLower(contractAddress))
 
+	if c.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: Making API call to: %s\n", url)
+	}
+
 	body, err := c.makeRequest(ctx, url)
 	if err != nil {
+		if c.verbose {
+			fmt.Printf("🔍 PRICE_DEBUG: API request failed for %s: %v\n", contractAddress, err)
+		}
 		return nil, fmt.Errorf("failed to fetch token price: %w", err)
+	}
+
+	if c.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: API response received (length: %d bytes)\n", len(body))
 	}
 
 	var response CoingeckoTokenPriceResponse
 	if err := json.Unmarshal(body, &response); err != nil {
+		if c.verbose {
+			fmt.Printf("🔍 PRICE_DEBUG: Failed to parse JSON response for %s: %v\n", contractAddress, err)
+			fmt.Printf("🔍 PRICE_DEBUG: Raw response: %s\n", string(body))
+		}
 		return nil, fmt.Errorf("failed to parse price response: %w", err)
+	}
+
+	if c.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: Available token prices in response: %v\n", response.Data.Attributes.TokenPrices)
 	}
 
 	priceStr, exists := response.Data.Attributes.TokenPrices[strings.ToLower(contractAddress)]
 	if !exists {
+		if c.verbose {
+			fmt.Printf("🔍 PRICE_DEBUG: Price not found for token %s in response. Available tokens: %v\n", contractAddress, response.Data.Attributes.TokenPrices)
+		}
 		return nil, fmt.Errorf("price not found for token %s", contractAddress)
 	}
 
 	// Parse price from string
 	var price float64
 	if _, err := fmt.Sscanf(priceStr, "%f", &price); err != nil {
+		if c.verbose {
+			fmt.Printf("🔍 PRICE_DEBUG: Failed to parse price string '%s' for %s: %v\n", priceStr, contractAddress, err)
+		}
 		return nil, fmt.Errorf("failed to parse price %s: %w", priceStr, err)
+	}
+
+	if c.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: Successfully parsed price for %s: $%.6f\n", contractAddress, price)
 	}
 
 	tokenPrice := &CoingeckoTokenPriceResult{

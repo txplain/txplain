@@ -122,6 +122,19 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 
 	// Get token metadata from baggage
 	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
+
+	// PRICE_DEBUG: Add detailed debugging for token detection
+	if t.verbose {
+		fmt.Printf("🔍 PRICE_DEBUG: baggage keys available: %v\n", getBaggageKeys(baggage))
+		fmt.Printf("🔍 PRICE_DEBUG: token_metadata exists: %t, len: %d\n", ok, len(tokenMetadata))
+		if ok && len(tokenMetadata) > 0 {
+			fmt.Printf("🔍 PRICE_DEBUG: tokens found:\n")
+			for addr, meta := range tokenMetadata {
+				fmt.Printf("    - %s: Type=%s, Symbol=%s, Decimals=%d\n", addr[:10]+"...", meta.Type, meta.Symbol, meta.Decimals)
+			}
+		}
+	}
+
 	if (!ok || len(tokenMetadata) == 0) && !needsNativeTokenPrice {
 		if t.verbose {
 			fmt.Println("⚠️  No token metadata found and no native token price needed, skipping price lookup")
@@ -207,8 +220,18 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	// Then process regular ERC20 tokens
 	if tokenMetadata != nil {
 		for address, metadata := range tokenMetadata {
+			// PRICE_DEBUG: Show what tokens we're evaluating
+			if t.verbose {
+				fmt.Printf("🔍 PRICE_DEBUG: Evaluating token %s (Type=%s, Symbol=%s, Decimals=%d)\n",
+					address[:10]+"...", metadata.Type, metadata.Symbol, metadata.Decimals)
+			}
+
 			if metadata.Type == "ERC20" {
 				currentIndex++
+
+				if t.verbose {
+					fmt.Printf("🔍 PRICE_DEBUG: Token %s qualifies as ERC20, fetching price...\n", address[:10]+"...")
+				}
 
 				// Send progress update for each ERC20 token
 				if hasProgress {
@@ -310,6 +333,15 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	// Add token prices to baggage
 	baggage["token_prices"] = tokenPrices
 	return nil
+}
+
+// getBaggageKeys returns a slice of all keys in the baggage map for debugging
+func getBaggageKeys(baggage map[string]interface{}) []string {
+	keys := make([]string, 0, len(baggage))
+	for k := range baggage {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // checkForNativeTokenNeeds determines if native token price needs to be fetched for gas fees
@@ -422,19 +454,32 @@ func (t *ERC20PriceLookup) calculateTransferValues(baggage map[string]interface{
 
 // convertAmountToTokens converts a raw amount (usually in wei-like units) to token units
 func (t *ERC20PriceLookup) convertAmountToTokens(amountStr string, decimals int) float64 {
+	if t.verbose {
+		fmt.Printf("🔍 AMOUNT_DEBUG: Converting amount '%s' with %d decimals\n", amountStr, decimals)
+	}
+
 	// Handle hex strings
 	if strings.HasPrefix(amountStr, "0x") {
 		// Convert hex to decimal
 		amountBig := new(big.Int)
 		if _, ok := amountBig.SetString(amountStr[2:], 16); !ok {
+			if t.verbose {
+				fmt.Printf("❌ AMOUNT_DEBUG: Failed to parse hex amount '%s'\n", amountStr)
+			}
 			return 0
 		}
 		amountStr = amountBig.String()
+		if t.verbose {
+			fmt.Printf("🔍 AMOUNT_DEBUG: Converted hex to decimal: '%s'\n", amountStr)
+		}
 	}
 
 	// Parse the amount as big.Int
 	amountBig := new(big.Int)
 	if _, ok := amountBig.SetString(amountStr, 10); !ok {
+		if t.verbose {
+			fmt.Printf("❌ AMOUNT_DEBUG: Failed to parse decimal amount '%s'\n", amountStr)
+		}
 		return 0
 	}
 
@@ -445,11 +490,53 @@ func (t *ERC20PriceLookup) convertAmountToTokens(amountStr string, decimals int)
 		// Create divisor (10^decimals) as big.Float for precise division
 		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
 		amountFloat.Quo(amountFloat, divisor)
+		if t.verbose {
+			fmt.Printf("🔍 AMOUNT_DEBUG: Applied %d decimals division\n", decimals)
+		}
 	}
 
 	// Convert to float64 only at the end
 	result, _ := amountFloat.Float64()
+
+	if t.verbose {
+		fmt.Printf("🔍 AMOUNT_DEBUG: Final converted amount: %.18f\n", result)
+
+		// ===== SPECIAL DEBUG FOR WETH =====
+		// Check if this looks like a WETH amount (common contract addresses or symbols)
+		if decimals == 18 {
+			fmt.Printf("🔍 WETH_DEBUG: This looks like an 18-decimal token (possibly WETH)\n")
+			fmt.Printf("🔍 WETH_DEBUG: Raw amount string: %s\n", amountStr)
+
+			// Manual verification
+			weiValue, _ := new(big.Float).SetString(amountBig.String())
+			divisor18 := new(big.Float).SetFloat64(1e18)
+			manualResult := new(big.Float).Quo(weiValue, divisor18)
+			manualFloat, _ := manualResult.Float64()
+			fmt.Printf("🔍 WETH_DEBUG: Manual verification: %.18f (should match above)\n", manualFloat)
+		}
+	}
+
 	return result
+}
+
+// Helper function to identify stablecoins for proper USD formatting
+func (t *ERC20PriceLookup) isStablecoin(symbol string) bool {
+	stablecoins := map[string]bool{
+		"USDT":  true,
+		"USDC":  true,
+		"DAI":   true,
+		"BUSD":  true,
+		"FRAX":  true,
+		"LUSD":  true,
+		"sUSD":  true,
+		"TUSD":  true,
+		"USDP":  true,
+		"USDD":  true,
+		"PYUSD": true,
+		"GUSD":  true,
+		"USDK":  true,
+	}
+	return stablecoins[strings.ToUpper(symbol)]
 }
 
 // Run executes the price lookup with both CEX and DEX data
@@ -521,7 +608,13 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 				priceStr = fmt.Sprintf("$%.6f", price.Price)
 			}
 
-			basePriceInfo := fmt.Sprintf("- %s (%s): %s USD per token", metadata.Name, metadata.Symbol, priceStr)
+			// For stablecoins, don't include USD price since it's redundant (~$1)
+			var basePriceInfo string
+			if t.isStablecoin(metadata.Symbol) {
+				basePriceInfo = fmt.Sprintf("- %s (%s): Stablecoin (~$1.00)", metadata.Name, metadata.Symbol)
+			} else {
+				basePriceInfo = fmt.Sprintf("- %s (%s): %s USD per token", metadata.Name, metadata.Symbol, priceStr)
+			}
 
 			// Add price source information
 			if price.PriceSource != "" {
@@ -533,8 +626,16 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 				var transferInfo []string
 				for transferID, usdValue := range price.TransferValues {
 					tokenAmount := price.TransferAmounts[transferID]
-					transferInfo = append(transferInfo, fmt.Sprintf("  • Transfer: %.6f %s = $%.2f USD",
-						tokenAmount, metadata.Symbol, usdValue))
+
+					// For non-stablecoins, show both token amount and USD value
+					// For stablecoins, just show token amount since USD is ~1:1
+					if t.isStablecoin(metadata.Symbol) {
+						transferInfo = append(transferInfo, fmt.Sprintf("  • Transfer: %.6f %s",
+							tokenAmount, metadata.Symbol))
+					} else {
+						transferInfo = append(transferInfo, fmt.Sprintf("  • Transfer: %.6f %s = $%.2f USD",
+							tokenAmount, metadata.Symbol, usdValue))
+					}
 				}
 				if len(transferInfo) > 0 {
 					basePriceInfo += "\n" + strings.Join(transferInfo, "\n")
@@ -543,6 +644,18 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 
 			contextParts = append(contextParts, basePriceInfo)
 		}
+	}
+
+	// Handle native token pricing (for gas fees)
+	if nativePrice, exists := tokenPrices["native"]; exists {
+		nativePriceStr := fmt.Sprintf("$%.2f", nativePrice.Price)
+		if nativePrice.Price < 0.01 {
+			nativePriceStr = fmt.Sprintf("$%.6f", nativePrice.Price)
+		}
+
+		nativeInfo := fmt.Sprintf("- %s (Native Token): %s USD per token [%s]",
+			nativePrice.Symbol, nativePriceStr, nativePrice.PriceSource)
+		contextParts = append(contextParts, nativeInfo)
 	}
 
 	if len(contextParts) == 0 {
