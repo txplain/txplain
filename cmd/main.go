@@ -36,17 +36,16 @@ func main() {
 
 	// Command line flags
 	var (
-		httpAddr      = flag.String("http-addr", "", "HTTP server address (defaults to :8080, or :$PORT if PORT env var is set)")
-		mcpAddr       = flag.String("mcp-addr", ":8081", "MCP server address")
-		openaiKey     = flag.String("openai-key", "", "OpenAI API key (can also be set via OPENAI_API_KEY env var)")
-		coinMarketKey = flag.String("cmc-key", "", "CoinMarketCap API key (can also be set via COINMARKETCAP_API_KEY env var)")
-		enableHTTP    = flag.Bool("http", true, "Enable HTTP API server")
-		enableMCP     = flag.Bool("mcp", false, "Enable MCP server")
-		showVersion   = flag.Bool("version", false, "Show version and exit")
-		verbose       = flag.Bool("v", false, "Verbose mode - show prompts sent to LLM. Set DEBUG=true env var to also show baggage debug info")
-		debugToken    = flag.String("debug-token", "", "Debug specific token contract (address)")
-		txHash        = flag.String("tx", "", "Transaction hash to explain")
-		networkID     = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
+		httpAddr    = flag.String("http-addr", "", "HTTP server address (defaults to :8080, or :$PORT if PORT env var is set)")
+		mcpAddr     = flag.String("mcp-addr", ":8081", "MCP server address")
+		openaiKey   = flag.String("openai-key", "", "OpenAI API key (can also be set via OPENAI_API_KEY env var)")
+		enableHTTP  = flag.Bool("http", true, "Enable HTTP API server")
+		enableMCP   = flag.Bool("mcp", false, "Enable MCP server")
+		showVersion = flag.Bool("version", false, "Show version and exit")
+		verbose     = flag.Bool("v", false, "Verbose mode - show prompts sent to LLM. Set DEBUG=true env var to also show baggage debug info")
+		debugToken  = flag.String("debug-token", "", "Debug specific token contract (address)")
+		txHash      = flag.String("tx", "", "Transaction hash to explain")
+		networkID   = flag.Int64("network", 1, "Network ID (1=Ethereum, 137=Polygon, 42161=Arbitrum)")
 	)
 	flag.Parse()
 
@@ -106,16 +105,16 @@ func main() {
 	// Check if transaction hash is provided
 	if *txHash != "" {
 		// Transaction explanation mode
-		explainTransaction(*txHash, *networkID, *openaiKey, *coinMarketKey, cache, *verbose)
+		explainTransaction(*txHash, *networkID, *openaiKey, cache, *verbose)
 		return
 	}
 
 	// Server mode (original functionality)
-	runServers(*httpAddr, *mcpAddr, *openaiKey, *coinMarketKey, *enableHTTP, *enableMCP, cache, *verbose)
+	runServers(*httpAddr, *mcpAddr, *openaiKey, *enableHTTP, *enableMCP, cache, *verbose)
 }
 
 // explainTransaction processes a single transaction and prints the explanation
-func explainTransaction(txHash string, networkID int64, openaiKey string, coinMarketKey string, cache tools.Cache, verbose bool) {
+func explainTransaction(txHash string, networkID int64, openaiKey string, cache tools.Cache, verbose bool) {
 	// Validate transaction hash format
 	if !strings.HasPrefix(txHash, "0x") || len(txHash) != 66 {
 		log.Fatal("Invalid transaction hash format. Expected format: 0x followed by 64 hex characters")
@@ -135,12 +134,6 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 		log.Fatal("OpenAI API key is required. Set OPENAI_API_KEY environment variable or use -openai-key flag")
 	}
 
-	// Get CoinMarketCap API key
-	cmcKey := coinMarketKey
-	if cmcKey == "" {
-		cmcKey = os.Getenv("COINMARKETCAP_API_KEY")
-	}
-
 	if verbose {
 		fmt.Printf("🔍 Analyzing transaction: %s\n", txHash)
 	}
@@ -151,7 +144,7 @@ func explainTransaction(txHash string, networkID int64, openaiKey string, coinMa
 	}
 
 	// Create the agent
-	txAgent, err := agent.NewTxplainAgent(apiKey, cmcKey, cache, verbose)
+	txAgent, err := agent.NewTxplainAgent(apiKey, cache, verbose)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
@@ -322,7 +315,7 @@ func formatNumber(n uint64) string {
 }
 
 // runServers runs the original server functionality
-func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, enableMCP bool, cache tools.Cache, verbose bool) {
+func runServers(httpAddr, mcpAddr, openaiKey string, enableHTTP, enableMCP bool, cache tools.Cache, verbose bool) {
 	// Get OpenAI API key
 	apiKey := openaiKey
 	if apiKey == "" {
@@ -330,12 +323,6 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 	}
 	if apiKey == "" {
 		log.Fatal("OpenAI API key is required. Set OPENAI_API_KEY environment variable or use -openai-key flag")
-	}
-
-	// Get CoinMarketCap API key
-	cmcKey := coinMarketKey
-	if cmcKey == "" {
-		cmcKey = os.Getenv("COINMARKETCAP_API_KEY")
 	}
 
 	// Channel to listen for interrupt signal
@@ -351,7 +338,7 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 
 	// Start HTTP API server if enabled
 	if enableHTTP {
-		server, err := api.NewServer(httpAddr, apiKey, cmcKey, cache, verbose)
+		server, err := api.NewServer(httpAddr, apiKey, cache, verbose)
 		if err != nil {
 			log.Fatalf("Failed to create HTTP server: %v", err)
 		}
@@ -367,7 +354,7 @@ func runServers(httpAddr, mcpAddr, openaiKey, coinMarketKey string, enableHTTP, 
 
 	// Start MCP server if enabled
 	if enableMCP {
-		server, err := mcp.NewServer(mcpAddr, apiKey, cmcKey, cache, verbose)
+		server, err := mcp.NewServer(mcpAddr, apiKey, cache, verbose)
 		if err != nil {
 			log.Fatalf("Failed to create MCP server: %v", err)
 		}

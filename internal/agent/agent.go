@@ -16,20 +16,19 @@ import (
 
 // TxplainAgent orchestrates the transaction explanation workflow
 type TxplainAgent struct {
-	llm                 llms.Model
-	rpcClients          map[int64]*rpc.Client
-	traceDecoder        *txtools.TraceDecoder
-	logDecoder          *txtools.LogDecoder
-	explainer           *txtools.TransactionExplainer
-	executor            *chains.SequentialChain
-	coinMarketCapAPIKey string
-	cmcClient           *txtools.CoinMarketCapClient // Centralized CMC client
-	cache               txtools.Cache
-	verbose             bool
+	llm          llms.Model
+	rpcClients   map[int64]*rpc.Client
+	traceDecoder *txtools.TraceDecoder
+	logDecoder   *txtools.LogDecoder
+	explainer    *txtools.TransactionExplainer
+	executor     *chains.SequentialChain
+	priceService txtools.PriceService
+	cache        txtools.Cache
+	verbose      bool
 }
 
 // NewTxplainAgent creates a new transaction explanation agent with RPC-enhanced capabilities
-func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string, cache txtools.Cache, verbose bool) (*TxplainAgent, error) {
+func NewTxplainAgent(openaiAPIKey string, cache txtools.Cache, verbose bool) (*TxplainAgent, error) {
 	// Initialize LLM
 	llm, err := openai.New(
 		openai.WithModel("gpt-4.1-mini"),
@@ -39,10 +38,10 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string, cache txto
 		return nil, fmt.Errorf("failed to initialize LLM: %w", err)
 	}
 
-	// Initialize centralized CoinMarketCap client
-	cmcClient := txtools.NewCoinMarketCapClient(coinMarketCapAPIKey, cache, verbose)
+	// Initialize Price Service
+	priceService := txtools.NewPriceService(cache, verbose)
 	if verbose {
-		fmt.Printf("🪙 CoinMarketCap client initialized (API available: %t)\n", cmcClient.IsAvailable())
+		fmt.Printf("🪙 Price Service initialized (available: %t)\n", priceService.IsAvailable())
 	}
 
 	// Initialize RPC clients for supported networks
@@ -67,15 +66,14 @@ func NewTxplainAgent(openaiAPIKey string, coinMarketCapAPIKey string, cache txto
 	explainer := txtools.NewTransactionExplainer(llm, staticProvider, verbose)
 
 	agent := &TxplainAgent{
-		llm:                 llm,
-		rpcClients:          rpcClients,
-		traceDecoder:        traceDecoder,
-		logDecoder:          logDecoder,
-		explainer:           explainer,
-		coinMarketCapAPIKey: coinMarketCapAPIKey,
-		cmcClient:           cmcClient, // Store centralized client
-		cache:               cache,
-		verbose:             verbose,
+		llm:          llm,
+		rpcClients:   rpcClients,
+		traceDecoder: traceDecoder,
+		logDecoder:   logDecoder,
+		explainer:    explainer,
+		priceService: priceService,
+		cache:        cache,
+		verbose:      verbose,
 	}
 
 	return agent, nil
@@ -199,7 +197,7 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 
 	// Add token metadata enricher
 	fmt.Println("      • Token Metadata Enricher")
-	tokenMetadata := txtools.NewTokenMetadataEnricher(a.cache, a.verbose, client, a.cmcClient)
+	tokenMetadata := txtools.NewTokenMetadataEnricher(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(tokenMetadata); err != nil {
 		return nil, fmt.Errorf("failed to add token metadata enricher: %w", err)
 	}
@@ -213,31 +211,31 @@ func (a *TxplainAgent) ExplainTransaction(ctx context.Context, request *models.T
 	}
 	contextProviders = append(contextProviders, amountsFinder)
 
-	// Add icon resolver (discovers token icons from CoinMarketCap + TrustWallet)
-	fmt.Println("      • Icon Resolver (CoinMarketCap + TrustWallet)")
-	iconResolver := txtools.NewIconResolverWithCMC(staticContextProvider, a.cache, a.verbose, a.cmcClient)
+	// Add icon resolver (discovers token icons from various sources)
+	fmt.Println("      • Icon Resolver")
+	iconResolver := txtools.NewIconResolver(staticContextProvider, a.cache, a.verbose)
 	if err := pipeline.AddProcessor(iconResolver); err != nil {
 		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
 	}
 
-	// Add price lookup (now uses centralized CMC client)
-	if a.cmcClient.IsAvailable() {
-		fmt.Println("      • ERC20 Price Lookup (CoinMarketCap)")
-		priceLookup := txtools.NewERC20PriceLookup(a.cmcClient, a.cache, a.verbose)
+	// Add price lookup (now uses PriceService)
+	if a.priceService.IsAvailable() {
+		fmt.Println("      • ERC20 Price Lookup")
+		priceLookup := txtools.NewERC20PriceLookup(a.priceService, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(priceLookup); err != nil {
 			return nil, fmt.Errorf("failed to add price lookup: %w", err)
 		}
 		contextProviders = append(contextProviders, priceLookup)
 
-		// Add monetary value enricher (now uses centralized CMC client)
+		// Add monetary value enricher (now uses PriceService)
 		fmt.Println("      • Monetary Value Enricher (AI-powered)")
-		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.cmcClient, a.cache, a.verbose)
+		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.priceService, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
 			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)
 		}
 		contextProviders = append(contextProviders, monetaryEnricher)
 	} else {
-		fmt.Println("      • ERC20 Price Lookup: SKIPPED (no CoinMarketCap API key)")
+		fmt.Println("      • ERC20 Price Lookup: SKIPPED (no price service available)")
 	}
 
 	// Add ENS resolver (runs after monetary enrichment)
@@ -493,7 +491,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 	// Add token metadata enricher
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding token metadata enricher...")
-	tokenMetadata := txtools.NewTokenMetadataEnricher(a.cache, a.verbose, client, a.cmcClient)
+	tokenMetadata := txtools.NewTokenMetadataEnricher(a.cache, a.verbose, client)
 	if err := pipeline.AddProcessor(tokenMetadata); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add token metadata enricher: %w", err))
 		return nil, fmt.Errorf("failed to add token metadata enricher: %w", err)
@@ -509,18 +507,18 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 	}
 	contextProviders = append(contextProviders, amountsFinder)
 
-	// Add icon resolver (discovers token icons from CoinMarketCap + TrustWallet)
+	// Add icon resolver (discovers token icons from various sources)
 	progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding icon resolver...")
-	iconResolver := txtools.NewIconResolver(staticContextProvider, a.cache, a.verbose, a.cmcClient)
+	iconResolver := txtools.NewIconResolver(staticContextProvider, a.cache, a.verbose)
 	if err := pipeline.AddProcessor(iconResolver); err != nil {
 		progressTracker.SendError(fmt.Errorf("failed to add icon resolver: %w", err))
 		return nil, fmt.Errorf("failed to add icon resolver: %w", err)
 	}
 
-	// Add price lookup if API key is available (runs AFTER amounts_finder)
-	if a.cmcClient.IsAvailable() {
+	// Add price lookup if service is available (runs AFTER amounts_finder)
+	if a.priceService.IsAvailable() {
 		progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding price lookup...")
-		priceLookup := txtools.NewERC20PriceLookup(a.cmcClient, a.cache, a.verbose)
+		priceLookup := txtools.NewERC20PriceLookup(a.priceService, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(priceLookup); err != nil {
 			progressTracker.SendError(fmt.Errorf("failed to add price lookup: %w", err))
 			return nil, fmt.Errorf("failed to add price lookup: %w", err)
@@ -529,7 +527,7 @@ func (a *TxplainAgent) ExplainTransactionWithProgress(ctx context.Context, reque
 
 		// Add monetary value enricher (runs after amounts_finder + price lookup)
 		progressTracker.UpdateComponent("pipeline_setup", models.ComponentGroupData, "Configuring Pipeline", models.ComponentStatusRunning, "Adding monetary enricher...")
-		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.cmcClient, a.cache, a.verbose)
+		monetaryEnricher := txtools.NewMonetaryValueEnricher(a.llm, a.priceService, a.cache, a.verbose)
 		if err := pipeline.AddProcessor(monetaryEnricher); err != nil {
 			progressTracker.SendError(fmt.Errorf("failed to add monetary value enricher: %w", err))
 			return nil, fmt.Errorf("failed to add monetary value enricher: %w", err)

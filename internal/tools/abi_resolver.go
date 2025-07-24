@@ -1327,9 +1327,9 @@ func (a *ABIResolver) cacheIndividualSignatures(ctx context.Context, contractInf
 		if method.Hash != "" {
 			var cacheKey string
 			if method.Type == "function" {
-				cacheKey = fmt.Sprintf(ABIFunctionKeyPattern, networkID, method.Hash)
+				cacheKey = fmt.Sprintf(ABIFunctionKeyPattern, method.Hash)
 			} else if method.Type == "event" {
-				cacheKey = fmt.Sprintf(ABIEventKeyPattern, networkID, method.Hash)
+				cacheKey = fmt.Sprintf(ABIEventKeyPattern, method.Hash)
 			} else {
 				continue // Skip other types
 			}

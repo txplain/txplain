@@ -120,14 +120,7 @@ func (e *ENSResolver) Process(ctx context.Context, baggage map[string]interface{
 
 		// Check cache first if available
 		if e.cache != nil {
-			networkID := int64(1) // Default to Ethereum mainnet for ENS
-			if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
-				if nid, ok := rawData["network_id"].(float64); ok {
-					networkID = int64(nid)
-				}
-			}
-
-			cacheKey := fmt.Sprintf(ENSNameKeyPattern, networkID, strings.ToLower(address))
+			cacheKey := fmt.Sprintf(ENSNameKeyPattern, strings.ToLower(address))
 			if err := e.cache.GetJSON(ctx, cacheKey, &ensName); err == nil {
 				if e.verbose {
 					fmt.Printf(" ✅ (cached) %s\n", ensName)

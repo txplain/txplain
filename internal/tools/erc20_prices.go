@@ -11,40 +11,14 @@ import (
 	"github.com/txplain/txplain/internal/models"
 )
 
-// ERC20PriceLookup fetches token prices from CoinMarketCap API
+// ERC20PriceLookup fetches token prices using PriceService
 type ERC20PriceLookup struct {
-	cmcClient *CoinMarketCapClient
-	verbose   bool
-	cache     Cache // Cache for price data
+	priceService PriceService
+	verbose      bool
+	cache        Cache // Cache for price data
 }
 
-// DEXPriceData represents DEX-specific pricing information
-type DEXPriceData struct {
-	PlatformID        int     `json:"platform_id"`
-	PlatformName      string  `json:"platform_name"`
-	PlatformSlug      string  `json:"platform_slug"`
-	DexID             int     `json:"dex_id"`
-	DexName           string  `json:"dex_name"`
-	DexSlug           string  `json:"dex_slug"`
-	PairAddress       string  `json:"pair_address"`
-	BaseSymbol        string  `json:"base_symbol"`
-	QuoteSymbol       string  `json:"quote_symbol"`
-	Category          string  `json:"category"`
-	FeeType           string  `json:"fee_type"`
-	LiquidityUSD      float64 `json:"liquidity_usd"`
-	VolumeUSD24h      float64 `json:"volume_usd_24h"`
-	VolumeChange24h   float64 `json:"volume_change_24h"`
-	Price             float64 `json:"price"`
-	PriceBase         float64 `json:"price_base"`
-	PriceQuote        float64 `json:"price_quote"`
-	PriceChange24h    float64 `json:"price_change_24h"`
-	PriceChangePct24h float64 `json:"price_change_pct_24h"`
-	LastUpdated       string  `json:"last_updated"`
-	NumMarketPairs    int     `json:"num_market_pairs"`
-	MarketPairID      int     `json:"market_pair_id"`
-	MarketPairBaseID  int     `json:"market_pair_base_id"`
-	MarketPairQuoteID int     `json:"market_pair_quote_id"`
-}
+// Removed DEXPriceData - not needed for simplified Coingecko approach
 
 // DEXListingInfo represents DEX listing metadata information
 type DEXListingInfo struct {
@@ -64,172 +38,29 @@ type DEXListingInfo struct {
 	NetworkSlug     string                 `json:"network_slug,omitempty"`
 }
 
-// CoinMarketCapMapResponse represents the response from /v1/cryptocurrency/map
-type CoinMarketCapMapResponse struct {
-	Status struct {
-		Timestamp    string `json:"timestamp"`
-		ErrorCode    int    `json:"error_code"`
-		ErrorMessage string `json:"error_message"`
-		Elapsed      int    `json:"elapsed"`
-		CreditCount  int    `json:"credit_count"`
-	} `json:"status"`
-	Data []struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		Symbol   string `json:"symbol"`
-		Slug     string `json:"slug"`
-		IsActive int    `json:"is_active"`
-		Platform struct {
-			ID           int    `json:"id"`
-			Name         string `json:"name"`
-			Symbol       string `json:"symbol"`
-			Slug         string `json:"slug"`
-			TokenAddress string `json:"token_address"`
-		} `json:"platform,omitempty"`
-		FirstHistoricalData string `json:"first_historical_data"`
-		LastHistoricalData  string `json:"last_historical_data"`
-	} `json:"data"`
-}
-
-// CoinMarketCapQuoteResponse represents the response from /v1/cryptocurrency/quotes/latest
-type CoinMarketCapQuoteResponse struct {
-	Status struct {
-		Timestamp    string `json:"timestamp"`
-		ErrorCode    int    `json:"error_code"`
-		ErrorMessage string `json:"error_message"`
-		Elapsed      int    `json:"elapsed"`
-		CreditCount  int    `json:"credit_count"`
-	} `json:"status"`
-	Data map[string]struct {
-		ID     int    `json:"id"`
-		Name   string `json:"name"`
-		Symbol string `json:"symbol"`
-		Slug   string `json:"slug"`
-		Quote  map[string]struct {
-			Price                 float64 `json:"price"`
-			Volume24h             float64 `json:"volume_24h"`
-			VolumeChange24h       float64 `json:"volume_change_24h"`
-			PercentChange1h       float64 `json:"percent_change_1h"`
-			PercentChange24h      float64 `json:"percent_change_24h"`
-			PercentChange7d       float64 `json:"percent_change_7d"`
-			PercentChange30d      float64 `json:"percent_change_30d"`
-			PercentChange60d      float64 `json:"percent_change_60d"`
-			PercentChange90d      float64 `json:"percent_change_90d"`
-			MarketCap             float64 `json:"market_cap"`
-			MarketCapDominance    float64 `json:"market_cap_dominance"`
-			FullyDilutedMarketCap float64 `json:"fully_diluted_market_cap"`
-			LastUpdated           string  `json:"last_updated"`
-		} `json:"quote"`
-	} `json:"data"`
-}
-
-// CoinMarketCapDEXQuoteResponse represents the response from /v4/dex/pairs/quotes/latest
-type CoinMarketCapDEXQuoteResponse struct {
-	Status struct {
-		Timestamp    string `json:"timestamp"`
-		ErrorCode    int    `json:"error_code"`
-		ErrorMessage string `json:"error_message"`
-		Elapsed      int    `json:"elapsed"`
-		CreditCount  int    `json:"credit_count"`
-	} `json:"status"`
-	Data []struct {
-		PlatformID        int     `json:"platform_id"`
-		PlatformName      string  `json:"platform_name"`
-		PlatformSlug      string  `json:"platform_slug"`
-		DexID             int     `json:"dex_id"`
-		DexName           string  `json:"dex_name"`
-		DexSlug           string  `json:"dex_slug"`
-		PairAddress       string  `json:"pair_address"`
-		BaseSymbol        string  `json:"base_symbol"`
-		QuoteSymbol       string  `json:"quote_symbol"`
-		Category          string  `json:"category"`
-		FeeType           string  `json:"fee_type"`
-		LiquidityUSD      float64 `json:"liquidity_usd"`
-		VolumeUSD24h      float64 `json:"volume_usd_24h"`
-		VolumeChange24h   float64 `json:"volume_change_24h"`
-		Price             float64 `json:"price"`
-		PriceBase         float64 `json:"price_base"`
-		PriceQuote        float64 `json:"price_quote"`
-		PriceChange24h    float64 `json:"price_change_24h"`
-		PriceChangePct24h float64 `json:"price_change_pct_24h"`
-		LastUpdated       string  `json:"last_updated"`
-		NumMarketPairs    int     `json:"num_market_pairs"`
-		MarketPairID      int     `json:"market_pair_id"`
-		MarketPairBaseID  int     `json:"market_pair_base_id"`
-		MarketPairQuoteID int     `json:"market_pair_quote_id"`
-	} `json:"data"`
-}
-
-// CoinMarketCapDEXListingResponse represents the response from /v4/dex/listings/info
-type CoinMarketCapDEXListingResponse struct {
-	Status struct {
-		Timestamp    string `json:"timestamp"`
-		ErrorCode    int    `json:"error_code"`
-		ErrorMessage string `json:"error_message"`
-		Elapsed      int    `json:"elapsed"`
-		CreditCount  int    `json:"credit_count"`
-	} `json:"status"`
-	Data []struct {
-		ID           int    `json:"id"`
-		Name         string `json:"name"`
-		Symbol       string `json:"symbol"`
-		Slug         string `json:"slug"`
-		Logo         string `json:"logo"`
-		Description  string `json:"description"`
-		DateLaunched string `json:"date_launched"`
-		Notice       string `json:"notice"`
-		Status       string `json:"status"`
-		Category     string `json:"category"`
-		URLs         struct {
-			Website      []string `json:"website"`
-			TechnicalDoc []string `json:"technical_doc"`
-			Explorer     []string `json:"explorer"`
-			SourceCode   []string `json:"source_code"`
-			MessageBoard []string `json:"message_board"`
-			Chat         []string `json:"chat"`
-			Facebook     []string `json:"facebook"`
-			Twitter      []string `json:"twitter"`
-			Reddit       []string `json:"reddit"`
-		} `json:"urls"`
-	} `json:"data"`
-}
-
-// TokenPrice represents price information for a token
+// TokenPrice represents simplified price information for a token
 type TokenPrice struct {
-	ID                int                    `json:"id"`
-	Name              string                 `json:"name"`
-	Symbol            string                 `json:"symbol"`
-	Slug              string                 `json:"slug"`
-	Contract          string                 `json:"contract_address,omitempty"`
-	Platform          string                 `json:"platform,omitempty"`
-	Price             float64                `json:"price"`
-	PriceChange24h    float64                `json:"price_change_24h"`
-	PriceChangePct24h float64                `json:"price_change_pct_24h"`
-	MarketCap         float64                `json:"market_cap"`
-	Volume24h         float64                `json:"volume_24h"`
-	LastUpdated       time.Time              `json:"last_updated"`
-	Quote             map[string]interface{} `json:"quote,omitempty"`
-	// New fields for transfer calculations
+	Symbol      string    `json:"symbol"`
+	Name        string    `json:"name,omitempty"`
+	Contract    string    `json:"contract_address,omitempty"`
+	Price       float64   `json:"price"`
+	LastUpdated time.Time `json:"last_updated"`
+	PriceSource string    `json:"price_source,omitempty"`
+	// Fields for transfer calculations
 	TransferAmounts map[string]float64 `json:"transfer_amounts,omitempty"` // transfer_id -> amount in tokens
 	TransferValues  map[string]float64 `json:"transfer_values,omitempty"`  // transfer_id -> USD value
-	// New DEX-specific fields
-	DEXData      []DEXPriceData `json:"dex_data,omitempty"`          // DEX pricing from multiple sources
-	DEXPrice     float64        `json:"dex_price,omitempty"`         // Best DEX price (weighted by liquidity)
-	DEXLiquidity float64        `json:"dex_liquidity_usd,omitempty"` // Total DEX liquidity
-	DEXVolume24h float64        `json:"dex_volume_24h,omitempty"`    // Total DEX volume
-	HasDEXData   bool           `json:"has_dex_data,omitempty"`      // Whether DEX data was found
-	PriceSource  string         `json:"price_source,omitempty"`      // "CEX", "DEX", or "COMBINED"
-	// DEX metadata fields
-	DEXListing    *DEXListingInfo `json:"dex_listing,omitempty"`     // DEX listing metadata
-	HasDEXListing bool            `json:"has_dex_listing,omitempty"` // Whether DEX listing data was found
 }
 
 // NewERC20PriceLookup creates a new ERC20 price lookup tool
-func NewERC20PriceLookup(cmcClient *CoinMarketCapClient, cache Cache, verbose bool) *ERC20PriceLookup {
+func NewERC20PriceLookup(priceService PriceService, cache Cache, verbose bool) *ERC20PriceLookup {
+	if priceService == nil {
+		panic("PriceService is required for ERC20PriceLookup")
+	}
+
 	return &ERC20PriceLookup{
-		cmcClient: cmcClient,
-		verbose:   verbose,
-		cache:     cache,
+		priceService: priceService,
+		verbose:      verbose,
+		cache:        cache,
 	}
 }
 
@@ -240,7 +71,7 @@ func (t *ERC20PriceLookup) Name() string {
 
 // Description returns the tool description
 func (t *ERC20PriceLookup) Description() string {
-	return "Looks up ERC20 token prices using CoinMarketCap API with both centralized exchange (CEX) and decentralized exchange (DEX) data. Supports lookup by symbol, name, or contract address."
+	return "Looks up ERC20 token prices using Coingecko API with DEX data for ERC20 tokens and native token pricing. Supports lookup by contract address."
 }
 
 // Dependencies returns the tools this processor depends on
@@ -253,16 +84,16 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	if t.verbose {
 		fmt.Println("\n" + strings.Repeat("💰", 60))
 		fmt.Println("🔍 ERC20 PRICE LOOKUP: Starting token price fetching")
-		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", t.cmcClient.IsAvailable())
+		fmt.Printf("🔑 Price Service available: %t\n", t.priceService.IsAvailable())
 		fmt.Println(strings.Repeat("💰", 60))
 	}
 
-	if !t.cmcClient.IsAvailable() {
+	if !t.priceService.IsAvailable() {
 		if t.verbose {
-			fmt.Println("⚠️  No CoinMarketCap API key provided, skipping price lookup")
+			fmt.Println("⚠️  No price service available, skipping price lookup")
 			fmt.Println(strings.Repeat("💰", 60) + "\n")
 		}
-		return nil // No API key, skip price lookup
+		return nil // No price service, skip price lookup
 	}
 
 	// Get network ID from baggage for DEX pricing
@@ -342,7 +173,7 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 	// First, check if we need to fetch native token price for gas fees
 	if needsNativeTokenPrice {
 		currentIndex++
-		nativeSymbol := t.cmcClient.GetNativeTokenSymbol(networkID)
+		nativeSymbol := t.priceService.GetNativeTokenSymbol(networkID)
 		if nativeSymbol != "" {
 			// Send progress update for native token pricing
 			if hasProgress {
@@ -354,23 +185,18 @@ func (t *ERC20PriceLookup) Process(ctx context.Context, baggage map[string]inter
 				fmt.Printf("   Native %s (gas fees)...", nativeSymbol)
 			}
 
-			// Look up native token price by symbol
-			priceInput := map[string]interface{}{
-				"symbol":     nativeSymbol,
-				"network_id": networkID,
-			}
-
-			if price, err := t.lookupTokenPrice(ctx, priceInput); err == nil && price != nil {
+			// Look up native token price from price service
+			if price, err := t.priceService.GetNativeTokenPrice(ctx, networkID); err == nil {
 				// Store native token price using "native" as key for easy lookup
 				tokenPrices["native"] = &TokenPrice{
 					Symbol:      nativeSymbol,
-					Price:       price.Price,
-					PriceSource: price.PriceSource,
+					Price:       price,
+					PriceSource: "price_service",
 				}
 				successCount++
 
 				if t.verbose {
-					fmt.Printf(" ✅ $%.6f\n", price.Price)
+					fmt.Printf(" ✅ $%.6f\n", price)
 				}
 			} else if t.verbose {
 				fmt.Printf(" ❌ Failed: %v\n", err)
@@ -507,141 +333,21 @@ func (t *ERC20PriceLookup) checkForNativeTokenNeeds(baggage map[string]interface
 // lookupTokenPrice implements the core token price lookup logic
 func (t *ERC20PriceLookup) lookupTokenPrice(ctx context.Context, input map[string]interface{}) (*TokenPrice, error) {
 	// Extract search parameters from input
-	symbol, _ := input["symbol"].(string)
-	name, _ := input["name"].(string)
 	contractAddress, _ := input["contract_address"].(string)
-	convert, _ := input["convert"].(string) // Currency to convert to (default: USD)
 	networkIDFloat, _ := input["network_id"].(float64)
 	networkID := int64(networkIDFloat)
+
 	if networkID == 0 {
 		return nil, NewToolError("erc20_price_lookup", "network_id is required", "MISSING_NETWORK")
 	}
 
-	if convert == "" {
-		convert = "USD"
+	// For price service, we need the contract address
+	if contractAddress == "" {
+		return nil, NewToolError("erc20_price_lookup", "contract_address is required", "MISSING_CONTRACT")
 	}
 
-	// Need at least one search parameter
-	if symbol == "" && name == "" && contractAddress == "" {
-		return nil, NewToolError("erc20_price_lookup", "must provide symbol, name, or contract_address", "MISSING_PARAMS")
-	}
-
-	var tokenPrice *TokenPrice
-
-	// Step 1: Try to get CEX price data (traditional CoinMarketCap API)
-	cexPrice, cexErr := t.getCEXPrice(ctx, symbol, name, contractAddress, convert)
-
-	// Step 2: Try to get DEX price data (new DEX API)
-	var dexData []DEXPriceData
-	var dexErr error
-	if contractAddress != "" && networkID != 0 {
-		dexData, dexErr = t.getDEXPrice(ctx, contractAddress, networkID)
-		// DEX API failure is not critical - we can still use CEX data
-		if dexErr != nil && cexErr == nil {
-			// If CEX succeeded but DEX failed, continue with CEX data only
-			dexErr = nil // Clear DEX error to avoid double failure
-		}
-	}
-
-	// Step 3: Try to get DEX listing metadata
-	var dexListing *DEXListingInfo
-	var dexListingErr error
-	if contractAddress != "" && networkID != 0 {
-		dexListing, dexListingErr = t.getDEXListingInfo(ctx, contractAddress, networkID)
-		// DEX listing failure is not critical
-	}
-
-	// Step 4: Combine the data intelligently
-	if cexErr != nil && dexErr != nil {
-		// Both failed
-		return nil, NewToolError("erc20_price_lookup", fmt.Sprintf("failed to get price from both CEX (%v) and DEX (%v)", cexErr, dexErr), "PRICE_FETCH_ERROR")
-	}
-
-	// Determine which data source to use and combine appropriately
-	if cexErr == nil && dexErr == nil {
-		// Both succeeded - combine data
-		tokenPrice = cexPrice
-		tokenPrice.DEXData = dexData
-		tokenPrice.HasDEXData = len(dexData) > 0
-		tokenPrice.PriceSource = "COMBINED"
-
-		// Calculate weighted DEX price and aggregate liquidity
-		if len(dexData) > 0 {
-			totalLiquidity := 0.0
-			weightedPrice := 0.0
-			totalVolume := 0.0
-
-			for _, dex := range dexData {
-				totalLiquidity += dex.LiquidityUSD
-				totalVolume += dex.VolumeUSD24h
-				// Weight price by liquidity (more liquid pairs have more influence)
-				if dex.LiquidityUSD > 0 {
-					weightedPrice += dex.Price * dex.LiquidityUSD
-				}
-			}
-
-			if totalLiquidity > 0 {
-				tokenPrice.DEXPrice = weightedPrice / totalLiquidity
-				tokenPrice.DEXLiquidity = totalLiquidity
-				tokenPrice.DEXVolume24h = totalVolume
-			}
-		}
-	} else if cexErr == nil {
-		// Only CEX succeeded
-		tokenPrice = cexPrice
-		tokenPrice.PriceSource = "CEX"
-	} else {
-		// Only DEX succeeded - create basic token price from DEX
-		if len(dexData) == 0 {
-			return nil, NewToolError("erc20_price_lookup", "no price data found", "NO_PRICE_DATA")
-		}
-
-		// Use the best DEX price (first one, sorted by liquidity)
-		bestDex := dexData[0]
-		tokenPrice = &TokenPrice{
-			Symbol:       bestDex.BaseSymbol,
-			Price:        bestDex.Price,
-			LastUpdated:  time.Now(),
-			DEXData:      dexData,
-			HasDEXData:   true,
-			PriceSource:  "DEX",
-			DEXPrice:     bestDex.Price,
-			DEXLiquidity: bestDex.LiquidityUSD,
-		}
-
-		// Calculate aggregated DEX metrics
-		totalLiquidity := 0.0
-		totalVolume := 0.0
-		for _, dex := range dexData {
-			totalLiquidity += dex.LiquidityUSD
-			totalVolume += dex.VolumeUSD24h
-		}
-		tokenPrice.DEXLiquidity = totalLiquidity
-		tokenPrice.DEXVolume24h = totalVolume
-	}
-
-	// Add DEX listing metadata if available
-	if dexListing != nil && dexListingErr == nil {
-		tokenPrice.DEXListing = dexListing
-		tokenPrice.HasDEXListing = true
-
-		// If we don't have a symbol from CEX, use DEX listing symbol
-		if tokenPrice.Symbol == "" && dexListing.Symbol != "" {
-			tokenPrice.Symbol = dexListing.Symbol
-		}
-
-		// If we don't have a name from CEX, use DEX listing name
-		if tokenPrice.Name == "" && dexListing.Name != "" {
-			tokenPrice.Name = dexListing.Name
-		}
-	}
-
-	// Set contract address
-	if contractAddress != "" {
-		tokenPrice.Contract = contractAddress
-	}
-
-	return tokenPrice, nil
+	// Use price service
+	return t.getTokenPrice(ctx, contractAddress, networkID)
 }
 
 // calculateTransferValues calculates USD values for ERC20 transfers
@@ -749,136 +455,26 @@ func (t *ERC20PriceLookup) convertAmountToTokens(amountStr string, decimals int)
 // Run executes the price lookup with both CEX and DEX data
 func (t *ERC20PriceLookup) Run(ctx context.Context, input map[string]interface{}) (map[string]interface{}, error) {
 	// Extract search parameters from input
-	symbol, _ := input["symbol"].(string)
-	name, _ := input["name"].(string)
 	contractAddress, _ := input["contract_address"].(string)
-	convert, _ := input["convert"].(string) // Currency to convert to (default: USD)
 	networkIDFloat, _ := input["network_id"].(float64)
 	networkID := int64(networkIDFloat)
+
 	if networkID == 0 {
 		return nil, NewToolError("erc20_price_lookup", "network_id is required", "MISSING_NETWORK")
 	}
 
-	if convert == "" {
-		convert = "USD"
+	// For price service, we need the contract address
+	if contractAddress == "" {
+		return nil, NewToolError("erc20_price_lookup", "contract_address is required", "MISSING_CONTRACT")
 	}
 
-	// Need at least one search parameter
-	if symbol == "" && name == "" && contractAddress == "" {
-		return nil, NewToolError("erc20_price_lookup", "must provide symbol, name, or contract_address", "MISSING_PARAMS")
+	// Use price service
+	tokenPrice, err := t.getTokenPrice(ctx, contractAddress, networkID)
+	if err != nil {
+		return nil, err
 	}
 
-	var tokenPrice *TokenPrice
-
-	// Step 1: Try to get CEX price data (traditional CoinMarketCap API)
-	cexPrice, cexErr := t.getCEXPrice(ctx, symbol, name, contractAddress, convert)
-
-	// Step 2: Try to get DEX price data (new DEX API)
-	var dexData []DEXPriceData
-	var dexErr error
-	if contractAddress != "" && networkID != 0 {
-		dexData, dexErr = t.getDEXPrice(ctx, contractAddress, networkID)
-		// DEX API failure is not critical - we can still use CEX data
-		if dexErr != nil && cexErr == nil {
-			// If CEX succeeded but DEX failed, continue with CEX data only
-			dexErr = nil // Clear DEX error to avoid double failure
-		}
-	}
-
-	// Step 3: Try to get DEX listing metadata
-	var dexListing *DEXListingInfo
-	var dexListingErr error
-	if contractAddress != "" && networkID != 0 {
-		dexListing, dexListingErr = t.getDEXListingInfo(ctx, contractAddress, networkID)
-		// DEX listing failure is not critical
-	}
-
-	// Step 4: Combine the data intelligently
-	if cexErr != nil && dexErr != nil {
-		// Both failed
-		return nil, NewToolError("erc20_price_lookup", fmt.Sprintf("failed to get price from both CEX (%v) and DEX (%v)", cexErr, dexErr), "PRICE_FETCH_ERROR")
-	}
-
-	// Determine which data source to use and combine appropriately
-	if cexErr == nil && dexErr == nil {
-		// Both succeeded - combine data
-		tokenPrice = cexPrice
-		tokenPrice.DEXData = dexData
-		tokenPrice.HasDEXData = len(dexData) > 0
-		tokenPrice.PriceSource = "COMBINED"
-
-		// Calculate weighted DEX price and aggregate liquidity
-		if len(dexData) > 0 {
-			totalLiquidity := 0.0
-			weightedPrice := 0.0
-			totalVolume := 0.0
-
-			for _, dex := range dexData {
-				totalLiquidity += dex.LiquidityUSD
-				totalVolume += dex.VolumeUSD24h
-				// Weight price by liquidity (more liquid pairs have more influence)
-				if dex.LiquidityUSD > 0 {
-					weightedPrice += dex.Price * dex.LiquidityUSD
-				}
-			}
-
-			if totalLiquidity > 0 {
-				tokenPrice.DEXPrice = weightedPrice / totalLiquidity
-				tokenPrice.DEXLiquidity = totalLiquidity
-				tokenPrice.DEXVolume24h = totalVolume
-			}
-		}
-	} else if cexErr == nil {
-		// Only CEX succeeded
-		tokenPrice = cexPrice
-		tokenPrice.PriceSource = "CEX"
-	} else {
-		// Only DEX succeeded - create basic token price from DEX
-		if len(dexData) == 0 {
-			return nil, NewToolError("erc20_price_lookup", "no price data found", "NO_PRICE_DATA")
-		}
-
-		// Use the best DEX price (first one, sorted by liquidity)
-		bestDex := dexData[0]
-		tokenPrice = &TokenPrice{
-			Symbol:       bestDex.BaseSymbol,
-			Price:        bestDex.Price,
-			LastUpdated:  time.Now(),
-			DEXData:      dexData,
-			HasDEXData:   true,
-			PriceSource:  "DEX",
-			DEXPrice:     bestDex.Price,
-			DEXLiquidity: bestDex.LiquidityUSD,
-		}
-
-		// Calculate aggregated DEX metrics
-		totalLiquidity := 0.0
-		totalVolume := 0.0
-		for _, dex := range dexData {
-			totalLiquidity += dex.LiquidityUSD
-			totalVolume += dex.VolumeUSD24h
-		}
-		tokenPrice.DEXLiquidity = totalLiquidity
-		tokenPrice.DEXVolume24h = totalVolume
-	}
-
-	// Add DEX listing metadata if available
-	if dexListing != nil && dexListingErr == nil {
-		tokenPrice.DEXListing = dexListing
-		tokenPrice.HasDEXListing = true
-
-		// If we don't have a symbol from CEX, use DEX listing symbol
-		if tokenPrice.Symbol == "" && dexListing.Symbol != "" {
-			tokenPrice.Symbol = dexListing.Symbol
-		}
-
-		// If we don't have a name from CEX, use DEX listing name
-		if tokenPrice.Name == "" && dexListing.Name != "" {
-			tokenPrice.Name = dexListing.Name
-		}
-	}
-
-	// Set contract address
+	// Set contract address if not already set
 	if contractAddress != "" {
 		tokenPrice.Contract = contractAddress
 	}
@@ -888,19 +484,21 @@ func (t *ERC20PriceLookup) Run(ctx context.Context, input map[string]interface{}
 	}, nil
 }
 
-// getCEXPrice fetches price from traditional CoinMarketCap API using centralized client
-func (t *ERC20PriceLookup) getCEXPrice(ctx context.Context, symbol, name, contractAddress, convert string) (*TokenPrice, error) {
-	return t.cmcClient.GetTokenPrice(ctx, symbol, name, contractAddress, convert)
-}
+// getTokenPrice fetches price from the configured price service
+func (t *ERC20PriceLookup) getTokenPrice(ctx context.Context, contractAddress string, networkID int64) (*TokenPrice, error) {
+	result, err := t.priceService.GetTokenPrice(ctx, networkID, contractAddress)
+	if err != nil {
+		return nil, err
+	}
 
-// getDEXPrice fetches price data from CoinMarketCap DEX API using centralized client
-func (t *ERC20PriceLookup) getDEXPrice(ctx context.Context, contractAddress string, networkID int64) ([]DEXPriceData, error) {
-	return t.cmcClient.GetDEXPrice(ctx, contractAddress, networkID)
-}
-
-// getDEXListingInfo fetches DEX listing metadata from CoinMarketCap DEX API using centralized client
-func (t *ERC20PriceLookup) getDEXListingInfo(ctx context.Context, contractAddress string, networkID int64) (*DEXListingInfo, error) {
-	return t.cmcClient.GetDEXListingInfo(ctx, contractAddress, networkID)
+	// Convert TokenPriceResult to TokenPrice for compatibility
+	return &TokenPrice{
+		Symbol:      result.Symbol,
+		Price:       result.Price,
+		Contract:    result.Contract,
+		LastUpdated: result.LastUpdated,
+		PriceSource: result.PriceSource,
+	}, nil
 }
 
 // GetPromptContext provides price context for token transfers to include in LLM prompts
@@ -928,20 +526,6 @@ func (t *ERC20PriceLookup) GetPromptContext(ctx context.Context, baggage map[str
 			// Add price source information
 			if price.PriceSource != "" {
 				basePriceInfo += fmt.Sprintf(" [%s]", price.PriceSource)
-			}
-
-			// Add DEX information if available
-			if price.HasDEXData && len(price.DEXData) > 0 {
-				basePriceInfo += fmt.Sprintf("\n  • DEX Price: $%.6f", price.DEXPrice)
-				basePriceInfo += fmt.Sprintf(" (Liquidity: $%.0f)", price.DEXLiquidity)
-				basePriceInfo += fmt.Sprintf(" from %d DEX pairs", len(price.DEXData))
-
-				// Show top DEX sources
-				if len(price.DEXData) > 0 {
-					topDex := price.DEXData[0] // Already sorted by liquidity
-					basePriceInfo += fmt.Sprintf("\n  • Top DEX: %s ($%.0f liquidity)",
-						topDex.DexName, topDex.LiquidityUSD)
-				}
 			}
 
 			// Add transfer values if available
