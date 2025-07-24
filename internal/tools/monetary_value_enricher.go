@@ -2,16 +2,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"math/big"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/txplain/txplain/internal/models"
@@ -19,12 +14,10 @@ import (
 
 // MonetaryValueEnricher identifies and enriches all monetary values with USD equivalents
 type MonetaryValueEnricher struct {
-	llm           llms.Model
-	apiKey        string
-	httpClient    *http.Client
-	networkMapper *NetworkMapper
-	verbose       bool
-	cache         Cache // Cache for price lookups
+	llm       llms.Model
+	cmcClient *CoinMarketCapClient
+	verbose   bool
+	cache     Cache // Cache for price lookups
 }
 
 // EnrichedAmount represents a detected amount with USD value calculations
@@ -40,15 +33,12 @@ type EnrichedAmount struct {
 }
 
 // NewMonetaryValueEnricher creates a new monetary value enricher
-func NewMonetaryValueEnricher(llm llms.Model, coinMarketCapAPIKey string, cache Cache, verbose bool) *MonetaryValueEnricher {
-	networkMapper := NewNetworkMapper(coinMarketCapAPIKey, cache)
+func NewMonetaryValueEnricher(llm llms.Model, cmcClient *CoinMarketCapClient, cache Cache, verbose bool) *MonetaryValueEnricher {
 	return &MonetaryValueEnricher{
-		llm:           llm,
-		apiKey:        coinMarketCapAPIKey,
-		httpClient:    &http.Client{Timeout: 300 * time.Second}, // 5 minutes for price lookups
-		networkMapper: networkMapper,
-		verbose:       verbose,
-		cache:         cache,
+		llm:       llm,
+		cmcClient: cmcClient,
+		verbose:   verbose,
+		cache:     cache,
 	}
 }
 
@@ -72,7 +62,7 @@ func (m *MonetaryValueEnricher) Process(ctx context.Context, baggage map[string]
 	if m.verbose {
 		fmt.Println("\n" + strings.Repeat("💰", 60))
 		fmt.Println("🔍 MONETARY VALUE ENRICHER: Starting USD value enrichment")
-		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", m.apiKey != "")
+		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", m.cmcClient.IsAvailable())
 		fmt.Println(strings.Repeat("💰", 60))
 	}
 
@@ -279,8 +269,8 @@ func (m *MonetaryValueEnricher) enrichDetectedAmount(detected DetectedAmount, to
 			return nil
 		}
 
-		// Get native token symbol using NetworkMapper
-		nativeSymbol := m.networkMapper.GetNativeTokenSymbol(int64(networkID))
+		// Get native token symbol using centralized client
+		nativeSymbol := m.cmcClient.GetNativeTokenSymbol(int64(networkID))
 		if nativeSymbol == "" {
 			return nil // Can't process without symbol
 		}
@@ -390,14 +380,14 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 	}
 
 	// Map network ID to native token symbol
-	nativeTokenSymbol := m.networkMapper.GetNativeTokenSymbol(int64(networkID))
-	if nativeTokenSymbol == "" || m.apiKey == "" {
+	nativeTokenSymbol := m.cmcClient.GetNativeTokenSymbol(int64(networkID))
+	if nativeTokenSymbol == "" || !m.cmcClient.IsAvailable() {
 		// No native token symbol or API key - return 0
 		return 0
 	}
 
-	// Fetch actual price from CoinMarketCap API
-	price, err := m.fetchNativeTokenPrice(ctx, nativeTokenSymbol)
+	// Fetch actual price from centralized CoinMarketCap client
+	price, err := m.cmcClient.GetNativeTokenPrice(ctx, nativeTokenSymbol)
 	if err != nil {
 		// If price fetch fails, return 0 instead of hardcoded fallback
 		return 0
@@ -409,117 +399,17 @@ func (m *MonetaryValueEnricher) getNativeTokenPrice(ctx context.Context, baggage
 // getNativeTokenSymbol returns the native token symbol for a given network
 // Uses network configuration and pattern detection instead of hardcoding chain IDs
 func (m *MonetaryValueEnricher) getNativeTokenSymbol(networkID int64) string {
-	return m.networkMapper.GetNativeTokenSymbol(networkID)
-}
-
-// fetchNativeTokenPrice fetches the current USD price from CoinMarketCap API
-func (m *MonetaryValueEnricher) fetchNativeTokenPrice(ctx context.Context, symbol string) (float64, error) {
-	// Check cache first if available
-	if m.cache != nil {
-		cacheKey := fmt.Sprintf("native-token-price:%s:USD", strings.ToUpper(symbol))
-
-		var cachedPrice float64
-		if err := m.cache.GetJSON(ctx, cacheKey, &cachedPrice); err == nil {
-			if m.verbose {
-				fmt.Printf("  ✅ (cached) Native token price for %s: $%.6f\n", symbol, cachedPrice)
-			}
-			return cachedPrice, nil
-		} else if m.verbose {
-			fmt.Printf("  Cache miss for native token price %s: %v\n", symbol, err)
-		}
-	}
-
-	// Build query parameters
-	params := url.Values{}
-	params.Set("symbol", symbol)
-	params.Set("convert", "USD")
-
-	// Construct URL
-	quoteURL := fmt.Sprintf("https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?%s", params.Encode())
-
-	// Make request
-	req, err := http.NewRequestWithContext(ctx, "GET", quoteURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("X-CMC_PRO_API_KEY", m.apiKey)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Define response structure
-	var response struct {
-		Status struct {
-			ErrorCode    int    `json:"error_code"`
-			ErrorMessage string `json:"error_message"`
-		} `json:"status"`
-		Data map[string]struct {
-			Quote map[string]struct {
-				Price float64 `json:"price"`
-			} `json:"quote"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &response); err != nil {
-		return 0, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	if response.Status.ErrorCode != 0 {
-		return 0, fmt.Errorf("API error: %s", response.Status.ErrorMessage)
-	}
-
-	// Extract price data
-	tokenData, exists := response.Data[symbol]
-	if !exists {
-		return 0, fmt.Errorf("token data not found for symbol %s", symbol)
-	}
-
-	quoteData, exists := tokenData.Quote["USD"]
-	if !exists {
-		return 0, fmt.Errorf("USD quote not found for symbol %s", symbol)
-	}
-
-	price := quoteData.Price
-
-	// Cache successful result with price TTL (1 hour)
-	if m.cache != nil {
-		cacheKey := fmt.Sprintf("native-token-price:%s:USD", strings.ToUpper(symbol))
-		if err := m.cache.SetJSON(ctx, cacheKey, price, &PriceTTLDuration); err != nil {
-			if m.verbose {
-				fmt.Printf("  ⚠️ Failed to cache native token price for %s: %v\n", symbol, err)
-			}
-		} else if m.verbose {
-			fmt.Printf("  ✅ Cached native token price: %s -> $%.6f\n", symbol, price)
-		}
-	}
-
-	return price, nil
+	return m.cmcClient.GetNativeTokenSymbol(networkID)
 }
 
 // getFallbackNativeTokenPrice returns generic fallback price
 // Uses RPC-first approach, then API fallbacks, no hardcoded prices
 func (m *MonetaryValueEnricher) getFallbackNativeTokenPrice(networkID int64) float64 {
 	// Generic approach: try to fetch current price via API for any network
-	nativeSymbol := m.networkMapper.GetNativeTokenSymbol(networkID)
-	if nativeSymbol != "" && m.apiKey != "" {
+	nativeSymbol := m.cmcClient.GetNativeTokenSymbol(networkID)
+	if nativeSymbol != "" && m.cmcClient.IsAvailable() {
 		// Try to fetch actual current price from API
-		if price, err := m.fetchNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
+		if price, err := m.cmcClient.GetNativeTokenPrice(context.Background(), nativeSymbol); err == nil {
 			return price
 		}
 	}

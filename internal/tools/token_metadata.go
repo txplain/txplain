@@ -13,23 +13,77 @@ import (
 // TokenMetadataEnricher enriches ERC20 token addresses with metadata
 type TokenMetadataEnricher struct {
 	rpcClient *rpc.Client
+	cmcClient *CoinMarketCapClient
 	verbose   bool
 	cache     Cache // Cache for metadata lookups
 }
 
 // TokenMetadata represents metadata for a token
 type TokenMetadata struct {
-	Address  string `json:"address"`
-	Name     string `json:"name"`
-	Symbol   string `json:"symbol"`
-	Decimals int    `json:"decimals"`
-	Type     string `json:"type"` // ERC20, ERC721, etc.
+	Address     string `json:"address"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Decimals    int    `json:"decimals"`
+	Type        string `json:"type"` // ERC20, ERC721, etc.
+	Logo        string `json:"logo,omitempty"`
+	Description string `json:"description,omitempty"`
+	Website     string `json:"website,omitempty"`
+	Category    string `json:"category,omitempty"`
 }
 
-// NewTokenMetadataEnricher creates a new token metadata enricher
-func NewTokenMetadataEnricher(cache Cache, verbose bool, rpcClient *rpc.Client) *TokenMetadataEnricher {
+// CoinMarketCapInfoResponse represents the response from /v1/cryptocurrency/info
+type CoinMarketCapInfoResponse struct {
+	Status struct {
+		Timestamp    string `json:"timestamp"`
+		ErrorCode    int    `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+		Elapsed      int    `json:"elapsed"`
+		CreditCount  int    `json:"credit_count"`
+	} `json:"status"`
+	Data map[string]struct {
+		ID          int    `json:"id"`
+		Name        string `json:"name"`
+		Symbol      string `json:"symbol"`
+		Category    string `json:"category"`
+		Description string `json:"description"`
+		Slug        string `json:"slug"`
+		Logo        string `json:"logo"`
+		URLs        struct {
+			Website      []string `json:"website"`
+			TechnicalDoc []string `json:"technical_doc"`
+			Explorer     []string `json:"explorer"`
+			SourceCode   []string `json:"source_code"`
+			MessageBoard []string `json:"message_board"`
+			Chat         []string `json:"chat"`
+			Facebook     []string `json:"facebook"`
+			Twitter      []string `json:"twitter"`
+			Reddit       []string `json:"reddit"`
+		} `json:"urls"`
+		Platform struct {
+			ID           int    `json:"id"`
+			Name         string `json:"name"`
+			Symbol       string `json:"symbol"`
+			Slug         string `json:"slug"`
+			TokenAddress string `json:"token_address"`
+		} `json:"platform,omitempty"`
+	} `json:"data"`
+}
+
+// NewTokenMetadataEnricher creates a new token metadata enricher with provided CMC client
+func NewTokenMetadataEnricher(cache Cache, verbose bool, rpcClient *rpc.Client, cmcClient *CoinMarketCapClient) *TokenMetadataEnricher {
 	return &TokenMetadataEnricher{
 		rpcClient: rpcClient,
+		cmcClient: cmcClient,
+		verbose:   verbose,
+		cache:     cache,
+	}
+}
+
+// NewTokenMetadataEnricherWithCMC creates a new token metadata enricher with a provided CMC client
+func NewTokenMetadataEnricherWithCMC(cache Cache, verbose bool, rpcClient *rpc.Client, cmcClient *CoinMarketCapClient) *TokenMetadataEnricher {
+	return &TokenMetadataEnricher{
+		rpcClient: rpcClient,
+		cmcClient: cmcClient,
 		verbose:   verbose,
 		cache:     cache,
 	}
@@ -55,6 +109,7 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 	if t.verbose {
 		fmt.Println("\n" + strings.Repeat("🪙", 60))
 		fmt.Println("🔍 TOKEN METADATA ENRICHER: Starting token metadata enrichment")
+		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", t.cmcClient.IsAvailable())
 		fmt.Println(strings.Repeat("🪙", 60))
 	}
 
@@ -232,23 +287,70 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 			}
 		}
 
-		// Determine the best name and symbol to use (prioritize verified data)
-		var bestName, bestSymbol string
+		// Send sub-progress update for CoinMarketCap API calls
+		if hasProgress {
+			progress := fmt.Sprintf("Fetching CoinMarketCap metadata for %s...", address[:10]+"...")
+			progressTracker.UpdateComponent("token_metadata_enricher", models.ComponentGroupEnrichment, "Fetching Token Metadata", models.ComponentStatusRunning, progress)
+		}
+
+		// Try to get additional metadata from CoinMarketCap API
+		if t.cmcClient.IsAvailable() && hasAnyTokenLikeData {
+			cmcInfo, err := t.cmcClient.GetTokenInfo(ctx, address)
+			if err == nil && cmcInfo != nil {
+				contractInfo["cmc_name"] = cmcInfo.Name
+				contractInfo["cmc_symbol"] = cmcInfo.Symbol
+				contractInfo["cmc_logo"] = cmcInfo.Logo
+				contractInfo["cmc_description"] = cmcInfo.Description
+				contractInfo["cmc_website"] = cmcInfo.Website
+				contractInfo["cmc_category"] = cmcInfo.Category
+
+				if t.verbose {
+					fmt.Printf(" 🪙 CoinMarketCap data: %s (%s)", cmcInfo.Name, cmcInfo.Symbol)
+					if cmcInfo.Logo != "" {
+						fmt.Printf(" [Logo: ✅]")
+					}
+					fmt.Println()
+				}
+			}
+		}
+
+		// Determine the best name and symbol to use (prioritize verified data, then CMC, then RPC)
+		var bestName, bestSymbol, bestLogo, bestDescription, bestWebsite, bestCategory string
 		var bestDecimals int = -1
 
-		// Priority: verified ABI name > RPC name
-		if verifiedName, ok := contractInfo["verified_name"].(string); ok && verifiedName != "" {
+		// Priority: CMC name > verified ABI name > RPC name
+		if cmcName, ok := contractInfo["cmc_name"].(string); ok && cmcName != "" {
+			bestName = cmcName
+		} else if verifiedName, ok := contractInfo["verified_name"].(string); ok && verifiedName != "" {
 			bestName = verifiedName
 		} else if rpcName, ok := contractInfo["rpc_name"].(string); ok && rpcName != "" {
 			bestName = rpcName
 		}
 
-		// For symbol and decimals, use RPC data since verified contracts might not have these in the name
-		if rpcSymbol, ok := contractInfo["rpc_symbol"].(string); ok && rpcSymbol != "" {
+		// Priority: CMC symbol > RPC symbol
+		if cmcSymbol, ok := contractInfo["cmc_symbol"].(string); ok && cmcSymbol != "" {
+			bestSymbol = cmcSymbol
+		} else if rpcSymbol, ok := contractInfo["rpc_symbol"].(string); ok && rpcSymbol != "" {
 			bestSymbol = rpcSymbol
 		}
+
+		// Get best decimals from RPC (most authoritative for on-chain data)
 		if rpcDecimals, ok := contractInfo["rpc_decimals"].(int); ok {
 			bestDecimals = rpcDecimals
+		}
+
+		// Get additional CoinMarketCap metadata
+		if cmcLogo, ok := contractInfo["cmc_logo"].(string); ok && cmcLogo != "" {
+			bestLogo = cmcLogo
+		}
+		if cmcDescription, ok := contractInfo["cmc_description"].(string); ok && cmcDescription != "" {
+			bestDescription = cmcDescription
+		}
+		if cmcWebsite, ok := contractInfo["cmc_website"].(string); ok && cmcWebsite != "" {
+			bestWebsite = cmcWebsite
+		}
+		if cmcCategory, ok := contractInfo["cmc_category"].(string); ok && cmcCategory != "" {
+			bestCategory = cmcCategory
 		}
 
 		// Determine token type based on available methods and responses
@@ -268,11 +370,15 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 		// ONLY add contracts that actually have token-like methods, not just any verified contract
 		if hasAnyTokenLikeData {
 			metadata := &TokenMetadata{
-				Address:  address,
-				Type:     tokenType, // Use determined token type instead of generic "Contract"
-				Name:     bestName,
-				Symbol:   bestSymbol,
-				Decimals: bestDecimals,
+				Address:     address,
+				Type:        tokenType, // Use determined token type instead of generic "Contract"
+				Name:        bestName,
+				Symbol:      bestSymbol,
+				Decimals:    bestDecimals,
+				Logo:        bestLogo,
+				Description: bestDescription,
+				Website:     bestWebsite,
+				Category:    bestCategory,
 			}
 			contractMetadata[address] = metadata
 			tokenCount++
@@ -310,81 +416,44 @@ func getStringValue(info map[string]interface{}, key string) string {
 
 // GetPromptContext provides context for the LLM prompt
 func (t *TokenMetadataEnricher) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
-	var contextParts []string
-
-	// Add comprehensive contract information
-	if allContractInfo, ok := baggage["all_contract_info"].(map[string]map[string]interface{}); ok && len(allContractInfo) > 0 {
-		contextParts = append(contextParts, "=== CONTRACT INFORMATION ===")
-		for address, info := range allContractInfo {
-			var contractDesc []string
-			contractDesc = append(contractDesc, fmt.Sprintf("Contract: %s", address))
-
-			// Verified contract information (most authoritative)
-			if verifiedName, ok := info["verified_name"].(string); ok && verifiedName != "" {
-				contractDesc = append(contractDesc, fmt.Sprintf("Verified Name: %s", verifiedName))
-			}
-			if isVerified, ok := info["is_verified"].(bool); ok && isVerified {
-				contractDesc = append(contractDesc, "Source: Verified on Etherscan")
-			}
-			if isProxy, ok := info["is_proxy"].(bool); ok && isProxy {
-				contractDesc = append(contractDesc, "Type: Proxy Contract")
-				if impl, ok := info["implementation"].(string); ok && impl != "" {
-					contractDesc = append(contractDesc, fmt.Sprintf("Implementation: %s", impl))
-				}
-			}
-
-			// RPC method call results
-			if rpcName, ok := info["rpc_name"].(string); ok && rpcName != "" {
-				contractDesc = append(contractDesc, fmt.Sprintf("Name() method returns: %s", rpcName))
-			}
-			if rpcSymbol, ok := info["rpc_symbol"].(string); ok && rpcSymbol != "" {
-				contractDesc = append(contractDesc, fmt.Sprintf("Symbol() method returns: %s", rpcSymbol))
-			}
-			if rpcDecimals, ok := info["rpc_decimals"].(int); ok && rpcDecimals >= 0 {
-				contractDesc = append(contractDesc, fmt.Sprintf("Decimals() method returns: %d", rpcDecimals))
-			}
-			if totalSupply, ok := info["rpc_total_supply"].(string); ok && totalSupply != "" {
-				contractDesc = append(contractDesc, fmt.Sprintf("TotalSupply() method returns: %s", totalSupply))
-			}
-
-			// Supported interfaces
-			if interfaces, ok := info["supported_interfaces"].([]string); ok && len(interfaces) > 0 {
-				contractDesc = append(contractDesc, fmt.Sprintf("Supported Interfaces: %v", interfaces))
-			}
-
-			// Available methods
-			if methods, ok := info["available_methods"].([]string); ok && len(methods) > 0 {
-				contractDesc = append(contractDesc, fmt.Sprintf("Available Methods: %v", methods))
-			}
-
-			// Compiler info for verified contracts
-			if compiler, ok := info["compiler_version"].(string); ok && compiler != "" {
-				contractDesc = append(contractDesc, fmt.Sprintf("Compiler: %s", compiler))
-			}
-
-			// Add to context
-			contextParts = append(contextParts, "- "+strings.Join(contractDesc, "\n  "))
-		}
+	tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata)
+	if !ok || len(tokenMetadata) == 0 {
+		return ""
 	}
 
-	// Add simplified token metadata summary (if any contracts have token-like characteristics)
-	if tokenMetadata, ok := baggage["token_metadata"].(map[string]*TokenMetadata); ok && len(tokenMetadata) > 0 {
-		contextParts = append(contextParts, "", "=== CONTRACTS WITH TOKEN-LIKE METHODS ===")
-		for address, metadata := range tokenMetadata {
-			line := fmt.Sprintf("- %s", address)
-			if metadata.Name != "" {
-				line += fmt.Sprintf(": %s", metadata.Name)
-			}
-			if metadata.Symbol != "" {
-				line += fmt.Sprintf(" (%s)", metadata.Symbol)
-			}
-			if metadata.Decimals >= 0 {
-				line += fmt.Sprintf(" - %d decimals", metadata.Decimals)
-			}
-			contextParts = append(contextParts, line)
-		}
+	var contextParts []string
+	contextParts = append(contextParts, "Token Metadata:")
 
-		contextParts = append(contextParts, "", "Note: These contracts respond to token-like methods (name, symbol, decimals) but may not be actual tokens. Router contracts, aggregators, and other DeFi contracts often implement these methods for compatibility.")
+	for address, metadata := range tokenMetadata {
+		if metadata.Name != "" && metadata.Symbol != "" {
+			tokenInfo := fmt.Sprintf("- %s (%s): Contract %s", metadata.Name, metadata.Symbol, address)
+
+			if metadata.Decimals > 0 {
+				tokenInfo += fmt.Sprintf(", %d decimals", metadata.Decimals)
+			}
+
+			if metadata.Type != "" {
+				tokenInfo += fmt.Sprintf(", Type: %s", metadata.Type)
+			}
+
+			if metadata.Category != "" {
+				tokenInfo += fmt.Sprintf(", Category: %s", metadata.Category)
+			}
+
+			if metadata.Description != "" {
+				tokenInfo += fmt.Sprintf(", Description: %s", metadata.Description)
+			}
+
+			if metadata.Website != "" {
+				tokenInfo += fmt.Sprintf(", Website: %s", metadata.Website)
+			}
+
+			if metadata.Logo != "" {
+				tokenInfo += fmt.Sprintf(", Logo: %s", metadata.Logo)
+			}
+
+			contextParts = append(contextParts, tokenInfo)
+		}
 	}
 
 	return strings.Join(contextParts, "\n")
