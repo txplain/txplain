@@ -93,12 +93,20 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 
 		var cachedEvents []models.Event
 		if err := l.cache.GetJSON(ctx, cacheKey, &cachedEvents); err == nil {
-			if l.verbose {
-				fmt.Printf("✅ Found cached decoded logs: %d events\n", len(cachedEvents))
-				fmt.Println(strings.Repeat("📜", 60) + "\n")
+			// Check if cached events have proper ABI-based parameter names
+			// If they have generic names like param_1, param_2, ignore cache and do fresh parsing
+			if l.hasValidParameterNames(cachedEvents) {
+				if l.verbose {
+					fmt.Printf("✅ Found cached decoded logs with valid parameter names: %d events\n", len(cachedEvents))
+					fmt.Println(strings.Repeat("📜", 60) + "\n")
+				}
+				baggage["events"] = cachedEvents
+				return nil
+			} else {
+				if l.verbose {
+					fmt.Printf("⚠️ Cached events have generic parameter names, forcing fresh parsing\n")
+				}
 			}
-			baggage["events"] = cachedEvents
-			return nil
 		} else if l.verbose {
 			fmt.Printf("Cache miss for decoded logs %s: %v\n", txHash, err)
 		}
@@ -119,6 +127,8 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 			cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
 			if err := l.cache.SetJSON(ctx, cacheKey, emptyEvents, &LogDecodingTTLDuration); err != nil && l.verbose {
 				fmt.Printf("⚠️ Failed to cache empty decoded logs: %v\n", err)
+			} else if l.verbose {
+				fmt.Printf("✅ Cached empty events result\n")
 			}
 		}
 		return nil
@@ -188,11 +198,19 @@ func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}
 	// Add decoded events to baggage
 	baggage["events"] = events
 
-	// Cache the processed results
+	// Cache the processed results only if they have valid parameter names
 	if l.cache != nil {
 		cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
-		if err := l.cache.SetJSON(ctx, cacheKey, events, &LogDecodingTTLDuration); err != nil && l.verbose {
-			fmt.Printf("⚠️ Failed to cache decoded logs: %v\n", err)
+
+		// Only cache events with proper ABI-based parameter names
+		if l.hasValidParameterNames(events) {
+			if err := l.cache.SetJSON(ctx, cacheKey, events, &LogDecodingTTLDuration); err != nil && l.verbose {
+				fmt.Printf("⚠️ Failed to cache decoded logs: %v\n", err)
+			} else if l.verbose {
+				fmt.Printf("✅ Cached %d events with valid parameter names\n", len(events))
+			}
+		} else if l.verbose {
+			fmt.Printf("⚠️ Skipping cache for events with generic parameter names\n")
 		}
 	}
 
@@ -733,7 +751,7 @@ func (t *LogDecoder) parseEventWithABI(topics []string, data string, abiMethod *
 		}
 
 		if t.verbose || os.Getenv("DEBUG") == "true" {
-			fmt.Printf("Processing ABI parameter %d: name='%s', type='%s', indexed=%t\n", i, paramName, input.Type, input.Indexed)
+			fmt.Printf("  Processing ABI parameter %d: name='%s', type='%s', indexed=%t\n", i, paramName, input.Type, input.Indexed)
 		}
 
 		if input.Indexed {
@@ -765,6 +783,63 @@ func (t *LogDecoder) parseEventWithABI(topics []string, data string, abiMethod *
 	}
 
 	return parameters, nil
+}
+
+// hasValidParameterNames checks if cached events have proper ABI-based parameter names
+// Returns false if events primarily use generic names like param_1, param_2, etc.
+func (l *LogDecoder) hasValidParameterNames(events []models.Event) bool {
+	if len(events) == 0 {
+		return true // Empty events are considered valid
+	}
+
+	totalParams := 0
+	genericParams := 0
+
+	for _, event := range events {
+		if event.Parameters == nil {
+			continue
+		}
+
+		for paramName := range event.Parameters {
+			// Skip metadata parameters that are added by the system
+			if paramName == "signature" || paramName == "contract_type" ||
+				paramName == "contract_name" || paramName == "contract_symbol" {
+				continue
+			}
+
+			// Extract the base parameter name by removing common suffixes
+			baseName := paramName
+			suffixes := []string{"_decimal", "_address", "_type", "_utf8", "_boolean", "_indexed", "_data"}
+			for _, suffix := range suffixes {
+				if strings.HasSuffix(baseName, suffix) {
+					baseName = strings.TrimSuffix(baseName, suffix)
+					break
+				}
+			}
+
+			totalParams++
+
+			// Check if the base name looks like a generic parameter name
+			if strings.HasPrefix(baseName, "param_") || strings.HasPrefix(baseName, "_extra_topic_") ||
+				(strings.HasPrefix(baseName, "_") && len(baseName) == 3 && strings.HasSuffix(baseName[1:], "_")) {
+				genericParams++
+			}
+		}
+	}
+
+	// If we have no parameters to check, consider it valid
+	if totalParams == 0 {
+		return true
+	}
+
+	// If more than 30% of parameters are generic, consider this invalid
+	// This allows for some edge cases while catching the main issue
+	genericRatio := float64(genericParams) / float64(totalParams)
+	if l.verbose {
+		fmt.Printf("🔍 Cache validation: %d generic params out of %d total (%.1f%% generic)\n",
+			genericParams, totalParams, genericRatio*100)
+	}
+	return genericRatio <= 0.3
 }
 
 // parseABIParameter parses a single ABI parameter (for indexed parameters in topics)

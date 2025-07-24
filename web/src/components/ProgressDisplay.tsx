@@ -43,13 +43,13 @@ const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ components, isComplet
     }
   }, [isComplete])
 
-  // Reset expansion state when a new analysis begins
+  // Reset expansion state when a new analysis begins (only when components are added, not when user toggles)
   useEffect(() => {
-    // If we have components but were previously collapsed, or if this is the first component, expand
-    if (components.length > 0 && (!isExpanded || components.length === 1)) {
+    // Only expand when we get the first component (new analysis starts)
+    if (components.length === 1) {
       setIsExpanded(true)
     }
-  }, [components.length, isExpanded])
+  }, [components.length])
 
   // Live timer effect for running components
   useEffect(() => {

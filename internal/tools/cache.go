@@ -152,22 +152,21 @@ var (
 
 // Cache key patterns for consistent naming - includes network ID for uniqueness
 const (
-	// ABI caching - format: contract-abi:networkId:address
-	ABIKeyPattern         = "contract-abi:%d:%s"  // contract-abi:1:0x123...
-	ABIFunctionKeyPattern = "abi-func-sig:%d:%s"  // abi-func-sig:1:0x12345678
-	ABIEventKeyPattern    = "abi-event-sig:%d:%s" // abi-event-sig:1:0xddf252ad...
+	// ABI caching - format: contract-abi:networkId:address (network-specific)
+	ABIKeyPattern         = "contract-abi:%d:%s" // contract-abi:1:0x123...
+	ABIFunctionKeyPattern = "abi-func-sig:%s"    // abi-func-sig:0x12345678 (universal)
+	ABIEventKeyPattern    = "abi-event-sig:%s"   // abi-event-sig:0xddf252ad... (universal)
 
-	// 4byte signature caching - format: 4byte-sig:type:hash
+	// 4byte signature caching - format: 4byte-sig:type:hash (universal)
 	FunctionSigKeyPattern = "4byte-func-sig:%s"  // 4byte-func-sig:0x12345678
 	EventSigKeyPattern    = "4byte-event-sig:%s" // 4byte-event-sig:0xddf252ad...
 
-	// Token price caching - format: erc20-price:networkId:address
-	TokenPriceKeyPattern = "erc20-price:%d:%s"   // erc20-price:1:0x123...
-	CMCMappingKeyPattern = "cmc-token-map:%d:%s" // cmc-token-map:1:0x123...
+	// Token price caching - format: erc20-price:networkId:address (network-specific)
+	TokenPriceKeyPattern = "erc20-price:%d:%s" // erc20-price:1:0x123...
 
-	// ENS caching - format: ens-name:networkId:address or ens-addr:networkId:name
-	ENSNameKeyPattern    = "ens-name:%d:%s" // ens-name:1:0x123...
-	ENSAddressKeyPattern = "ens-addr:%d:%s" // ens-addr:1:vitalik.eth
+	// ENS caching - format: ens-name:address or ens-addr:name (universal - ENS is on mainnet)
+	ENSNameKeyPattern    = "ens-name:%s" // ens-name:0x123...
+	ENSAddressKeyPattern = "ens-addr:%s" // ens-addr:vitalik.eth
 
 	// Token metadata caching - format: token-meta:networkId:address
 	TokenMetadataKeyPattern = "token-meta:%d:%s" // token-meta:1:0x123...
@@ -176,8 +175,7 @@ const (
 	TokenIconKeyPattern = "token-icon:%d:%s" // token-icon:1:0x123...
 
 	// Network caching - format: network-info:chainId
-	NetworkKeyPattern    = "network-info:%d" // network-info:1
-	CMCNetworkKeyPattern = "cmc-network:%s"  // cmc-network:ethereum
+	NetworkKeyPattern = "network-info:%d" // network-info:1
 
 	// Transaction context caching - format: tx-context:networkId:hash
 	TransactionContextKeyPattern = "tx-context:%d:%s" // tx-context:1:0x123...

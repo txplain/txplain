@@ -25,9 +25,9 @@ type Server struct {
 }
 
 // NewServer creates a new API server
-func NewServer(address string, openaiAPIKey string, coinMarketCapAPIKey string, cache tools.Cache, verbose bool) (*Server, error) {
+func NewServer(address string, openaiAPIKey string, cache tools.Cache, verbose bool) (*Server, error) {
 	// Initialize the Txplain agent
-	txAgent, err := agent.NewTxplainAgent(openaiAPIKey, coinMarketCapAPIKey, cache, verbose)
+	txAgent, err := agent.NewTxplainAgent(openaiAPIKey, cache, verbose)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize agent: %w", err)
 	}

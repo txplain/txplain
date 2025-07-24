@@ -4,54 +4,34 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/txplain/txplain/internal/models"
 )
 
-// IconResolver discovers token icons from multiple sources (CoinMarketCap, TrustWallet)
+// IconResolver discovers token icons from multiple sources (TrustWallet)
 type IconResolver struct {
 	httpClient            *http.Client
 	staticContextProvider *StaticContextProvider
-	cmcClient             *CoinMarketCapClient
 	discoveredIcons       map[string]string // address -> icon URL
 	verbose               bool
 	cache                 Cache // Cache for icon URLs
-}
-
-// CoinMarketCapIconInfo represents icon information from CoinMarketCap
-type CoinMarketCapIconInfo struct {
-	Address string `json:"address"`
-	LogoURL string `json:"logo_url"`
-	Source  string `json:"source"` // "coinmarketcap" or "trustwallet"
+	currentNetworkID      int64 // To store network ID for dynamic chain slug
 }
 
 // NewIconResolver creates a new icon resolver
-func NewIconResolver(staticContextProvider *StaticContextProvider, cache Cache, verbose bool, cmcClient *CoinMarketCapClient) *IconResolver {
+func NewIconResolver(staticContextProvider *StaticContextProvider, cache Cache, verbose bool) *IconResolver {
 	return &IconResolver{
 		httpClient: &http.Client{
 			Timeout: 300 * time.Second, // 5 minutes for icon downloads
 		},
 		staticContextProvider: staticContextProvider,
-		cmcClient:             cmcClient,
 		discoveredIcons:       make(map[string]string),
 		verbose:               verbose,
 		cache:                 cache,
-	}
-}
-
-// NewIconResolverWithCMC creates a new icon resolver with a provided CMC client
-func NewIconResolverWithCMC(staticContextProvider *StaticContextProvider, cache Cache, verbose bool, cmcClient *CoinMarketCapClient) *IconResolver {
-	return &IconResolver{
-		httpClient: &http.Client{
-			Timeout: 300 * time.Second, // 5 minutes for icon downloads
-		},
-		staticContextProvider: staticContextProvider,
-		cmcClient:             cmcClient,
-		discoveredIcons:       make(map[string]string),
-		verbose:               verbose,
-		cache:                 cache,
+		currentNetworkID:      1, // Default to Ethereum for now, will be set during Process
 	}
 }
 
@@ -62,7 +42,7 @@ func (ir *IconResolver) Name() string {
 
 // Description returns the processor description
 func (ir *IconResolver) Description() string {
-	return "Discovers token icons from CoinMarketCap API (primary) and TrustWallet repository (fallback) for contracts without CSV entries"
+	return "Discovers token icons from TrustWallet repository for contracts without CSV entries"
 }
 
 // Dependencies returns the tools this processor depends on
@@ -72,6 +52,15 @@ func (ir *IconResolver) Dependencies() []string {
 
 // Process discovers icons for contract addresses
 func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interface{}) error {
+	// Get network ID from raw data (following pattern of other tools)
+	networkID := int64(1) // Default to Ethereum
+	if rawData, ok := baggage["raw_data"].(map[string]interface{}); ok {
+		if nid, ok := rawData["network_id"].(float64); ok {
+			networkID = int64(nid)
+		}
+	}
+	ir.currentNetworkID = networkID
+
 	// Get contract addresses from baggage (set by ABI resolver)
 	contractAddresses, ok := baggage["contract_addresses"].([]string)
 	if !ok || len(contractAddresses) == 0 {
@@ -81,9 +70,6 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 		return nil
 	}
 
-	// Get token metadata from baggage (enhanced with CoinMarketCap data)
-	tokenMetadata, hasTokenMetadata := baggage["token_metadata"].(map[string]*TokenMetadata)
-
 	// Get progress tracker from baggage if available
 	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
 
@@ -92,7 +78,6 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 
 	if ir.verbose {
 		fmt.Printf("IconResolver: Processing %d contract addresses\n", len(contractAddresses))
-		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", ir.cmcClient.IsAvailable())
 	}
 
 	// Process each contract address with granular progress updates
@@ -113,38 +98,13 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 		var iconURL string
 		var iconSource string
 
-		// Step 1: Check if we already have logo from token metadata (CoinMarketCap)
-		if hasTokenMetadata {
-			if metadata, exists := tokenMetadata[address]; exists && metadata.Logo != "" {
-				iconURL = metadata.Logo
-				iconSource = "coinmarketcap_metadata"
-				if ir.verbose {
-					fmt.Printf("IconResolver: Using CoinMarketCap logo from metadata for %s: %s\n", address, iconURL)
-				}
-			}
-		}
-
-		// Step 2: If no logo from metadata, try CoinMarketCap API directly
-		if iconURL == "" && ir.cmcClient.IsAvailable() {
-			tokenInfo, err := ir.cmcClient.GetTokenInfo(ctx, address)
-			if err == nil && tokenInfo != nil && tokenInfo.Logo != "" {
-				iconURL = tokenInfo.Logo
-				iconSource = "coinmarketcap_api"
-				if ir.verbose {
-					fmt.Printf("IconResolver: Found CoinMarketCap API logo for %s: %s\n", address, iconURL)
-				}
-			}
-		}
-
-		// Step 3: Fallback to TrustWallet repository
-		if iconURL == "" {
-			trustWalletIcon := ir.getTrustWalletIcon(ctx, address)
-			if trustWalletIcon != "" {
-				iconURL = trustWalletIcon
-				iconSource = "trustwallet"
-				if ir.verbose {
-					fmt.Printf("IconResolver: Found TrustWallet icon for %s: %s\n", address, iconURL)
-				}
+		// Try TrustWallet repository
+		trustWalletIcon := ir.getTrustWalletIcon(ctx, address)
+		if trustWalletIcon != "" {
+			iconURL = trustWalletIcon
+			iconSource = "trustwallet"
+			if ir.verbose {
+				fmt.Printf("IconResolver: Found TrustWallet icon for %s: %s\n", address, iconURL)
 			}
 		}
 
@@ -180,65 +140,14 @@ func (ir *IconResolver) Process(ctx context.Context, baggage map[string]interfac
 	return nil
 }
 
-// getCoinMarketCapIcon fetches icon from CoinMarketCap API using centralized client
-func (ir *IconResolver) getCoinMarketCapIcon(ctx context.Context, address string) *CoinMarketCapIconInfo {
-	if !ir.cmcClient.IsAvailable() {
-		return nil
-	}
-
-	// Check cache first if available
-	if ir.cache != nil {
-		cacheKey := fmt.Sprintf("cmc-icon:%s", strings.ToLower(address))
-
-		var cachedIcon CoinMarketCapIconInfo
-		if err := ir.cache.GetJSON(ctx, cacheKey, &cachedIcon); err == nil {
-			if ir.verbose {
-				fmt.Printf("    ✅ (cached) CoinMarketCap icon for %s: %s\n", address, cachedIcon.LogoURL)
-			}
-			return &cachedIcon
-		}
-	}
-
-	// Get token info which includes logo URL
-	tokenInfo, err := ir.cmcClient.GetTokenInfo(ctx, address)
-	if err != nil {
-		if ir.verbose {
-			fmt.Printf("    ❌ CoinMarketCap token lookup failed for %s: %v\n", address, err)
-		}
-		return nil
-	}
-
-	if tokenInfo.Logo == "" {
-		if ir.verbose {
-			fmt.Printf("    ❌ No logo found for %s in CoinMarketCap data\n", address)
-		}
-		return nil
-	}
-
-	iconInfo := &CoinMarketCapIconInfo{
-		Address: address,
-		LogoURL: tokenInfo.Logo,
-		Source:  "coinmarketcap",
-	}
-
-	// Cache successful result if available - use permanent TTL for icons
-	if ir.cache != nil {
-		cacheKey := fmt.Sprintf("cmc-icon:%s", strings.ToLower(address))
-		if err := ir.cache.SetJSON(ctx, cacheKey, iconInfo, &IconTTLDuration); err != nil {
-			if ir.verbose {
-				fmt.Printf("    ⚠️ Failed to cache CoinMarketCap icon for %s: %v\n", address, err)
-			}
-		}
-	}
-
-	return iconInfo
-}
-
 // getTrustWalletIcon fetches icon from TrustWallet repository (fallback)
 func (ir *IconResolver) getTrustWalletIcon(ctx context.Context, address string) string {
+	// Get network ID from baggage for proper chain slug
+	networkID := ir.getNetworkIDFromBaggage()
+	
 	// Check cache first if available
 	if ir.cache != nil {
-		cacheKey := fmt.Sprintf("trustwallet-icon:%s", strings.ToLower(address))
+		cacheKey := fmt.Sprintf("trustwallet-icon:%d:%s", networkID, strings.ToLower(address))
 
 		var cachedURL string
 		if err := ir.cache.GetJSON(ctx, cacheKey, &cachedURL); err == nil {
@@ -251,15 +160,15 @@ func (ir *IconResolver) getTrustWalletIcon(ctx context.Context, address string) 
 
 	// Try both original address and checksummed version
 	iconURLs := []string{
-		ir.buildTrustWalletIconURL(address),
-		ir.buildTrustWalletIconURL(ir.toChecksumAddress(address)),
+		ir.buildTrustWalletIconURL(address, networkID),
+		ir.buildTrustWalletIconURL(ir.toChecksumAddress(address), networkID),
 	}
 
 	for _, iconURL := range iconURLs {
 		if ir.checkIconExists(ctx, iconURL) {
 			// Cache successful result
 			if ir.cache != nil {
-				cacheKey := fmt.Sprintf("trustwallet-icon:%s", strings.ToLower(address))
+				cacheKey := fmt.Sprintf("trustwallet-icon:%d:%s", networkID, strings.ToLower(address))
 				if err := ir.cache.SetJSON(ctx, cacheKey, iconURL, &IconTTLDuration); err != nil {
 					if ir.verbose {
 						fmt.Printf("    ⚠️ Failed to cache TrustWallet icon for %s: %v\n", address, err)
@@ -272,7 +181,7 @@ func (ir *IconResolver) getTrustWalletIcon(ctx context.Context, address string) 
 
 	// Cache negative result to avoid repeated failed requests
 	if ir.cache != nil {
-		cacheKey := fmt.Sprintf("trustwallet-icon:%s", strings.ToLower(address))
+		cacheKey := fmt.Sprintf("trustwallet-icon:%d:%s", networkID, strings.ToLower(address))
 		ir.cache.SetJSON(ctx, cacheKey, "", &IconTTLDuration)
 	}
 
@@ -302,9 +211,56 @@ func (ir *IconResolver) hasIconInCSV(address string) bool {
 	return false
 }
 
-// buildTrustWalletIconURL constructs the TrustWallet icon URL for an address
-func (ir *IconResolver) buildTrustWalletIconURL(address string) string {
-	return fmt.Sprintf("https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/%s/logo.png", address)
+// buildTrustWalletIconURL constructs the TrustWallet icon URL for an address and network
+func (ir *IconResolver) buildTrustWalletIconURL(address string, networkID int64) string {
+	chainSlug, err := ir.getTrustWalletChainSlug(networkID)
+	if err != nil {
+		if ir.verbose {
+			fmt.Printf("    ⚠️ No TrustWallet chain slug configured for network %d: %v\n", networkID, err)
+		}
+		// Fall back to ethereum for backward compatibility
+		chainSlug = "ethereum"
+	}
+	
+	return fmt.Sprintf("https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/%s/assets/%s/logo.png", chainSlug, address)
+}
+
+// getTrustWalletChainSlug gets the TrustWallet chain slug from environment variables
+func (ir *IconResolver) getTrustWalletChainSlug(networkID int64) (string, error) {
+	// Look for network-specific environment variable
+	// Pattern: TRUSTWALLET_ASSETS_SLUG_CHAIN_<CHAIN_ID>=<SLUG>
+	envKey := fmt.Sprintf("TRUSTWALLET_ASSETS_SLUG_CHAIN_%d", networkID)
+	if chainSlug := os.Getenv(envKey); chainSlug != "" {
+		return chainSlug, nil
+	}
+
+	// Fallback to common network mappings if not in env
+	fallbackMappings := map[int64]string{
+		1:     "ethereum",  // Ethereum
+		137:   "polygon",   // Polygon
+		56:    "smartchain", // BSC (TrustWallet uses "smartchain" for BSC)
+		43114: "avalanchec", // Avalanche (TrustWallet uses "avalanchec")
+		250:   "fantom",    // Fantom
+		42161: "arbitrum",  // Arbitrum
+		10:    "optimism",  // Optimism
+		8453:  "base",      // Base
+		25:    "cronos",    // Cronos
+		100:   "xdai",      // Gnosis Chain (xDAI)
+	}
+
+	if chainSlug, exists := fallbackMappings[networkID]; exists {
+		return chainSlug, nil
+	}
+
+	return "", fmt.Errorf("network ID %d not supported - add TRUSTWALLET_ASSETS_SLUG_CHAIN_%d=<slug> to environment", networkID, networkID)
+}
+
+// getNetworkIDFromBaggage extracts network ID from baggage like other tools
+func (ir *IconResolver) getNetworkIDFromBaggage() int64 {
+	// This is a bit of a hack - we store the baggage during Process and use it here
+	// Following the same pattern as other tools that need network info
+	// Default to Ethereum if not available
+	return ir.currentNetworkID
 }
 
 // toChecksumAddress converts an address to EIP-55 checksum format (simplified)

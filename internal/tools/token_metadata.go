@@ -13,7 +13,6 @@ import (
 // TokenMetadataEnricher enriches ERC20 token addresses with metadata
 type TokenMetadataEnricher struct {
 	rpcClient *rpc.Client
-	cmcClient *CoinMarketCapClient
 	verbose   bool
 	cache     Cache // Cache for metadata lookups
 }
@@ -31,59 +30,10 @@ type TokenMetadata struct {
 	Category    string `json:"category,omitempty"`
 }
 
-// CoinMarketCapInfoResponse represents the response from /v1/cryptocurrency/info
-type CoinMarketCapInfoResponse struct {
-	Status struct {
-		Timestamp    string `json:"timestamp"`
-		ErrorCode    int    `json:"error_code"`
-		ErrorMessage string `json:"error_message"`
-		Elapsed      int    `json:"elapsed"`
-		CreditCount  int    `json:"credit_count"`
-	} `json:"status"`
-	Data map[string]struct {
-		ID          int    `json:"id"`
-		Name        string `json:"name"`
-		Symbol      string `json:"symbol"`
-		Category    string `json:"category"`
-		Description string `json:"description"`
-		Slug        string `json:"slug"`
-		Logo        string `json:"logo"`
-		URLs        struct {
-			Website      []string `json:"website"`
-			TechnicalDoc []string `json:"technical_doc"`
-			Explorer     []string `json:"explorer"`
-			SourceCode   []string `json:"source_code"`
-			MessageBoard []string `json:"message_board"`
-			Chat         []string `json:"chat"`
-			Facebook     []string `json:"facebook"`
-			Twitter      []string `json:"twitter"`
-			Reddit       []string `json:"reddit"`
-		} `json:"urls"`
-		Platform struct {
-			ID           int    `json:"id"`
-			Name         string `json:"name"`
-			Symbol       string `json:"symbol"`
-			Slug         string `json:"slug"`
-			TokenAddress string `json:"token_address"`
-		} `json:"platform,omitempty"`
-	} `json:"data"`
-}
-
-// NewTokenMetadataEnricher creates a new token metadata enricher with provided CMC client
-func NewTokenMetadataEnricher(cache Cache, verbose bool, rpcClient *rpc.Client, cmcClient *CoinMarketCapClient) *TokenMetadataEnricher {
+// NewTokenMetadataEnricher creates a new token metadata enricher
+func NewTokenMetadataEnricher(cache Cache, verbose bool, rpcClient *rpc.Client) *TokenMetadataEnricher {
 	return &TokenMetadataEnricher{
 		rpcClient: rpcClient,
-		cmcClient: cmcClient,
-		verbose:   verbose,
-		cache:     cache,
-	}
-}
-
-// NewTokenMetadataEnricherWithCMC creates a new token metadata enricher with a provided CMC client
-func NewTokenMetadataEnricherWithCMC(cache Cache, verbose bool, rpcClient *rpc.Client, cmcClient *CoinMarketCapClient) *TokenMetadataEnricher {
-	return &TokenMetadataEnricher{
-		rpcClient: rpcClient,
-		cmcClient: cmcClient,
 		verbose:   verbose,
 		cache:     cache,
 	}
@@ -109,7 +59,6 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 	if t.verbose {
 		fmt.Println("\n" + strings.Repeat("🪙", 60))
 		fmt.Println("🔍 TOKEN METADATA ENRICHER: Starting token metadata enrichment")
-		fmt.Printf("🔑 CoinMarketCap API Key available: %t\n", t.cmcClient.IsAvailable())
 		fmt.Println(strings.Repeat("🪙", 60))
 	}
 
@@ -287,70 +236,25 @@ func (t *TokenMetadataEnricher) Process(ctx context.Context, baggage map[string]
 			}
 		}
 
-		// Send sub-progress update for CoinMarketCap API calls
-		if hasProgress {
-			progress := fmt.Sprintf("Fetching CoinMarketCap metadata for %s...", address[:10]+"...")
-			progressTracker.UpdateComponent("token_metadata_enricher", models.ComponentGroupEnrichment, "Fetching Token Metadata", models.ComponentStatusRunning, progress)
-		}
-
-		// Try to get additional metadata from CoinMarketCap API
-		if t.cmcClient.IsAvailable() && hasAnyTokenLikeData {
-			cmcInfo, err := t.cmcClient.GetTokenInfo(ctx, address)
-			if err == nil && cmcInfo != nil {
-				contractInfo["cmc_name"] = cmcInfo.Name
-				contractInfo["cmc_symbol"] = cmcInfo.Symbol
-				contractInfo["cmc_logo"] = cmcInfo.Logo
-				contractInfo["cmc_description"] = cmcInfo.Description
-				contractInfo["cmc_website"] = cmcInfo.Website
-				contractInfo["cmc_category"] = cmcInfo.Category
-
-				if t.verbose {
-					fmt.Printf(" 🪙 CoinMarketCap data: %s (%s)", cmcInfo.Name, cmcInfo.Symbol)
-					if cmcInfo.Logo != "" {
-						fmt.Printf(" [Logo: ✅]")
-					}
-					fmt.Println()
-				}
-			}
-		}
-
-		// Determine the best name and symbol to use (prioritize verified data, then CMC, then RPC)
+		// Determine the best name and symbol to use (prioritize verified data, then RPC)
 		var bestName, bestSymbol, bestLogo, bestDescription, bestWebsite, bestCategory string
 		var bestDecimals int = -1
 
-		// Priority: CMC name > verified ABI name > RPC name
-		if cmcName, ok := contractInfo["cmc_name"].(string); ok && cmcName != "" {
-			bestName = cmcName
-		} else if verifiedName, ok := contractInfo["verified_name"].(string); ok && verifiedName != "" {
+		// Priority: verified ABI name > RPC name
+		if verifiedName, ok := contractInfo["verified_name"].(string); ok && verifiedName != "" {
 			bestName = verifiedName
 		} else if rpcName, ok := contractInfo["rpc_name"].(string); ok && rpcName != "" {
 			bestName = rpcName
 		}
 
-		// Priority: CMC symbol > RPC symbol
-		if cmcSymbol, ok := contractInfo["cmc_symbol"].(string); ok && cmcSymbol != "" {
-			bestSymbol = cmcSymbol
-		} else if rpcSymbol, ok := contractInfo["rpc_symbol"].(string); ok && rpcSymbol != "" {
+		// Use RPC symbol
+		if rpcSymbol, ok := contractInfo["rpc_symbol"].(string); ok && rpcSymbol != "" {
 			bestSymbol = rpcSymbol
 		}
 
 		// Get best decimals from RPC (most authoritative for on-chain data)
 		if rpcDecimals, ok := contractInfo["rpc_decimals"].(int); ok {
 			bestDecimals = rpcDecimals
-		}
-
-		// Get additional CoinMarketCap metadata
-		if cmcLogo, ok := contractInfo["cmc_logo"].(string); ok && cmcLogo != "" {
-			bestLogo = cmcLogo
-		}
-		if cmcDescription, ok := contractInfo["cmc_description"].(string); ok && cmcDescription != "" {
-			bestDescription = cmcDescription
-		}
-		if cmcWebsite, ok := contractInfo["cmc_website"].(string); ok && cmcWebsite != "" {
-			bestWebsite = cmcWebsite
-		}
-		if cmcCategory, ok := contractInfo["cmc_category"].(string); ok && cmcCategory != "" {
-			bestCategory = cmcCategory
 		}
 
 		// Determine token type based on available methods and responses
