@@ -1009,11 +1009,13 @@ func (t *LogDecoder) parseABIParameterFromData(input ABIInput, data string, offs
 func (t *LogDecoder) parseUintParameter(value string, paramType string) (interface{}, error) {
 	// Extract bit size (uint256 -> 256)
 	if len(value) >= 2 && strings.HasPrefix(value, "0x") {
-		// Try to parse as uint64 first for small numbers
-		if parsed, err := strconv.ParseUint(value[2:], 16, 64); err == nil {
+		// For token amounts and other large numbers, always keep as hex to avoid precision loss
+		// Only convert to uint64 for very small numbers that won't lose precision
+		if parsed, err := strconv.ParseUint(value[2:], 16, 64); err == nil && parsed < 1e15 {
+			// Only return as uint64 for numbers smaller than 1e15 to avoid precision issues
 			return parsed, nil
 		}
-		// For larger numbers, return hex string
+		// For larger numbers (like token amounts in wei), return hex string to preserve precision
 		return value, nil
 	}
 	return value, fmt.Errorf("invalid uint format")
@@ -1109,9 +1111,11 @@ func (t *LogDecoder) hexToDecimal(hexStr string) string {
 		return "0"
 	}
 
+	// Always return the exact decimal string without scientific notation
+	// This ensures the AI gets precise values for token amounts
 	decimalStr := bigInt.String()
 
-	// For very large numbers, add a hint
+	// For very large numbers, add a hint but keep the exact decimal
 	if len(decimalStr) > 15 {
 		return decimalStr + " (large_number)"
 	}
@@ -1228,6 +1232,45 @@ func (t *LogDecoder) isPrintableString(s string) bool {
 	return float64(printableCount)/float64(len([]rune(s))) >= 0.8
 }
 
+// formatParameterValue formats a parameter value as exact decimal instead of scientific notation
+func (t *LogDecoder) formatParameterValue(value interface{}) string {
+	switch v := value.(type) {
+	case uint64:
+		// Always return exact decimal string for uint64 to avoid scientific notation
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		// For float64, use exact decimal if it's a whole number, otherwise use appropriate precision
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%.0f", v)
+		}
+		return fmt.Sprintf("%.18g", v) // Use %g but with enough precision
+	case string:
+		// If it's a hex string that looks like a number, try to convert to decimal
+		if strings.HasPrefix(v, "0x") {
+			if decimal := t.hexToDecimal(v); decimal != "" {
+				return decimal
+			}
+		}
+		return v
+	default:
+		// Use default formatting but avoid scientific notation
+		str := fmt.Sprintf("%v", v)
+		// Check if Go converted to scientific notation and fix it
+		if strings.Contains(str, "e+") || strings.Contains(str, "E+") {
+			// Try to parse as float64 and format as decimal
+			if f, err := strconv.ParseFloat(str, 64); err == nil {
+				if f == float64(int64(f)) {
+					return fmt.Sprintf("%.0f", f)
+				}
+				return fmt.Sprintf("%.18g", f)
+			}
+		}
+		return str
+	}
+}
+
 // GetPromptContext provides events context for LLM prompts
 func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]interface{}) string {
 	// Only use events data that THIS tool created and stored in baggage
@@ -1290,13 +1333,15 @@ func (t *LogDecoder) GetPromptContext(ctx context.Context, baggage map[string]in
 			// Display parameters with all their decoded formats
 			for baseName, group := range paramGroups {
 				if baseValue, exists := group[baseName]; exists {
-					eventInfo += fmt.Sprintf("\n  - %s: %v", baseName, baseValue)
+					// Use formatParameterValue to avoid scientific notation
+					formattedValue := t.formatParameterValue(baseValue)
+					eventInfo += fmt.Sprintf("\n  - %s: %s", baseName, formattedValue)
 
 					// Add decoded formats on the same line for context
 					var decodedInfo []string
 
 					if decimal, exists := group[baseName+"_decimal"]; exists {
-						decodedInfo = append(decodedInfo, fmt.Sprintf("decimal: %v", decimal))
+						decodedInfo = append(decodedInfo, fmt.Sprintf("decimal: %s", t.formatParameterValue(decimal)))
 					}
 
 					if address, exists := group[baseName+"_address"]; exists {

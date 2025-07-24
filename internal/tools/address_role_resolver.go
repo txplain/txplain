@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -424,7 +425,9 @@ ADDRESSES TO ANALYZE:`
 			if event.Parameters != nil {
 				var paramStrings []string
 				for paramName, paramValue := range event.Parameters {
-					paramStrings = append(paramStrings, fmt.Sprintf("%s: %v", paramName, paramValue))
+					// Use formatParameterValue to avoid scientific notation
+					formattedValue := a.formatParameterValue(paramValue)
+					paramStrings = append(paramStrings, fmt.Sprintf("%s: %s", paramName, formattedValue))
 				}
 				if len(paramStrings) > 0 {
 					eventInfo += fmt.Sprintf(" (%s)", strings.Join(paramStrings, ", "))
@@ -569,6 +572,39 @@ Analyze the transaction context and identify meaningful roles and categories for
 `
 
 	return prompt
+}
+
+// formatParameterValue formats a parameter value as exact decimal instead of scientific notation
+func (a *AddressRoleResolver) formatParameterValue(value interface{}) string {
+	switch v := value.(type) {
+	case uint64:
+		// Always return exact decimal string for uint64 to avoid scientific notation
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		// For float64, use exact decimal if it's a whole number, otherwise use appropriate precision
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%.0f", v)
+		}
+		return fmt.Sprintf("%.18g", v) // Use %g but with enough precision
+	case string:
+		return v
+	default:
+		// Use default formatting but avoid scientific notation
+		str := fmt.Sprintf("%v", v)
+		// Check if Go converted to scientific notation and fix it
+		if strings.Contains(str, "e+") || strings.Contains(str, "E+") {
+			// Try to parse as float64 and format as decimal
+			if f, err := strconv.ParseFloat(str, 64); err == nil {
+				if f == float64(int64(f)) {
+					return fmt.Sprintf("%.0f", f)
+				}
+				return fmt.Sprintf("%.18g", f)
+			}
+		}
+		return str
+	}
 }
 
 // parseAddressRoleResponse parses the LLM response into address-role mappings with categories
