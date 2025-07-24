@@ -19,6 +19,8 @@ function App() {
   const [error, setError] = useState<ErrorState | null>(null)
   const [components, setComponents] = useState<ComponentUpdate[]>([])
   const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [lastRequest, setLastRequest] = useState<TransactionRequest | null>(null) // Store last request for retry
+  const [retryCount, setRetryCount] = useState(0) // Track retry attempts
   const progressDisplayRef = useRef<HTMLDivElement>(null)
 
   // Monitor online/offline status
@@ -44,7 +46,7 @@ function App() {
     return { message, type, isRetryable, details }
   }
 
-  const handleError = (err: unknown, context: string = ''): ErrorState => {
+  const handleError = (err: unknown, context: string = '', failedComponent?: string): ErrorState => {
     console.error(`[ERROR] ${context}:`, err)
     
     if (!navigator.onLine) {
@@ -59,6 +61,12 @@ function App() {
     if (err instanceof Error) {
       const errorMessage = err.message.toLowerCase()
       
+      // Extract specific tool failure information if available
+      let toolContext = ''
+      if (failedComponent) {
+        toolContext = ` The analysis failed during the "${failedComponent}" step.`
+      }
+      
       // Network/connection errors
       if (errorMessage.includes('fetch') || 
           errorMessage.includes('network') || 
@@ -66,10 +74,10 @@ function App() {
           errorMessage.includes('timeout') ||
           errorMessage.includes('abort')) {
         return createErrorState(
-          'Connection problem detected. This might be due to internet connectivity issues.',
+          `Connection problem detected.${toolContext} This might be due to internet connectivity issues.`,
           'connection',
           true,
-          'The connection to the server was interrupted. This often happens with unstable internet connections.'
+          'The connection to the server was interrupted. This often happens with unstable internet connections or when processing complex transactions.'
         )
       }
       
@@ -81,29 +89,39 @@ function App() {
           errorMessage.includes('503') ||
           errorMessage.includes('504')) {
         return createErrorState(
-          'Server is experiencing issues. Please try again in a moment.',
+          `Server is experiencing issues.${toolContext} Please try again in a moment.`,
           'server',
           true,
-          'The analysis server is temporarily unavailable or overloaded.'
+          'The analysis server is temporarily unavailable or overloaded. This is usually temporary.'
         )
       }
       
       // Timeout errors
-      if (errorMessage.includes('timeout')) {
+      if (errorMessage.includes('timeout') || errorMessage.includes('context cancel')) {
         return createErrorState(
-          'Request timed out. This transaction might be complex or the server is busy.',
+          `Request timed out.${toolContext} This transaction might be complex or the server is busy.`,
           'timeout',
           true,
-          'The analysis took longer than expected. Complex transactions may require more time.'
+          'The analysis took longer than expected. Complex transactions may require more time. Try again as the issue might be temporary.'
         )
       }
       
-      // Generic error
+      // LLM-specific errors
+      if (errorMessage.includes('llm call failed') || errorMessage.includes('ai analysis')) {
+        return createErrorState(
+          `AI analysis failed.${toolContext} This might be due to high server load.`,
+          'server',
+          true,
+          'The AI analysis component encountered an issue. This is often temporary due to high demand on AI services.'
+        )
+      }
+      
+      // Generic error with tool context
       return createErrorState(
-        err.message,
+        `${err.message}${toolContext}`,
         'unknown',
         true,
-        'An unexpected error occurred during analysis.'
+        failedComponent ? `The error occurred during the ${failedComponent} analysis step.` : 'An unexpected error occurred during analysis.'
       )
     }
     
@@ -132,7 +150,13 @@ function App() {
     }
   }
 
-  const explainTransaction = async (request: TransactionRequest) => {
+  const explainTransaction = async (request: TransactionRequest, isRetry: boolean = false) => {
+    // Store the request for potential retry
+    if (!isRetry) {
+      setLastRequest(request)
+      setRetryCount(0)
+    }
+
     setLoading(true)
     setError(null)
     setResult(null)
@@ -163,16 +187,21 @@ function App() {
 
     let timeoutId: NodeJS.Timeout | null = null
     let abortController: AbortController | null = null
+    let lastFailedComponent: string | undefined
 
     try {
       abortController = new AbortController()
       
-      // Set up a timeout (5 minutes for complex transactions)
+      // Adaptive timeout based on retry count
+      const baseTimeout = 5 * 60 * 1000 // 5 minutes base
+      const timeoutMultiplier = Math.min(1 + (retryCount * 0.5), 2) // Up to 2x timeout on retries
+      const adaptiveTimeout = baseTimeout * timeoutMultiplier
+      
       timeoutId = setTimeout(() => {
         if (abortController) {
           abortController.abort()
         }
-      }, 5 * 60 * 1000) // 5 minutes
+      }, adaptiveTimeout)
 
       // Use fetch with SSE streaming instead of EventSource (which doesn't support POST)
       const response = await fetch('/api/v1/explain-sse', {
@@ -248,6 +277,12 @@ function App() {
                 
                 if (eventData.type === 'component_update' && eventData.component) {
                   const updateTime = Date.now()
+                  
+                  // Track the last component that had an error for better error reporting
+                  if (eventData.component.status === 'error') {
+                    lastFailedComponent = eventData.component.title
+                  }
+                  
                   setComponents(prev => {
                     const existing = prev.find(c => c.id === eventData.component!.id)
                     if (existing) {
@@ -283,7 +318,9 @@ function App() {
                     `Analysis failed: ${serverError}`,
                     errorType,
                     true,
-                    'The server encountered an error while analyzing your transaction. This may be due to server load or a complex transaction.'
+                    lastFailedComponent 
+                      ? `The server encountered an error during the ${lastFailedComponent} step. This may be due to server load or a complex transaction.`
+                      : 'The server encountered an error while analyzing your transaction. This may be due to server load or a complex transaction.'
                   ))
                   setLoading(false)
                   clearInterval(heartbeatTimeout)
@@ -299,7 +336,7 @@ function App() {
       } finally {
         clearInterval(heartbeatTimeout)
       }
-    } catch (err: unknown) {
+    } catch (err) {
       // Clear timeouts
       if (timeoutId) clearTimeout(timeoutId)
       
@@ -309,10 +346,12 @@ function App() {
           'Analysis was cancelled or timed out. Complex transactions may take longer to analyze.',
           'timeout',
           true,
-          'The request was cancelled, either manually or due to a timeout. Try again with a shorter transaction hash or check your internet connection.'
+          lastFailedComponent 
+            ? `The request was cancelled during the ${lastFailedComponent} step, either manually or due to a timeout. Try again with a longer timeout.`
+            : 'The request was cancelled, either manually or due to a timeout. Try again with a shorter transaction hash or check your internet connection.'
         ))
       } else {
-        setError(handleError(err, 'Transaction analysis'))
+        setError(handleError(err, 'Transaction analysis', lastFailedComponent))
       }
     } finally {
       setLoading(false)
@@ -320,15 +359,16 @@ function App() {
   }
 
   const retryAnalysis = () => {
-    if (error && error.isRetryable) {
+    if (error && error.isRetryable && lastRequest) {
+      setRetryCount(prev => prev + 1)
       setError(null)
-      // Re-trigger the last analysis if we have the form data
-      // This would require storing the last request, but for now just clear the error
+      explainTransaction(lastRequest, true) // Pass true to indicate this is a retry
     }
   }
 
   const clearError = () => {
     setError(null)
+    setRetryCount(0) // Reset retry count when manually clearing
   }
 
   return (
@@ -424,19 +464,46 @@ function App() {
                       )}
                     </div>
                     {error.isRetryable && (
-                      <div className="mt-3 flex space-x-3">
+                      <div className="mt-3 flex items-center space-x-3">
                         <button
                           onClick={retryAnalysis}
-                          className="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition-colors"
+                          disabled={loading}
+                          className={`text-sm px-3 py-1 rounded transition-colors flex items-center space-x-1 ${
+                            loading 
+                              ? 'bg-gray-400 text-white cursor-not-allowed' 
+                              : 'bg-blue-600 text-white hover:bg-blue-700'
+                          }`}
                         >
-                          Try Again
+                          {loading ? (
+                            <>
+                              <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                              <span>Retrying...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Try Again</span>
+                              {retryCount > 0 && (
+                                <span className="ml-1 text-xs opacity-75">({retryCount} attempts)</span>
+                              )}
+                            </>
+                          )}
                         </button>
                         <button
                           onClick={clearError}
-                          className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                          disabled={loading}
+                          className={`text-sm transition-colors ${
+                            loading 
+                              ? 'text-gray-400 cursor-not-allowed' 
+                              : 'text-gray-500 hover:text-gray-700'
+                          }`}
                         >
                           Dismiss
                         </button>
+                        {retryCount > 0 && (
+                          <span className="text-xs text-gray-500">
+                            Previous attempts: {retryCount}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>

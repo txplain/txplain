@@ -93,7 +93,7 @@ func (a *AmountsFinder) calculateGasFee(baggage map[string]interface{}) *Detecte
 	gasFeeWei := new(big.Int).Mul(gasUsed, effectiveGasPrice)
 
 	if a.verbose {
-		fmt.Printf("🔍 GAS_FEE_DEBUG: gasUsed=%s, effectiveGasPrice=%s, gasFeeWei=%s\n", 
+		fmt.Printf("🔍 GAS_FEE_DEBUG: gasUsed=%s, effectiveGasPrice=%s, gasFeeWei=%s\n",
 			gasUsed.String(), effectiveGasPrice.String(), gasFeeWei.String())
 	}
 

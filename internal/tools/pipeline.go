@@ -146,6 +146,17 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 	}
 
 	startTime := time.Now()
+	var criticalFailures []string
+	var nonCriticalFailures []string
+
+	// Define critical tools that must succeed for analysis to be meaningful
+	criticalTools := map[string]bool{
+		"static_context_provider":      true,
+		"transaction_context_provider": true,
+		"abi_resolver":                 true,
+		"trace_decoder":                true,
+		"log_decoder":                  true,
+	}
 
 	for i, name := range p.order {
 		processor, exists := p.processors[name]
@@ -171,22 +182,47 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 		}
 
 		stepStart := time.Now()
-		err := processor.Process(ctx, baggage)
+
+		// Create a timeout context for this specific tool to prevent hanging
+		toolCtx, cancel := context.WithTimeout(ctx, 10*time.Minute) // 10 minutes per tool max
+		err := processor.Process(toolCtx, baggage)
+		cancel()
+
 		stepDuration := time.Since(stepStart)
 
 		if err != nil {
+			isCritical := criticalTools[name]
+
 			// Update component to error if progress tracker is available
 			if p.progressTracker != nil {
 				group := p.getToolGroup(name)
 				title := p.getToolTitle(name)
-				p.progressTracker.UpdateComponent(name, group, title, models.ComponentStatusError, fmt.Sprintf("Failed: %v", err))
+
+				if isCritical {
+					p.progressTracker.UpdateComponent(name, group, title, models.ComponentStatusError, fmt.Sprintf("Critical failure: %v", err))
+				} else {
+					p.progressTracker.UpdateComponent(name, group, title, models.ComponentStatusError, fmt.Sprintf("Non-critical failure (continuing): %v", err))
+				}
 			}
 
 			if p.verbose {
-				fmt.Printf("│  ❌ FAILED after %v: %v\n", stepDuration, err)
-				fmt.Printf("└─ ❌ %s FAILED\n\n", strings.ToUpper(name))
+				if isCritical {
+					fmt.Printf("│  💥 CRITICAL FAILURE after %v: %v\n", stepDuration, err)
+					fmt.Printf("└─ 💥 %s CRITICAL FAILURE\n\n", strings.ToUpper(name))
+				} else {
+					fmt.Printf("│  ⚠️ NON-CRITICAL FAILURE after %v: %v\n", stepDuration, err)
+					fmt.Printf("└─ ⚠️ %s FAILED (continuing)\n\n", strings.ToUpper(name))
+				}
 			}
-			return fmt.Errorf("processor %s failed: %w", name, err)
+
+			if isCritical {
+				criticalFailures = append(criticalFailures, fmt.Sprintf("%s: %v", name, err))
+				return fmt.Errorf("critical processor %s failed: %w", name, err)
+			} else {
+				nonCriticalFailures = append(nonCriticalFailures, fmt.Sprintf("%s: %v", name, err))
+				// Continue with next processor for non-critical failures
+				continue
+			}
 		}
 
 		// Update component to finished if progress tracker is available
@@ -206,10 +242,29 @@ func (p *BaggagePipeline) Execute(ctx context.Context, baggage map[string]interf
 
 	if p.verbose {
 		fmt.Println(strings.Repeat("=", 80))
-		fmt.Printf("🎉 PIPELINE COMPLETED SUCCESSFULLY in %v\n", totalDuration)
+		if len(nonCriticalFailures) > 0 {
+			fmt.Printf("🎉 PIPELINE COMPLETED WITH WARNINGS in %v\n", totalDuration)
+			fmt.Printf("   Critical tools: ✅ All succeeded\n")
+			fmt.Printf("   Non-critical tools: ⚠️ %d failed\n", len(nonCriticalFailures))
+			for _, failure := range nonCriticalFailures {
+				fmt.Printf("     - %s\n", failure)
+			}
+		} else {
+			fmt.Printf("🎉 PIPELINE COMPLETED SUCCESSFULLY in %v\n", totalDuration)
+		}
 		fmt.Printf("   Processed %d baggage items across %d tools\n", len(baggage), len(p.order))
 		fmt.Println(strings.Repeat("=", 80) + "\n")
 	}
+
+	// Store pipeline metrics in baggage for debugging
+	pipelineMetrics := map[string]interface{}{
+		"total_duration":        totalDuration,
+		"critical_failures":     criticalFailures,
+		"non_critical_failures": nonCriticalFailures,
+		"tools_executed":        len(p.order),
+		"tools_succeeded":       len(p.order) - len(criticalFailures) - len(nonCriticalFailures),
+	}
+	baggage["pipeline_metrics"] = pipelineMetrics
 
 	return nil
 }
