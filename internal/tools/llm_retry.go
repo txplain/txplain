@@ -63,25 +63,54 @@ func (w *LLMRetryWrapper) GenerateContent(ctx context.Context, messages []llms.M
 			fmt.Printf("🔄 LLM call attempt %d/%d (delay: %v)\n", attempt+1, w.config.MaxRetries+1, delay)
 		}
 
-		// Create timeout context for this specific retry
-		retryCtx, cancel := context.WithTimeout(ctx, w.config.TimeoutPerRetry)
+		// Check if the parent context is already cancelled before attempting
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("context cancelled before LLM attempt %d: %w", attempt+1, ctx.Err())
+		default:
+		}
 
-		// Make the LLM call
+		// Create timeout context for this specific retry with buffer time
+		// Use the shorter of: configured timeout or remaining parent context time
+		retryTimeout := w.config.TimeoutPerRetry
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining < retryTimeout {
+				retryTimeout = remaining - (30 * time.Second) // Leave 30s buffer for cleanup
+				if retryTimeout <= 0 {
+					return nil, fmt.Errorf("insufficient time remaining for LLM call (need %v, have %v)", w.config.TimeoutPerRetry, remaining)
+				}
+			}
+		}
+
+		retryCtx, cancel := context.WithTimeout(ctx, retryTimeout)
+
+		// Make the LLM call with enhanced monitoring
+		callStart := time.Now()
 		response, err := w.llm.GenerateContent(retryCtx, messages, options...)
+		callDuration := time.Since(callStart)
 		cancel() // Always cancel the timeout context
 
 		if err == nil {
 			// Success!
 			if w.verbose && attempt > 0 {
-				fmt.Printf("✅ LLM call succeeded on attempt %d\n", attempt+1)
+				fmt.Printf("✅ LLM call succeeded on attempt %d (took %v)\n", attempt+1, callDuration)
 			}
 			return response, nil
 		}
 
 		lastErr = err
 
+		// Log detailed error information for debugging
+		if w.verbose {
+			fmt.Printf("❌ LLM attempt %d failed after %v: %v\n", attempt+1, callDuration, err)
+		}
+
 		// Check if this is the last attempt
 		if attempt >= w.config.MaxRetries {
+			if w.verbose {
+				fmt.Printf("💥 All LLM retry attempts exhausted\n")
+			}
 			break
 		}
 
@@ -94,16 +123,39 @@ func (w *LLMRetryWrapper) GenerateContent(ctx context.Context, messages []llms.M
 		}
 
 		if w.verbose {
-			fmt.Printf("⚠️ LLM call failed (attempt %d/%d): %v, retrying in %v\n",
-				attempt+1, w.config.MaxRetries+1, err, delay)
+			fmt.Printf("⚠️ LLM call failed (attempt %d/%d): retrying in %v\n",
+				attempt+1, w.config.MaxRetries+1, delay)
 		}
 
-		// Wait before next retry (unless context is cancelled)
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled during retry delay: %w", ctx.Err())
-		case <-time.After(delay):
-			// Continue to next retry
+		// Smart delay with context cancellation handling
+		retryDelay := delay
+		delayStart := time.Now()
+
+		// Use a select with a ticker to allow for early cancellation
+		delayTicker := time.NewTicker(100 * time.Millisecond) // Check cancellation every 100ms
+		defer delayTicker.Stop()
+
+		delayTimeout := time.After(retryDelay)
+		cancelled := false
+
+		for !cancelled {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				if w.verbose {
+					fmt.Printf("❌ Context cancelled during retry delay after %v\n", time.Since(delayStart))
+				}
+				return nil, fmt.Errorf("context cancelled during retry delay: %w", ctx.Err())
+			case <-delayTimeout:
+				// Delay completed successfully
+				if w.verbose {
+					fmt.Printf("⏱️ Retry delay completed (%v)\n", time.Since(delayStart))
+				}
+				cancelled = true
+			case <-delayTicker.C:
+				// Continue waiting, just checking for cancellation
+				continue
+			}
 		}
 
 		// Calculate next delay with exponential backoff

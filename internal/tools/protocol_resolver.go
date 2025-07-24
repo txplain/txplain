@@ -517,9 +517,9 @@ func (p *ProtocolResolver) GetRagContext(ctx context.Context, baggage map[string
 	for _, protocol := range protocols {
 		if protocol.Confidence >= p.confidenceThreshold {
 			ragContext.AddItem(RagContextItem{
-				ID:      fmt.Sprintf("protocol_%s", strings.ReplaceAll(strings.ToLower(protocol.Name), " ", "_")),
-				Type:    "protocol",
-				Title:   fmt.Sprintf("%s Protocol", protocol.Name),
+				ID:    fmt.Sprintf("protocol_%s", strings.ReplaceAll(strings.ToLower(protocol.Name), " ", "_")),
+				Type:  "protocol",
+				Title: fmt.Sprintf("%s Protocol", protocol.Name),
 				Content: fmt.Sprintf(
 					"Protocol %s is a %s %s of type %s with confidence %.2f",
 					protocol.Name, protocol.Type, protocol.Version, protocol.Category, protocol.Confidence,
