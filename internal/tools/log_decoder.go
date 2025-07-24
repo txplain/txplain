@@ -8,6 +8,7 @@ import (
 	"os" // Added for debug logging
 	"strconv"
 	"strings"
+	"time" // Added for caching TTL
 	"unicode"
 	"unicode/utf8"
 
@@ -55,163 +56,283 @@ func (t *LogDecoder) Dependencies() []string {
 	return []string{"abi_resolver"} // Use ABI resolver before decoding
 }
 
-// Process processes logs and adds decoded events to baggage
+// Process decodes transaction logs into structured events
 func (l *LogDecoder) Process(ctx context.Context, baggage map[string]interface{}) error {
 	if l.verbose {
-		fmt.Println("\n" + strings.Repeat("📜", 60))
+		fmt.Println("\n" + strings.Repeat("📋", 60))
 		fmt.Println("🔍 LOG DECODER: Starting transaction log decoding")
-		fmt.Println(strings.Repeat("📜", 60))
+		fmt.Println(strings.Repeat("📋", 60))
 	}
 
-	// Extract raw log data from baggage
-	rawData, ok := baggage["raw_data"].(map[string]interface{})
-	if !ok {
-		if l.verbose {
-			fmt.Println("❌ Missing raw_data in baggage")
-			fmt.Println(strings.Repeat("📜", 60) + "\n")
-		}
-		return fmt.Errorf("missing raw_data in baggage")
-	}
+	// Check for cached decoded logs first
+	if rawData, exists := baggage["raw_data"].(map[string]interface{}); exists {
+		if txHash, ok := rawData["tx_hash"].(string); ok {
+			if networkID, ok := rawData["network_id"].(float64); ok {
+				cacheKey := fmt.Sprintf("logs-decoded:%d:%s", int64(networkID), txHash)
 
-	// Get network ID and transaction hash for caching processed results
-	networkID := int64(1) // Default to Ethereum
-	if nid, ok := rawData["network_id"].(float64); ok {
-		networkID = int64(nid)
-	}
-
-	txHash, ok := rawData["tx_hash"].(string)
-	if !ok {
-		return fmt.Errorf("missing transaction hash in raw_data")
-	}
-
-	// Check cache for processed log decoding results
-	if l.cache != nil {
-		cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
-		if l.verbose {
-			fmt.Printf("🔍 Checking cache for decoded logs with key: %s\n", cacheKey)
-		}
-
-		var cachedEvents []models.Event
-		if err := l.cache.GetJSON(ctx, cacheKey, &cachedEvents); err == nil {
-			// Check if cached events have proper ABI-based parameter names
-			// If they have generic names like param_1, param_2, ignore cache and do fresh parsing
-			if l.hasValidParameterNames(cachedEvents) {
 				if l.verbose {
-					fmt.Printf("✅ Found cached decoded logs with valid parameter names: %d events\n", len(cachedEvents))
-					fmt.Println(strings.Repeat("📜", 60) + "\n")
+					fmt.Printf("🔍 Checking cache for decoded logs with key: %s\n", cacheKey)
 				}
-				baggage["events"] = cachedEvents
-				return nil
+
+				if l.cache != nil {
+					var events []models.Event
+					if err := l.cache.GetJSON(ctx, cacheKey, &events); err == nil {
+						if l.verbose {
+							fmt.Println("✅ Found cached decoded logs")
+							fmt.Printf("📊 Loaded %d cached events\n", len(events))
+							for i, event := range events {
+								fmt.Printf("   Event[%d]: Contract=%s, Name=%s, Params=%d\n",
+									i, event.Contract, event.Name, len(event.Parameters))
+							}
+						}
+
+						baggage["events"] = events
+
+						if l.verbose {
+							fmt.Println(strings.Repeat("📋", 60) + "\n")
+						}
+						return nil
+					}
+				}
+			}
+		}
+	}
+
+	// Get progress tracker from baggage if available
+	progressTracker, hasProgress := baggage["progress_tracker"].(*models.ProgressTracker)
+
+	// Get resolved contracts from ABI resolver
+	resolvedContracts, hasResolvedContracts := baggage["resolved_contracts"].(map[string]*ContractInfo)
+	_ = resolvedContracts    // Not used in this simplified version
+	_ = hasResolvedContracts // Not used in this simplified version
+
+	// Get raw transaction data
+	rawData, exists := baggage["raw_data"].(map[string]interface{})
+	if !exists {
+		if l.verbose {
+			fmt.Println("⚠️  No raw transaction data found, skipping log decoding")
+			fmt.Println(strings.Repeat("📋", 60) + "\n")
+		}
+		return nil
+	}
+
+	// Send initial progress update
+	if hasProgress {
+		progressTracker.UpdateComponent("log_decoder", models.ComponentGroupDecoding, "Decoding Logs", models.ComponentStatusRunning, "Analyzing transaction logs...")
+	}
+
+	// Extract receipt data
+	receipt, hasReceipt := rawData["receipt"].(map[string]interface{})
+	if !hasReceipt {
+		if l.verbose {
+			fmt.Println("⚠️  No receipt data found, skipping log decoding")
+			fmt.Println(strings.Repeat("📋", 60) + "\n")
+		}
+		return nil
+	}
+
+	// ===== ADD DETAILED RAW LOG DEBUG =====
+	if l.verbose {
+		fmt.Println("🔍 RAW LOG DEBUG:")
+		fmt.Printf("   Receipt keys: %v\n", l.getReceiptKeys(receipt))
+	}
+
+	// Extract logs from receipt
+	logs, hasLogs := receipt["logs"].([]interface{})
+	if !hasLogs || len(logs) == 0 {
+		if l.verbose {
+			if !hasLogs {
+				fmt.Println("⚠️  No logs field in receipt")
 			} else {
-				if l.verbose {
-					fmt.Printf("⚠️ Cached events have generic parameter names, forcing fresh parsing\n")
-				}
+				fmt.Println("⚠️  Empty logs array in receipt")
 			}
-		} else if l.verbose {
-			fmt.Printf("Cache miss for decoded logs %s: %v\n", txHash, err)
-		}
-	}
-
-	logsData, ok := rawData["logs"].([]interface{})
-	if !ok || logsData == nil {
-		if l.verbose {
-			fmt.Println("⚠️  No logs found in transaction, adding empty events")
-			fmt.Println(strings.Repeat("📜", 60) + "\n")
-		}
-		// No logs, add empty events to baggage
-		emptyEvents := []models.Event{}
-		baggage["events"] = emptyEvents
-
-		// Cache empty result to avoid repeated processing
-		if l.cache != nil {
-			cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
-			if err := l.cache.SetJSON(ctx, cacheKey, emptyEvents, &LogDecodingTTLDuration); err != nil && l.verbose {
-				fmt.Printf("⚠️ Failed to cache empty decoded logs: %v\n", err)
-			} else if l.verbose {
-				fmt.Printf("✅ Cached empty events result\n")
+			fmt.Printf("   Receipt data available: %v\n", hasReceipt)
+			if hasReceipt {
+				fmt.Printf("   Receipt keys: %v\n", l.getReceiptKeys(receipt))
 			}
+			fmt.Println(strings.Repeat("📋", 60) + "\n")
 		}
 		return nil
 	}
 
 	if l.verbose {
-		fmt.Printf("📊 Found %d logs to decode\n", len(logsData))
-		fmt.Printf("🌐 Network ID: %d\n", networkID)
+		fmt.Printf("📊 Found %d raw logs to decode\n", len(logs))
+
+		// ===== DEBUG EACH RAW LOG =====
+		for i, logData := range logs {
+			logMap, ok := logData.(map[string]interface{})
+			if !ok {
+				fmt.Printf("   Log[%d]: ❌ Invalid format\n", i)
+				continue
+			}
+
+			address, _ := logMap["address"].(string)
+			topics, _ := logMap["topics"].([]interface{})
+			data, _ := logMap["data"].(string)
+			removed, _ := logMap["removed"].(bool)
+
+			fmt.Printf("   Log[%d]: Address=%s, Topics=%d, Data=%s, Removed=%t\n",
+				i, address, len(topics), data[:l.min(20, len(data))], removed)
+
+			// Show topics for WETH debugging
+			if len(topics) > 0 {
+				fmt.Printf("      Topics: ")
+				for j, topic := range topics {
+					if topicStr, ok := topic.(string); ok {
+						fmt.Printf("[%d]=%s ", j, topicStr[:l.min(10, len(topicStr))])
+
+						// Check for Transfer event signature (keccak256("Transfer(address,address,uint256)"))
+						if topicStr == "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" {
+							fmt.Printf("🎯 TRANSFER_EVENT_DETECTED ")
+						}
+					}
+				}
+				fmt.Println()
+			}
+		}
 	}
 
-	// Set up RPC client and signature resolver if not already set
-	if l.rpcClient == nil {
-		if l.verbose {
-			fmt.Println("🔧 Setting up RPC client and signature resolver...")
+	// Filter out removed logs
+	var validLogs []interface{}
+	for _, logData := range logs {
+		if logMap, ok := logData.(map[string]interface{}); ok {
+			if removed, exists := logMap["removed"]; !exists || !removed.(bool) {
+				validLogs = append(validLogs, logData)
+			}
 		}
-		var err error
-		l.rpcClient, err = rpc.NewClient(networkID)
+	}
+
+	if l.verbose {
+		fmt.Printf("📊 Processing %d valid logs (filtered out %d removed logs)\n", len(validLogs), len(logs)-len(validLogs))
+	}
+
+	// Send progress update for processing logs
+	if hasProgress {
+		progressTracker.UpdateComponent("log_decoder", models.ComponentGroupDecoding, "Decoding Logs", models.ComponentStatusRunning, fmt.Sprintf("Processing %d transaction logs...", len(validLogs)))
+	}
+
+	var events []models.Event
+	var contractAddresses []string
+
+	// Track addresses for contract resolution
+	addressSet := make(map[string]bool)
+
+	// Process each log using existing decodeLogWithRPC method
+	for i, logData := range validLogs {
+		logMap, ok := logData.(map[string]interface{})
+		if !ok {
+			if l.verbose {
+				fmt.Printf("   Log[%d]: Skipping invalid log format\n", i)
+			}
+			continue
+		}
+
+		// Extract log fields
+		address, _ := logMap["address"].(string)
+		topics, _ := logMap["topics"].([]interface{})
+
+		if address == "" {
+			if l.verbose {
+				fmt.Printf("   Log[%d]: Skipping log with empty address\n", i)
+			}
+			continue
+		}
+
+		// Add to address set for contract resolution
+		addressSet[address] = true
+
+		if l.verbose {
+			fmt.Printf("   Log[%d]: Processing address=%s\n", i, address)
+		}
+
+		// Convert topics to string slice for debugging
+		var topicStrings []string
+		for _, topic := range topics {
+			if topicStr, ok := topic.(string); ok {
+				topicStrings = append(topicStrings, topicStr)
+			}
+		}
+
+		if len(topicStrings) == 0 {
+			if l.verbose {
+				fmt.Printf("   Log[%d]: Skipping log with no topics\n", i)
+			}
+			continue
+		}
+
+		// ===== DETAILED EVENT PROCESSING DEBUG =====
+		if l.verbose {
+			fmt.Printf("      🔍 DETAILED_LOG_DEBUG[%d]:\n", i)
+			fmt.Printf("         Address: %s\n", address)
+			fmt.Printf("         Topic[0] (event signature): %s\n", topicStrings[0])
+			fmt.Printf("         Additional topics: %d\n", len(topicStrings)-1)
+			data, _ := logMap["data"].(string)
+			fmt.Printf("         Data: %s\n", data)
+		}
+
+		// Try to decode the event using existing method
+		event, err := l.decodeLogWithRPC(ctx, logMap, baggage)
 		if err != nil {
 			if l.verbose {
-				fmt.Printf("❌ Failed to create RPC client: %v\n", err)
-				fmt.Println(strings.Repeat("📜", 60) + "\n")
+				fmt.Printf("   Log[%d]: Failed to decode event: %v\n", i, err)
 			}
-			return fmt.Errorf("failed to create RPC client: %w", err)
+			continue
 		}
-		l.signatureResolver = rpc.NewSignatureResolver(l.rpcClient, true)
-		if l.verbose {
-			fmt.Println("✅ RPC client and signature resolver ready")
-		}
-	}
 
-	if l.verbose {
-		fmt.Println("🔄 Decoding logs with RPC introspection...")
-	}
-
-	events, err := l.decodeLogsWithRPC(ctx, logsData, networkID, baggage)
-	if err != nil {
-		if l.verbose {
-			fmt.Printf("❌ Failed to decode logs: %v\n", err)
-			fmt.Println(strings.Repeat("📜", 60) + "\n")
-		}
-		return fmt.Errorf("failed to decode logs: %w", err)
-	}
-
-	if l.verbose {
-		fmt.Printf("✅ Successfully decoded %d events\n", len(events))
-
-		// Show summary of decoded events
-		if len(events) > 0 {
-			fmt.Println("\n📋 DECODED EVENTS SUMMARY:")
-			for i, event := range events {
-				eventDisplay := fmt.Sprintf("   %d. %s", i+1, event.Name)
-				if event.Contract != "" {
-					eventDisplay += fmt.Sprintf(" (contract: %s)", event.Contract[:10]+"...")
-				}
+		if event != nil {
+			events = append(events, *event)
+			if l.verbose {
+				fmt.Printf("   Log[%d]: ✅ Decoded event: %s from %s\n", i, event.Name, event.Contract)
 				if len(event.Parameters) > 0 {
-					eventDisplay += fmt.Sprintf(" [%d params]", len(event.Parameters))
+					fmt.Printf("      Parameters: %v\n", l.getParameterKeys(event.Parameters))
 				}
-				fmt.Println(eventDisplay)
 			}
 		}
-
-		fmt.Println("\n" + strings.Repeat("📜", 60))
-		fmt.Println("✅ LOG DECODER: Completed successfully")
-		fmt.Println(strings.Repeat("📜", 60) + "\n")
 	}
 
-	// Add decoded events to baggage
+	// Convert address set to slice
+	for address := range addressSet {
+		contractAddresses = append(contractAddresses, address)
+	}
+
+	if l.verbose {
+		fmt.Printf("✅ Successfully decoded %d events from %d logs\n", len(events), len(validLogs))
+		fmt.Printf("📊 Found %d unique contract addresses\n", len(contractAddresses))
+	}
+
+	// Send final progress update
+	if hasProgress {
+		progressTracker.UpdateComponent("log_decoder", models.ComponentGroupDecoding, "Decoding Logs", models.ComponentStatusFinished, fmt.Sprintf("Decoded %d events from %d logs", len(events), len(validLogs)))
+	}
+
+	// Store results in baggage
 	baggage["events"] = events
+	baggage["contract_addresses"] = contractAddresses
 
-	// Cache the processed results only if they have valid parameter names
-	if l.cache != nil {
-		cacheKey := fmt.Sprintf(LogDecodingKeyPattern, networkID, strings.ToLower(txHash))
+	// Cache the decoded logs using SetJSON
+	if rawData, exists := baggage["raw_data"].(map[string]interface{}); exists {
+		if txHash, ok := rawData["tx_hash"].(string); ok {
+			if networkID, ok := rawData["network_id"].(float64); ok {
+				cacheKey := fmt.Sprintf("logs-decoded:%d:%s", int64(networkID), txHash)
 
-		// Only cache events with proper ABI-based parameter names
-		if l.hasValidParameterNames(events) {
-			if err := l.cache.SetJSON(ctx, cacheKey, events, &LogDecodingTTLDuration); err != nil && l.verbose {
-				fmt.Printf("⚠️ Failed to cache decoded logs: %v\n", err)
-			} else if l.verbose {
-				fmt.Printf("✅ Cached %d events with valid parameter names\n", len(events))
+				// Create TTL duration
+				ttl := 24 * time.Hour
+
+				if l.cache != nil {
+					if err := l.cache.SetJSON(ctx, cacheKey, events, &ttl); err == nil {
+						if l.verbose {
+							fmt.Printf("💾 Cached %d decoded events with key: %s\n", len(events), cacheKey)
+						}
+					}
+				}
 			}
-		} else if l.verbose {
-			fmt.Printf("⚠️ Skipping cache for events with generic parameter names\n")
 		}
+	}
+
+	if l.verbose {
+		fmt.Println("\n" + strings.Repeat("📋", 60))
+		fmt.Println("✅ LOG DECODER: Completed successfully")
+		fmt.Println(strings.Repeat("📋", 60) + "\n")
 	}
 
 	return nil
@@ -1213,4 +1334,30 @@ func (t *LogDecoder) GetRagContext(ctx context.Context, baggage map[string]inter
 	// Log decoder processes transaction-specific event data
 	// No general knowledge to contribute to RAG
 	return ragContext
+}
+
+// Helper function to get receipt keys for debugging
+func (l *LogDecoder) getReceiptKeys(receipt map[string]interface{}) []string {
+	keys := make([]string, 0, len(receipt))
+	for k := range receipt {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Helper function to get parameter keys for debugging
+func (l *LogDecoder) getParameterKeys(params map[string]interface{}) []string {
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Helper function for min calculation
+func (l *LogDecoder) min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -767,32 +767,42 @@ func (t *TransactionExplainer) buildRAGEnabledPrompt(decodedData *models.Decoded
 **BE CREATIVE WITH SENTENCE STRUCTURE** - Write natural, flowing sentences that tell the complete transaction story, but ENSURE every critical detail is included.
 
 **PERFECT EXAMPLES** (showing creative but complete explanations):
-- "Swapped 100 USDT for 55,227 GrowAI tokens by first converting to 0.0264 WETH via 1inch aggregator, received by 0x39e5...09c5 + $1.47 gas"
-- "Approved 🍣 SushiSwap router to spend unlimited PEPE tokens from 0x3286...399f (outta.eth), preparing for future trades + $0.85 gas"
-- "Transferred 57,071 GrowAI tokens from 0x1234...5678 to 0x9876...4321 (alice.eth) in a single direct transfer + $0.82 gas"
-- "Minted 3 new CryptoPunks NFTs (tokens #1205, #1206, #1207) directly to collector 0xabcd...ef01 (vitalik.eth) + $2.10 gas"
-- "Granted admin role #7 to 0x2222...3333 (dao-member.eth) on governance contract 0x1111...2222, expanding permissions + $0.45 gas"
-- "Deposited 2.5 ETH into Compound lending pool, receiving 125.8 cETH tokens as collateral proof to 0x5555...6666 + $1.20 gas"
-- "Executed multi-step arbitrage: bought 1000 LINK with ETH on Uniswap, then sold for 1050 LINK on SushiSwap, netting 50 LINK profit + $3.40 gas"
+- "Swapped 100 USDT for 55,227 GrowAI tokens ($574.32) by first converting to 0.0264 WETH ($85.20) via 1inch aggregator, received by alice.eth + $1.47 gas"
+- "Approved 🍣 SushiSwap router to spend unlimited PEPE tokens ($0.000012 each) from outta.eth, preparing for future trades + $0.85 gas"
+- "Transferred 57,071 GrowAI tokens ($594.12) from charlie.eth to alice.eth in a single direct transfer + $0.82 gas"
+- "Minted 3 new CryptoPunks NFTs (tokens #1205, #1206, #1207) directly to collector vitalik.eth + $2.10 gas"
+- "Granted admin role #7 to dao-member.eth on governance contract, expanding permissions + $0.45 gas"
+- "Deposited 2.5 ETH ($8,450.00) into Compound lending pool, receiving 125.8 cETH tokens as collateral proof to 0x5555...6666 + $1.20 gas"
+- "Executed multi-step arbitrage: bought 1000 LINK ($23,400.00) with ETH on 🦄 Uniswap, then sold for 1050 LINK on 🍣 SushiSwap, netting 50 LINK ($1,170.00) profit + $3.40 gas"
 
 **MANDATORY DATA POINTS** - Your creative explanation MUST include ALL applicable details:
 
 1. **EXACT ACTION & FLOW**: Describe what happened step-by-step if complex (swapped X for Y by first converting to Z)
 2. **PRECISE AMOUNTS**: Every token amount, count, or quantity mentioned in events/transfers
-3. **TOKEN SYMBOLS & NAMES**: Use actual discovered symbols (USDT, GrowAI, WETH) - only when tokens are involved
-4. **PROTOCOL IDENTIFICATION**: Use discovered protocol names with emojis when available (🍣 SushiSwap, 1inch, 🦄 Uniswap)
-5. **ALL KEY ADDRESSES**: Include sender, recipient, and any intermediate addresses in 0x1234...5678 format
-6. **ENS NAMES**: Add ENS names in parentheses when available (vitalik.eth)
-7. **TRANSACTION FLOW**: Show intermediate steps in multi-step transactions (converting through WETH, etc.)
-8. **RECIPIENT INFORMATION**: Always mention who received what ("received by", "sent to", "transferred to")
-9. **GAS FEE**: Always end with "+ $X.XX gas"
-10. **CONTEXT CLUES**: Add helpful context like "preparing for future trades", "expanding permissions", "as collateral proof"
+3. **TOKEN SYMBOLS & USD VALUES**: Use actual discovered symbols (USDT, GrowAI, WETH) with USD amounts in parentheses for non-stablecoins (e.g., "GrowAI tokens ($574.32)", "WETH ($85.20)") - only when tokens are involved
+4. **PROTOCOL IDENTIFICATION**: Use discovered protocol names with emojis (🍣 SushiSwap, 1inch aggregator, 🦄 Uniswap) - DO NOT include contract addresses when protocol name is known
+5. **ADDRESS FORMATTING RULES**:
+   - **When ENS name exists**: Use ONLY the ENS name (alice.eth, vitalik.eth) - DO NOT include the 0x address
+   - **When protocol name exists**: Use ONLY the protocol name - DO NOT include the contract address  
+   - **When neither exists**: Use shortened address format 0x1234...5678
+6. **TRANSACTION FLOW**: Show intermediate steps in multi-step transactions (converting through WETH, etc.)
+7. **RECIPIENT INFORMATION**: Always mention who received what ("received by", "sent to", "transferred to")
+8. **GAS FEE**: Always end with "+ $X.XX gas"
+9. **CONTEXT CLUES**: Add helpful context like "preparing for future trades", "expanding permissions", "as collateral proof"
 
 **CRITICAL: AVOID TECHNICAL LANGUAGE**: 
 - NEVER use technical event names like "RelayNativeDeposit event", "Transfer event", "UserRoleUpdated event"
 - Instead, describe what happened in plain English: "deposited to bridge", "transferred tokens", "updated permissions"  
 - Use human-friendly language that normal web3 users can understand
 - Focus on the action and outcome, not the technical implementation details
+
+**USD VALUE FORMATTING RULES**:
+- **Stablecoins** (USDT, USDC, DAI, BUSD, etc.): Do NOT include USD values in parentheses since they're already ~$1
+- **Non-stablecoins** (ETH, WETH, LINK, GrowAI, etc.): ALWAYS include USD values in parentheses when amounts are mentioned
+- **Examples**: 
+  - ✅ "100 USDT for 55,227 GrowAI tokens ($574.32)" 
+  - ✅ "2.5 ETH ($8,450.00)"
+  - ❌ "100 USDT ($100.00)" (don't do this for stablecoins)
 
 TRANSACTION TYPE DETECTION:
 - **TOKEN TRANSACTIONS**: Look for Transfer events, token method calls (transfer, approve, etc.)
@@ -850,27 +860,27 @@ CRITICAL ROLE DATA RECOGNITION:
 4. See token 0xa0b86a33... → search_tokens("0xa0b86a33")
 5. Find it's "Chainlink Token (LINK)" → now you have token details
 6. Analyze all transfers to understand the complete journey
-7. Creative explanation: "Swapped 100 LINK for 2.5 ETH by first converting to 150 USDC via 1inch aggregator, then routing through WETH, finally received by 0x1234...5678 (trader.eth) + $1.20 gas"
+7. Creative explanation: "Swapped 100 LINK ($23,400.00) for 2.5 ETH ($8,450.00) by first converting to 150 USDC via 1inch aggregator, then routing through WETH ($85.20), finally received by trader.eth + $1.20 gas"
 
 **EXAMPLE CREATIVE WORKFLOW FOR ROLE MANAGEMENT**:
 1. See UserRoleUpdated event with role parameter 7, enabled=true, user=0x1234...5678
 2. See transaction initiator 0x7e97...63c7 with ENS name cocytus.eth
 3. See unknown contract 0x123... → search_protocols("0x123") if needed
 4. Find no protocol results → continue with available event data
-5. Creative explanation: "Granted admin role #7 to new member 0x1234...5678 by governance admin 0x7e97...63c7 (cocytus.eth), expanding DAO permissions on access control contract + $0.75 gas"
+5. Creative explanation: "Granted admin role #7 to new member 0x1234...5678 by governance admin cocytus.eth, expanding DAO permissions on access control contract + $0.75 gas"
 
 **EXAMPLE WITH LIMITED SEARCH RESULTS**:
 1. See unknown contract 0x123... → search_protocols("0x123")
 2. Search returns minimal results → use available transaction context
 3. See permission update events → analyze parameters for roles/addresses
-4. Creative explanation: "Updated smart contract permissions for user 0x2222...3333 on governance system 0x123...456, modifying access control settings + $0.82 gas"
+4. Creative explanation: "Updated smart contract permissions for user 0x2222...3333 on governance system, modifying access control settings + $0.82 gas"
 
 **CREATIVE WRITING GUIDELINES**:
 - **NATURAL FLOW**: Write like you're explaining to a friend - use connecting words and phrases ("by first converting", "then received", "in order to")
 - **COMPLETE STORY**: Include the full transaction journey - show all steps, intermediate conversions, and final destinations
 - **EXACT AMOUNTS**: Use precise numbers from context (100 USDT, 55,227 GrowAI, 0.0264 WETH) - never approximate or generalize
-- **SPECIFIC TOKENS**: Use actual discovered symbols (PEPE, WETH, GrowAI) with exact names when available - only when tokens are involved
-- **DETAILED ADDRESSES**: Include all relevant addresses in 0x1234...5678 format with ENS names: 0x1234...5678 (vitalik.eth)
+- **SPECIFIC TOKENS**: Use actual discovered symbols (PEPE, WETH, GrowAI) with exact names and USD values when available - only when tokens are involved
+- **CLEAN ADDRESS FORMATTING**: When ENS exists use ONLY ENS name, when protocol exists use ONLY protocol name, otherwise use 0x1234...5678 format
 - **PROTOCOL PERSONALITY**: Use emojis and personality for known protocols (🍣 SushiSwap, 1inch aggregator, 🦄 Uniswap)
 - **ACTION SPECIFICITY**: Be precise about actions (Approved unlimited spending, Swapped through aggregator, Transferred directly, Granted admin role)
 - **CONTEXTUAL CLUES**: Add helpful interpretation ("preparing for trades", "expanding access", "as collateral", "netting profit")

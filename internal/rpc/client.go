@@ -126,14 +126,40 @@ func (c *Client) GetTransactionByHash(ctx context.Context, txHash string) (map[s
 
 // GetTransactionReceipt retrieves transaction receipt by hash
 func (c *Client) GetTransactionReceipt(ctx context.Context, txHash string) (map[string]interface{}, error) {
+	fmt.Printf("🔍 RPC_DEBUG: Calling eth_getTransactionReceipt for %s\n", txHash)
+	fmt.Printf("🔍 RPC_DEBUG: RPC URL: %s\n", c.network.RPCUrl)
+
 	result, err := c.call(ctx, "eth_getTransactionReceipt", []string{txHash})
 	if err != nil {
+		fmt.Printf("🔍 RPC_DEBUG: eth_getTransactionReceipt error: %v\n", err)
 		return nil, err
+	}
+
+	fmt.Printf("🔍 RPC_DEBUG: Raw result length: %d\n", len(result))
+	fmt.Printf("🔍 RPC_DEBUG: Raw result: %s\n", string(result))
+
+	// Check if result is null
+	if string(result) == "null" {
+		fmt.Printf("🔍 RPC_DEBUG: Receipt is null - transaction might not exist or be confirmed\n")
+		return nil, nil // Return nil for null response, not an error
 	}
 
 	var receipt map[string]interface{}
 	if err := json.Unmarshal(result, &receipt); err != nil {
+		fmt.Printf("🔍 RPC_DEBUG: Failed to unmarshal receipt: %v\n", err)
 		return nil, fmt.Errorf("failed to unmarshal receipt: %w", err)
+	}
+
+	fmt.Printf("🔍 RPC_DEBUG: Receipt parsed successfully, keys: %v\n", getRPCReceiptKeys(receipt))
+
+	// Check specifically for logs field
+	if logsField, exists := receipt["logs"]; exists {
+		fmt.Printf("🔍 RPC_DEBUG: Receipt has logs field, type: %T\n", logsField)
+		if logs, ok := logsField.([]interface{}); ok {
+			fmt.Printf("🔍 RPC_DEBUG: Receipt has %d logs\n", len(logs))
+		}
+	} else {
+		fmt.Printf("🔍 RPC_DEBUG: Receipt has NO logs field!\n")
 	}
 
 	return receipt, nil
@@ -269,6 +295,54 @@ func (c *Client) FetchTransactionData(ctx context.Context, txHash string) (*mode
 		}
 	}
 
+	// ===== DEBUG: Print raw receipt data =====
+	fmt.Printf("\n🔍 RPC_DEBUG: Transaction %s\n", txHash)
+	fmt.Printf("🔍 RPC_DEBUG: Receipt keys: %v\n", getRPCReceiptKeys(receipt))
+
+	if receipt != nil {
+		// Check if logs field exists and what type it is
+		if logsField, exists := receipt["logs"]; exists {
+			fmt.Printf("🔍 RPC_DEBUG: logs field exists, type: %T\n", logsField)
+
+			// Try to cast to different possible types
+			switch v := logsField.(type) {
+			case []interface{}:
+				fmt.Printf("🔍 RPC_DEBUG: logs is []interface{} with %d items\n", len(v))
+				for i, log := range v {
+					if i < 5 { // Only show first 5 logs to avoid spam
+						fmt.Printf("      Log[%d]: %T\n", i, log)
+						if logMap, ok := log.(map[string]interface{}); ok {
+							fmt.Printf("         Keys: %v\n", getRPCLogKeys(logMap))
+							if address, ok := logMap["address"].(string); ok {
+								fmt.Printf("         Address: %s\n", address)
+							}
+							if topics, ok := logMap["topics"].([]interface{}); ok {
+								fmt.Printf("         Topics: %d\n", len(topics))
+								if len(topics) > 0 {
+									if topic0, ok := topics[0].(string); ok {
+										fmt.Printf("         Topic[0]: %s\n", topic0)
+										// Check if it's Transfer event
+										if topic0 == "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" {
+											fmt.Printf("         🎯 TRANSFER_EVENT_FOUND!\n")
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			case nil:
+				fmt.Printf("🔍 RPC_DEBUG: logs field is nil\n")
+			default:
+				fmt.Printf("🔍 RPC_DEBUG: logs field is unexpected type: %T\n", v)
+			}
+		} else {
+			fmt.Printf("🔍 RPC_DEBUG: No 'logs' field in receipt!\n")
+		}
+	} else {
+		fmt.Printf("🔍 RPC_DEBUG: Receipt is nil!\n")
+	}
+
 	// Get block information
 	if tx != nil {
 		if blockNumHex, ok := tx["blockNumber"].(string); ok {
@@ -286,8 +360,13 @@ func (c *Client) FetchTransactionData(ctx context.Context, txHash string) (*mode
 	if receipt != nil {
 		if receiptLogs, ok := receipt["logs"].([]interface{}); ok {
 			logs = receiptLogs
+			fmt.Printf("🔍 RPC_DEBUG: Successfully extracted %d logs from receipt\n", len(logs))
+		} else {
+			fmt.Printf("🔍 RPC_DEBUG: Failed to cast receipt['logs'] to []interface{}\n")
 		}
 	}
+
+	fmt.Printf("🔍 RPC_DEBUG: Final logs count: %d\n\n", len(logs))
 
 	return &models.RawTransactionData{
 		TxHash:    txHash,
@@ -297,6 +376,30 @@ func (c *Client) FetchTransactionData(ctx context.Context, txHash string) (*mode
 		Receipt:   receipt,
 		Block:     block,
 	}, nil
+}
+
+// Helper function to get receipt keys for debugging
+func getRPCReceiptKeys(receipt map[string]interface{}) []string {
+	if receipt == nil {
+		return []string{}
+	}
+	keys := make([]string, 0, len(receipt))
+	for k := range receipt {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Helper function to get log keys for debugging
+func getRPCLogKeys(log map[string]interface{}) []string {
+	if log == nil {
+		return []string{}
+	}
+	keys := make([]string, 0, len(log))
+	for k := range log {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // GetNetwork returns the network information for this client

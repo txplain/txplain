@@ -21,13 +21,19 @@ type LLMRetryConfig struct {
 }
 
 // DefaultLLMRetryConfig returns a sensible default configuration
+//
+// Timeout Hierarchy:
+// - HTTP Server: 20 minutes (top-level timeout for entire request)
+// - Request Handler: 18 minutes (allows graceful cleanup before server timeout)
+// - LLM Retry: 5 minutes per attempt (fits within request timeout with retries + delays)
+// - Total possible LLM time: ~3 attempts × 5 minutes + delays = ~16 minutes maximum
 func DefaultLLMRetryConfig() LLMRetryConfig {
 	return LLMRetryConfig{
-		MaxRetries:      3,                // Try up to 3 times
-		InitialDelay:    1 * time.Second,  // Start with 1 second delay
-		MaxDelay:        30 * time.Second, // Cap at 30 seconds
-		BackoffFactor:   2.0,              // Double delay each retry
-		TimeoutPerRetry: 60 * time.Second, // 60 second timeout per attempt
+		MaxRetries:      3,                 // Try up to 3 times
+		InitialDelay:    1 * time.Second,   // Start with 1 second delay
+		MaxDelay:        30 * time.Second,  // Cap at 30 seconds
+		BackoffFactor:   2.0,               // Double delay each retry
+		TimeoutPerRetry: 300 * time.Second, // 5 minutes per attempt - fits within 18min request timeout
 	}
 }
 
